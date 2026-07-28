@@ -9,6 +9,12 @@ import react from '@vitejs/plugin-react'
 // localhost-only binding, so desktop behaviour is unchanged.
 const devHost = process.env.TAURI_DEV_HOST;
 
+// Android runs on its own port so it can never collide with a desktop `tauri dev`
+// (or a leftover preview server) already holding 1420. src-tauri/tauri.android.conf.json
+// sets SN_DEV_PORT=1430 and points devUrl at it; desktop keeps the default.
+// HMR gets port+1, which must differ per platform for the same reason.
+const devPort = Number(process.env.SN_DEV_PORT ?? 1420);
+
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
@@ -16,11 +22,11 @@ export default defineConfig({
   clearScreen: false,
   server: {
     host: devHost || false,
-    port: 1420,
+    port: devPort,
     strictPort: true,
     // HMR needs its own explicit host when serving a device over the network;
     // the default derives the websocket URL from `location`, which is the phone.
-    hmr: devHost ? { protocol: 'ws', host: devHost, port: 1421 } : undefined,
+    hmr: devHost ? { protocol: 'ws', host: devHost, port: devPort + 1 } : undefined,
     watch: {
       ignored: ['**/src-tauri/**'],
     },
