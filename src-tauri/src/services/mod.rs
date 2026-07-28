@@ -5,6 +5,7 @@ pub mod bttv_pro_service;
 
 pub mod account_store;
 pub mod ad_detect;
+pub mod app_paths;
 pub mod auth_proxy;
 pub mod cache_service;
 pub mod ll_diagnostics;
@@ -14,6 +15,8 @@ pub mod chat_service;
 pub mod cookie_jar_service;
 pub mod diagnostic_logger;
 pub mod hls_projection;
+// Desktop-only: Discord Rich Presence (IPC to a running Discord client).
+#[cfg(desktop)]
 pub mod discord_service;
 pub mod drops_auth_service;
 pub mod drops_service;
@@ -35,8 +38,11 @@ pub mod ll_origin;
 mod ll_soak;
 pub mod log_service;
 pub mod runtime_watchdog;
+pub mod secure_store;
 pub mod ui_hang_watchdog;
 pub mod mod_log_storage_service;
+// Desktop-only: MultiNook multi-stream tiling is not part of the phone app.
+#[cfg(desktop)]
 pub mod multi_nook_server;
 pub mod profile_cache_service;
 pub mod providers;

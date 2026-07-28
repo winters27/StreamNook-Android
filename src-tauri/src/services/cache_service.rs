@@ -25,6 +25,15 @@ pub struct BadgeCache {
 
 /// Get the StreamNook main directory in AppData/Local
 pub fn get_app_data_dir() -> Result<PathBuf> {
+    // On mobile the app-private sandbox dir is the only writable base; desktop
+    // keeps its %LOCALAPPDATA% path below unchanged.
+    if let Some(base) = crate::services::app_paths::mobile_base() {
+        let app_dir = base.join("StreamNook");
+        if !app_dir.exists() {
+            fs::create_dir_all(&app_dir).context("Failed to create StreamNook directory")?;
+        }
+        return Ok(app_dir);
+    }
     // Use AppData/Local instead of Program Files (no admin rights needed)
     let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| {
         // Fallback to %USERPROFILE%\AppData\Local

@@ -691,6 +691,7 @@ fn generate_badge_update_script(badge_id: &str, badge_version: &str) -> String {
 }
 
 /// Fetch available global badges - tries fast GQL first, falls back to browser scraping
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn fetch_chat_identity_badges(
     app: AppHandle,
@@ -776,6 +777,7 @@ pub async fn fetch_chat_identity_badges(
 }
 
 /// Command called by the hidden window when badges are found
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn receive_badge_data(app: AppHandle, result: BadgeScrapeResult) -> Result<(), String> {
     debug!(
@@ -801,6 +803,7 @@ pub async fn receive_badge_data(app: AppHandle, result: BadgeScrapeResult) -> Re
 
 /// Update the selected chat identity badge
 /// Tries fast GQL mutation first, falls back to browser automation if needed
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn update_chat_identity(
     app: AppHandle,
@@ -884,6 +887,7 @@ pub async fn update_chat_identity(
 }
 
 /// Receive update result from the hidden window
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn receive_update_result(
     app: AppHandle,

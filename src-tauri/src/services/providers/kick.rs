@@ -410,6 +410,17 @@ pub async fn resolve_emotes_pending(label: &str, native_emotes: Vec<kick_emotes:
     }
 }
 
+// Kick channel resolution runs a hidden webview to execute a page-context fetch;
+// that technique is desktop-only. Mobile returns an error (Kick is a secondary
+// provider — the phone app is Twitch-first for v1).
+#[cfg(not(desktop))]
+async fn resolve_via_webview(_slug: &str) -> Result<u64> {
+    Err(anyhow::anyhow!(
+        "Kick channel resolution is not available on mobile"
+    ))
+}
+
+#[cfg(desktop)]
 async fn resolve_via_webview(slug: &str) -> Result<u64> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
 

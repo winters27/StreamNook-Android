@@ -69,7 +69,7 @@ fn persist(tok: &KickToken) {
     let Ok(json) = serde_json::to_string(tok) else {
         return;
     };
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+    if let Ok(entry) = crate::services::secure_store::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
         let _ = entry.set_password(&json);
     }
     if let Some(p) = token_path() {
@@ -78,7 +78,7 @@ fn persist(tok: &KickToken) {
 }
 
 fn load_persisted() -> Option<KickToken> {
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+    if let Ok(entry) = crate::services::secure_store::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
         if let Ok(json) = entry.get_password() {
             if let Ok(t) = serde_json::from_str::<KickToken>(&json) {
                 return Some(t);
@@ -92,7 +92,7 @@ fn load_persisted() -> Option<KickToken> {
 }
 
 fn clear_persisted() {
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+    if let Ok(entry) = crate::services::secure_store::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
         let _ = entry.delete_credential();
     }
     if let Some(p) = token_path() {
