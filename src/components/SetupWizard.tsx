@@ -390,6 +390,21 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
 
     const canGoBack = currentStep > 1 && currentStep < 8;
 
+    // Swipe navigation (mobile). The step dots already imply a swipeable carousel,
+    // so a Continue button on every step was both redundant and un-native.
+    //
+    // Forward swipe is allowed only where advancing is pure navigation. Step 1 runs
+    // the component extraction and advances itself when that finishes, so swiping
+    // past it would skip a required step; step 8 commits setup, which should stay a
+    // deliberate tap rather than something you can trigger with a stray flick.
+    const canSwipeForward = currentStep === 0 || (currentStep >= 2 && currentStep <= 7);
+    // Timestamp of the last swipe-driven step change, used to swallow swipes that
+    // arrive while the exit animation is still running.
+    const lastStepChangeRef = useRef(0);
+    // Buttons survive on the bookends only: the opening call to action (which also
+    // teaches that this flow is tappable) and the final commit.
+    const showPrimaryOnMobile = currentStep === 0 || currentStep === 8;
+
     const renderStepContent = () => {
         switch (currentStep) {
             case 0:
@@ -861,6 +876,33 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                             animate={{ opacity: 1, y: 0 }}
                             exit={{ opacity: 0, y: -14 }}
                             transition={{ duration: STEP_DURATION, ease: STEP_EASE }}
+                            // Horizontal drag only, so vertical scrolling inside a tall
+                            // step (the theme grid) still works. Constraints are pinned
+                            // to 0 with a little elasticity: the card rubber-bands to
+                            // signal the gesture, then snaps back, and the step change
+                            // is driven by the release distance rather than the drag.
+                            drag={IS_MOBILE ? 'x' : false}
+                            dragConstraints={{ left: 0, right: 0 }}
+                            dragElastic={0.15}
+                            dragMomentum={false}
+                            onDragEnd={(_, info) => {
+                                if (!IS_MOBILE) return;
+                                // Swallow a second swipe that lands while the previous
+                                // step is still animating out, so one flick advances
+                                // exactly one step rather than two.
+                                const now = performance.now();
+                                if (now - lastStepChangeRef.current < STEP_DURATION * 1000) return;
+                                // Distance threshold so a slow drag on a theme card is
+                                // not read as a page change.
+                                const THRESHOLD = 70;
+                                if (info.offset.x < -THRESHOLD && canSwipeForward) {
+                                    lastStepChangeRef.current = now;
+                                    setCurrentStep(currentStep + 1);
+                                } else if (info.offset.x > THRESHOLD && canGoBack) {
+                                    lastStepChangeRef.current = now;
+                                    setCurrentStep(currentStep - 1);
+                                }
+                            }}
                             className="w-full max-w-2xl flex flex-col items-center text-center"
                         >
                             {renderStepContent()}
@@ -928,7 +970,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                                 Back
                             </button>
                         )}
-                        {primaryAction && (
+                        {primaryAction && (!IS_MOBILE || showPrimaryOnMobile) && (
                             <button
                                 onClick={primaryAction.onClick}
                                 disabled={primaryAction.disabled}
