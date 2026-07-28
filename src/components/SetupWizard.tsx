@@ -491,8 +491,12 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                         <p className="text-textSecondary text-base max-w-md mb-8">
                             Yeah yeah, another setup wizard. A few clicks and we'll get out of your way, promise.
                         </p>
+                        {/* webp, not avif: animated AVIF flickers on each loop
+                            restart in Android System WebView (the emote blinks
+                            in and out). The rest of the emote pipeline is webp
+                            already; desktop renders it identically. */}
                         <img
-                            src="https://cdn.7tv.app/emote/01F6NMMEER00015NVG2J8ZH77N/4x.avif"
+                            src="https://cdn.7tv.app/emote/01F6NMMEER00015NVG2J8ZH77N/4x.webp"
                             alt=""
                             className="h-24 w-auto select-none"
                             draggable={false}

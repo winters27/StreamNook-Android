@@ -34,6 +34,15 @@ html[data-mobile='true'] body {
   overscroll-behavior: none; /* no rubber-band over the video */
 }
 
+/* The OS status bar and camera cutout own the top edge under edge-to-edge.
+   The desktop TitleBar used to occupy that band; with it gated off on mobile
+   the shell root must reserve the inset itself, or the Home nav draws under
+   the clock and the cutout pill. Scoped away from .sn-mobile: the dedicated
+   MobileApp shell manages its own insets. */
+html[data-mobile='true'] #root > div:not(.sn-mobile) {
+  padding-top: var(--sn-safe-top);
+}
+
 /* ---------------------------------------------------------------- video --- */
 
 /* The stream view is [player][chat] in DOM order. In portrait, pin the player

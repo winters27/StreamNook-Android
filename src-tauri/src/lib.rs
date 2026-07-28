@@ -463,6 +463,31 @@ pub fn run() {
             if let Ok(dir) = app.path().app_data_dir() {
                 services::app_paths::set_base(dir);
             }
+            // Mobile: the settings load at the top of run() executed BEFORE the
+            // base above was resolvable, so it always fell back to
+            // Settings::default() (setup_complete=false among everything else),
+            // and the next save wrote those defaults back over the real file,
+            // reverting setup_complete on every launch. Re-read the real
+            // settings.json now that the path resolves and push the values into
+            // the stores that were constructed from the defaults.
+            #[cfg(mobile)]
+            if let Ok(loaded) = load_settings_from_file() {
+                services::diagnostic_logger::set_diagnostics_enabled(
+                    loaded.error_reporting_enabled,
+                );
+                let drops_settings = loaded.drops.clone();
+                if let Ok(mut s) = settings_arc.lock() {
+                    *s = loaded;
+                }
+                let drops_service_reload = drops_service.clone();
+                tauri::async_runtime::spawn(async move {
+                    drops_service_reload
+                        .lock()
+                        .await
+                        .update_settings(drops_settings)
+                        .await;
+                });
+            }
             // Runtime stall detector: measures backend freezes (tokio-blocked vs
             // whole-process) and records them to the capture file. Started here,
             // inside the tokio runtime Tauri set up.
