@@ -4,12 +4,18 @@
 <head>
   <meta charset="UTF-8" />
   <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <!-- viewport-fit=cover is required on Android: targetSdk 36 enforces edge-to-edge
+       with no opt-out, and without this opt-in every env(safe-area-inset-*) resolves
+       to 0, so the UI draws under the status bar and the gesture pill. No effect on
+       desktop. -->
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>StreamNook</title>
-  <!-- React DevTools connection - only loads in development -->
-  <script>
-    // Connect to React DevTools if running in development
-    if (window.location.hostname === 'localhost' || window.location.hostname === 'tauri.localhost') {
+  <!-- React DevTools connection - dev builds only. `tauri.localhost` is the
+       PRODUCTION origin on Android, so testing the hostname alone would fire this
+       request on shipped phones; gate on the build flag instead. -->
+  <script type="module">
+    if (import.meta.env.DEV) {
       const script = document.createElement('script');
       script.src = 'http://localhost:8097';
       document.head.appendChild(script);

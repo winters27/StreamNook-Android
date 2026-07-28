@@ -2,6 +2,8 @@ import { useEffect, useState, useRef } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
+import { IS_MOBILE, isPortrait, onOrientationChange } from './utils/platform';
+import MobileNav from './components/mobile/MobileNav';
 import { useAppStore, type WhisperImportProgress, type SettingsTab } from './stores/AppStore';
 import { useContextMenuStore } from './stores/contextMenuStore';
 import { listenForSettingsUpdates } from './utils/settingsBroadcast';
@@ -112,7 +114,7 @@ function App() {
   // every toast, every mod-log entry (which fires on the IRC hot path) and every
   // 30s drops poll re-rendered the root and the whole tree under it.
   const { loadSettings, checkAuthStatus, addToast, setShowBadgesOverlay, setShowWhispersOverlay, updateSettings, loadActiveDropsCache, setProfileModalUser, openSettings } = useAppStore.getState();
-  const { chatPlacement, isLoading, isBooting, streamUrl, currentMediaType, showBadgesOverlay, badgesOverlayInitialPaintId, badgesOverlayInitialBadgeId, badgesOverlayInitialStreamNook, badgesOverlayInitialTarget, showWhispersOverlay, settings, isTheaterMode, isHomeActive, profileModalUser } = useAppStore(
+  const { chatPlacement: storedChatPlacement, isLoading, isBooting, streamUrl, currentMediaType, showBadgesOverlay, badgesOverlayInitialPaintId, badgesOverlayInitialBadgeId, badgesOverlayInitialStreamNook, badgesOverlayInitialTarget, showWhispersOverlay, settings, isTheaterMode, isHomeActive, profileModalUser } = useAppStore(
     useShallow((s) => ({
       chatPlacement: s.chatPlacement,
       isLoading: s.isLoading,
@@ -144,6 +146,18 @@ function App() {
     currentStream?.user_login &&
     channelsInPopouts.has(currentStream.user_login.toLowerCase())
   );
+
+  // Mobile portrait cannot use a side-docked chat: the stream view is a flex row,
+  // so a docked panel squeezes the video to nothing. Rather than fork the layout,
+  // force the placement the column path already handles ('bottom') and let
+  // mobile.css size the two bands. Landscape is close enough to a narrow desktop
+  // window that the stored preference still works there.
+  const [isPortraitNow, setIsPortraitNow] = useState(() => IS_MOBILE && isPortrait());
+  useEffect(() => {
+    if (!IS_MOBILE) return;
+    return onOrientationChange(() => setIsPortraitNow(isPortrait()));
+  }, []);
+  const chatPlacement = IS_MOBILE && isPortraitNow ? 'bottom' : storedChatPlacement;
 
   const [chatSize, setChatSize] = useState(chatPlacement === 'bottom' ? DEFAULT_CHAT_HEIGHT : DEFAULT_CHAT_WIDTH);
   const [modLogsSize, setModLogsSize] = useState(300); // Default Mod Logs size
@@ -1547,7 +1561,10 @@ function App() {
           </div>
         }
       >
-        <TitleBar />
+        {/* The title bar is desktop window chrome: minimise/maximise/close, the
+            drag region and the update pill. None of it means anything on a phone,
+            and it costs ~40px of a screen that has little to spare. */}
+        {!IS_MOBILE && <TitleBar />}
       </ErrorBoundary>
       {/* Dynamic Island lives at the app root (not inside the title bar) so it can
           lift above the Settings blur overlay; it pins itself to the top center. */}
@@ -1586,9 +1603,14 @@ function App() {
         {/* Sidebar - only visible when stream is playing. Flips to the right edge
             when chat is docked left with reveal-on-hover, so the left edge belongs
             to the chat hover and the two don't fight over the same zone. */}
-        <ErrorBoundary componentName="Sidebar">
-          <Sidebar side={chatPlacement === 'left' && autoHideActive ? 'right' : 'left'} />
-        </ErrorBoundary>
+        {/* The sidebar is built around edge-hover reveal and drag-to-resize, both
+            of which are mouse-only. Mobile navigation is a bottom tab bar instead
+            (see MobileNav), driving the same store fields. */}
+        {!IS_MOBILE && (
+          <ErrorBoundary componentName="Sidebar">
+            <Sidebar side={chatPlacement === 'left' && autoHideActive ? 'right' : 'left'} />
+          </ErrorBoundary>
+        )}
 
         {/* Main content area with Home/PIP support */}
         <div className="flex-1 relative overflow-hidden">
@@ -1642,6 +1664,10 @@ function App() {
                 {/* Video & Chat Container */}
                 <div 
                   ref={containerRef}
+                  // Marker for the mobile layout layer: on a phone in portrait
+                  // the first child (the player) is pinned to a 16:9 band and the
+                  // chat panel takes the rest. See src/styles/mobile.css.
+                  data-sn-stream-container=""
                   className={`flex flex-1 h-full overflow-hidden relative ${chatPlacement === 'bottom' ? 'flex-col' : 'flex-row'}`}
                 >
                   <ChannelAboutReveal
@@ -1860,6 +1886,15 @@ function App() {
         </div>
       </div>
       </ErrorBoundary>
+      {/* Bottom tab bar replaces the desktop Sidebar on phones. Rendered as a
+          sibling of the main content inside the h-screen column so it always
+          holds the bottom edge, and hidden while booting so it does not appear
+          over the splash. */}
+      {IS_MOBILE && !isBooting && (
+        <ErrorBoundary componentName="MobileNav">
+          <MobileNav />
+        </ErrorBoundary>
+      )}
       {/* Boot overlay — sits above the home screen from launch until the initial
           auth check resolves, then fades out so home eases in. Without it the
           logged-out nav and empty state flash for a beat before stored

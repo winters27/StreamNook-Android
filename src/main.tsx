@@ -10,11 +10,16 @@ const App = lazy(() => import('./App.tsx'));
 const ProfileCardPage = lazy(() => import('./pages/ProfileCardPage.tsx'));
 const MultiChatWindow = lazy(() => import('./components/multichat/MultiChatWindow.tsx'));
 const PluginWindowHost = lazy(() => import('./plugins-ui/PluginWindowHost.tsx'));
-// Side-effect import: registers `window.openMultiChatWindow` for popout spawning.
-import './utils/multichatWindow';
-// Side-effect import: listens for the tray's "Open MultiChat" menu event and
-// spawns an empty popout from the main window.
-import './utils/multichatTrayBridge';
+// Popout-window and tray plumbing. These used to be unconditional side-effect
+// imports, so they registered at module load on Android too, where there is no
+// tray and WebviewWindow.create() throws. Desktop-only now; the microtask delay
+// is irrelevant because both are driven by later user interaction.
+if (!IS_MOBILE) {
+  // registers `window.openMultiChatWindow` for popout spawning
+  import('./utils/multichatWindow');
+  // listens for the tray's "Open MultiChat" menu event
+  import('./utils/multichatTrayBridge');
+}
 // Fraunces (variable serif). Italic powers the StreamNook tier-badge rank
 // number; the upright axis backs the "Serif" choice in Theme > Font.
 import '@fontsource-variable/fraunces';
@@ -27,7 +32,24 @@ import '@fontsource-variable/fraunces/wght-italic.css';
 // lazy player's own import) restores the pre-lazy-load order so our overrides win.
 import 'plyr/dist/plyr.css';
 import './styles/globals.css';
+// Mobile layout layer. Every rule is scoped behind html[data-mobile="true"],
+// which is set just below, so importing it on desktop is inert.
+import './styles/mobile.css';
 import { initLogCapture } from './services/logService';
+import { IS_MOBILE, isPortrait, onOrientationChange } from './utils/platform';
+
+// Drive the mobile CSS off the document element. Orientation is tracked here
+// rather than with a CSS media query because the layout branch also needs it in
+// JS (the player switches between a fixed 16:9 band and full-bleed).
+if (IS_MOBILE) {
+  const root = document.documentElement;
+  root.dataset.mobile = 'true';
+  const applyOrientation = () => {
+    root.dataset.orientation = isPortrait() ? 'portrait' : 'landscape';
+  };
+  applyOrientation();
+  onOrientationChange(applyOrientation);
+}
 
 import { Logger } from './utils/logger';
 // Initialize log capture early to capture all console messages
