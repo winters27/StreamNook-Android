@@ -59,7 +59,7 @@ import { applyModerateEvent } from './utils/applyModerateEvent';
 import { handleSeventvEmoteSetUpdate, handleSeventvCosmeticUpdate, type EmoteSetUpdatePayload, type CosmeticUpdatePayload } from './services/seventvEventApi';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
-import { getThemeById, applyTheme, DEFAULT_THEME_ID, getThemeByIdWithCustom, applyGlassStrength, DEFAULT_GLASS_TRANSPARENCY, applyFont, DEFAULT_FONT_ID, OLED_THEME_ID, getOledTheme } from './themes';
+import { useThemeBoot } from './boot/useThemeBoot';
 import { getSelectedCompactViewPreset } from './constants/compactViewPresets';
 
 import { Logger } from './utils/logger';
@@ -534,6 +534,9 @@ function App() {
     };
   }, []);
 
+  // NOTE (mobile port): the shell-agnostic steps of this boot effect are
+  // replicated in src/mobile/boot/useMobileBoot.ts. When adding a boot step
+  // here, decide whether the mobile shell needs it too and mirror it there.
   useEffect(() => {
     let isMounted = true;
     const cleanupFunctions: (() => void)[] = [];
@@ -829,26 +832,8 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadSettings, checkAuthStatus]);
 
-  // Apply theme when settings are loaded or theme changes
-  useEffect(() => {
-    const themeId = settings.theme || DEFAULT_THEME_ID;
-    const customThemes = settings.custom_themes || [];
-    // OLED is the one configurable signature theme: its accent comes from the
-    // saved oled_accent, so resolve it through getOledTheme rather than the
-    // static registry entry.
-    const theme = themeId === OLED_THEME_ID
-      ? getOledTheme(settings.oled_accent)
-      : (getThemeByIdWithCustom(themeId, customThemes) || getThemeById(DEFAULT_THEME_ID));
-    if (theme) {
-      Logger.debug('[App] Applying theme:', theme.name);
-      applyTheme(theme);
-    }
-    // Global glassiness is independent of the palette, so re-assert it whenever
-    // the theme is (re)applied as well as when the slider itself changes.
-    applyGlassStrength(settings.glass_transparency ?? DEFAULT_GLASS_TRANSPARENCY);
-    // Interface font is also palette-independent; re-assert alongside the theme.
-    applyFont(settings.font ?? DEFAULT_FONT_ID, settings.font_custom);
-  }, [settings.theme, settings.custom_themes, settings.glass_transparency, settings.font, settings.font_custom, settings.oled_accent]);
+  // Theme/glass/font application is shared with the mobile shell.
+  useThemeBoot();
 
   // Check if we need to show the first-time setup wizard. Drive purely off
   // setup_complete: if it's false, show the wizard. (Gate on `quality` only as a

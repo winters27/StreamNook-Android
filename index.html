@@ -4,7 +4,10 @@
 <head>
   <meta charset="UTF-8" />
   <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <!-- viewport-fit=cover: required under Android targetSdk 36 forced edge-to-edge.
+       interactive-widget=resizes-content: soft-keyboard resize hint where supported.
+       Both are inert on desktop WebView2. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
   <title>StreamNook</title>
   <!-- React DevTools connection - only loads in development -->
   <script>

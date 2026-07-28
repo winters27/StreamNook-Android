@@ -7,14 +7,19 @@ import { MotionScope } from './components/MotionScope.tsx';
 // App's whole tree (video player + hls.js/plyr, browse, settings) — a real
 // footprint + startup cut for the chat-only popout.
 const App = lazy(() => import('./App.tsx'));
+const MobileApp = lazy(() => import('./mobile/MobileApp.tsx'));
 const ProfileCardPage = lazy(() => import('./pages/ProfileCardPage.tsx'));
 const MultiChatWindow = lazy(() => import('./components/multichat/MultiChatWindow.tsx'));
 const PluginWindowHost = lazy(() => import('./plugins-ui/PluginWindowHost.tsx'));
-// Side-effect import: registers `window.openMultiChatWindow` for popout spawning.
-import './utils/multichatWindow';
-// Side-effect import: listens for the tray's "Open MultiChat" menu event and
-// spawns an empty popout from the main window.
-import './utils/multichatTrayBridge';
+import { isMobile } from './platform';
+// Desktop-only side-effect modules: `multichatWindow` registers
+// `window.openMultiChatWindow` for popout spawning; `multichatTrayBridge`
+// listens for the tray's "Open MultiChat" menu event. Popouts and tray do not
+// exist on mobile, so these load dynamically on desktop only.
+if (!isMobile) {
+  import('./utils/multichatWindow');
+  import('./utils/multichatTrayBridge');
+}
 // Fraunces (variable serif). Italic powers the StreamNook tier-badge rank
 // number; the upright axis backs the "Serif" choice in Theme > Font.
 import '@fontsource-variable/fraunces';
@@ -60,7 +65,7 @@ root.render(
   <React.StrictMode>
     <MotionScope>
       <Suspense fallback={null}>
-        {isMultiChat ? <MultiChatWindow /> : isPluginWindow ? <PluginWindowHost /> : isProfileCard ? <ProfileCardPage /> : <App />}
+        {isMultiChat ? <MultiChatWindow /> : isPluginWindow ? <PluginWindowHost /> : isProfileCard ? <ProfileCardPage /> : isMobile ? <MobileApp /> : <App />}
       </Suspense>
     </MotionScope>
   </React.StrictMode>,
