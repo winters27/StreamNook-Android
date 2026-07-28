@@ -55,3 +55,12 @@ Thumbs.db
 
 # Wrangler / Cloudflare local dev cache (streamnook.app tooling)
 .wrangler/
+
+# Android port: Windows-only bare-clang linker workaround (breaks the Linux build)
+.cargo/
+src-tauri/.cargo/
+
+# Android port: generated/local Gradle state
+src-tauri/gen/android/local.properties
+src-tauri/gen/android/.gradle/
+src-tauri/gen/android/**/build/

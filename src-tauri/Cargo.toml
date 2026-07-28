@@ -11,6 +11,15 @@ edition = "2021"
 name = "StreamNook"
 path = "src/main.rs"
 
+# Library target required by Tauri mobile: `tauri android`/`ios` build the app
+# as a shared library that the generated Android/iOS project loads and calls
+# `run()` on. `rlib` lets the desktop `[[bin]]` link this same lib; `cdylib` is
+# the Android JNI library; `staticlib` is used by iOS later. Desktop builds are
+# unchanged — the bin still compiles and runs as before.
+[lib]
+name = "streamnook_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2.5.2", features = [] }
 lazy_static = "1.5.0"
@@ -27,11 +36,13 @@ tauri-plugin-dialog = "2.2.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 tokio = { version = "1.48.0", features = ["full"] }
-tokio-tungstenite = { version = "0.27.0", features = ["native-tls"] }
-reqwest = { version = "0.12.24", features = ["json", "gzip", "cookies", "multipart"] }
+# rustls (not native-tls/OpenSSL) so the Android cross-compile links without a
+# vendored OpenSSL build. webpki-roots bundles the Mozilla CA set, so trust is
+# identical on desktop and Android instead of depending on each OS trust store.
+tokio-tungstenite = { version = "0.27.0", features = ["rustls-tls-webpki-roots"] }
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "gzip", "cookies", "multipart", "rustls-tls"] }
 cookie_store = "0.22.0"
 oauth2 = "5.0.0"
-discord-rich-presence = "1.0.0"
 anyhow = "1.0.100"
 async-trait = "0.1.83"
 confy = "2.0.0"
@@ -39,7 +50,6 @@ warp = { version = "0.4.2", features = ["server", "websocket"] }
 futures = "0.3"
 futures-util = { version = "0.3.31", features = ["sink"] }
 rand = "0.9.2"
-keyring = "3.6.3"  # For secure token storage
 url = "2.5.7"
 sha2 = "0.10.9"
 sha1 = "0.10.6"  # SAPISIDHASH for the YouTube webview-session auth
@@ -86,23 +96,20 @@ tauri-plugin-deep-link = "2.4.7"
 # to the deep-link plugin) instead of spawning a duplicate window.
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-clipboard-manager = "2.3.2"
+# Platform detection (frontend `@tauri-apps/plugin-os` platform() + backend cfg).
+# Mobile-supported; used to pick the desktop vs mobile shell at runtime.
+tauri-plugin-os = "2"
 
-# Screen capture for the Profile share feature. xcap grabs real WebView pixels
-# (post compositor) so backdrop-filter / paint gradients / custom fonts render
-# faithfully — DOM-clone libs like html-to-image can't see those. `image` is
-# used to crop the monitor capture down to the profile card's region and
-# encode the result as PNG bytes (static path) or as raw RGBA frames fed to
-# the WebP animation encoder (animated path).
-#
-# webp-animation wraps libwebp's WebPAnimEncoder. Animated WebP is not bound
-# by GIF's 256-color palette, so 7TV paint gradients and neon badge glows
-# survive encoding without quantization banding. libwebp itself is built from
-# vendored C source by libwebp-sys2 via the cc crate — no CMake required, just
-# the MSVC toolchain that StreamNook already needs for its other native deps.
+# Desktop-only native crates — gated off Android/iOS, which have no backend for
+# them and would fail the mobile link. On desktop this cfg is true, so they build
+# exactly as before. keyring = OS credential store (services/secure_store uses a
+# file store on mobile instead); discord-rich-presence = Discord IPC;
+# xcap/image/webp-animation = the animated-WebP profile-card capture (xcap grabs
+# real post-compositor WebView pixels; webp-animation wraps libwebp's encoder).
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+discord-rich-presence = "1.0.0"
+keyring = "3.6.3"
 xcap = "0.0.14"
-# png for the static-paint capture path (capture_screen_region). The
-# animated path uses direct DXGI Output Duplication and feeds raw RGBA
-# straight to the WebP encoder, no decode step needed.
 image = { version = "0.25", default-features = false, features = ["png"] }
 webp-animation = "0.9"
 
