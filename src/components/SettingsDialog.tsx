@@ -1,6 +1,8 @@
 import { useAppStore, SettingsTab } from '../stores/AppStore';
+import { IS_MOBILE } from '../utils/platform';
 import {
   X,
+  ChevronLeft,
   Layout,
   PlayCircle,
   MessageSquare,
@@ -84,6 +86,10 @@ const HERO_BEVEL = 'var(--bevel-hero)';
 const SettingsDialog = () => {
   const { isSettingsOpen, settingsInitialTab, settingsInitialSection, closeSettings, isAuthenticated, currentUser, signOutActiveAccount, settings } = useAppStore();
   const [activeTab, setActiveTab] = useState<SettingsTab>('Player');
+  // Mobile drill-down: false shows the tab list full-screen, true shows the
+  // selected tab's content with a back button. Desktop ignores this and keeps
+  // both panes side by side.
+  const [mobileDrilledIn, setMobileDrilledIn] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [signOutConfirm, setSignOutConfirm] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -181,7 +187,13 @@ const SettingsDialog = () => {
             transition={{ type: 'spring', stiffness: 380, damping: 30 }}
             onClick={(e) => e.stopPropagation()}
             className={`liquid-glass-panel flex overflow-hidden ${
-              !compactWindow
+              IS_MOBILE
+                // A phone has no room for a floating dialog with a 240px rail
+                // beside a content pane: the pane collapses to ~180px and every
+                // word wraps onto its own line. Go full-screen and drill down
+                // instead (list of tabs -> tap -> content with a back button).
+                ? 'w-full h-full'
+                : !compactWindow
                 // Opt-in full-page (Interface › Settings Window) fills the window
                 // edge to edge for every tab.
                 ? 'w-full h-full'
@@ -216,7 +228,16 @@ const SettingsDialog = () => {
                 .join(', '),
             }}
           >
-            <aside className="flex w-[240px] flex-shrink-0 flex-col border-r border-white/[0.06] py-3">
+            <aside
+              className={`flex flex-col border-r border-white/[0.06] py-3 ${
+                IS_MOBILE
+                  // Drill-down step 1: the tab list owns the whole screen. Once a
+                  // tab is picked it steps aside for the content pane.
+                  ? `w-full flex-shrink ${mobileDrilledIn ? 'hidden' : ''}`
+                  : 'w-[240px] flex-shrink-0'
+              }`}
+              style={IS_MOBILE ? { paddingTop: 'var(--sn-safe-top)' } : undefined}
+            >
               <div className="px-2">
                 <div className="flex items-center gap-1">
                   <button
@@ -361,7 +382,10 @@ const SettingsDialog = () => {
                   return (
                     <button
                       key={tab.id}
-                      onClick={() => selectTab(tab.id)}
+                      onClick={() => {
+                        selectTab(tab.id);
+                        if (IS_MOBILE) setMobileDrilledIn(true);
+                      }}
                       className={`flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors ${
                         isActive
                           ? 'bg-white/[0.06] text-textPrimary'
@@ -385,8 +409,29 @@ const SettingsDialog = () => {
               </nav>
             </aside>
 
-            <section className="flex min-w-0 flex-1 flex-col">
-              <div className="flex items-center justify-end px-3 pt-3">
+            <section
+              className={`flex min-w-0 flex-1 flex-col ${
+                IS_MOBILE && !mobileDrilledIn ? 'hidden' : ''
+              }`}
+              style={IS_MOBILE ? { paddingTop: 'var(--sn-safe-top)' } : undefined}
+            >
+              <div
+                className={`flex items-center px-3 pt-3 ${
+                  IS_MOBILE ? 'justify-between' : 'justify-end'
+                }`}
+              >
+                {/* Drill-down back. Without it the only way out of a tab on a
+                    phone is to close Settings entirely and reopen. */}
+                {IS_MOBILE && (
+                  <button
+                    onClick={() => setMobileDrilledIn(false)}
+                    className="-ml-1 flex items-center gap-1 rounded px-2 py-1.5 text-[13px] text-textSecondary"
+                    data-sn-touch
+                  >
+                    <ChevronLeft size={18} />
+                    Settings
+                  </button>
+                )}
                 <Tooltip content="Close" delay={200} side="bottom">
                   <button
                     onClick={closeSettings}

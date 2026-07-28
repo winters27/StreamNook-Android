@@ -58,19 +58,19 @@ html[data-mobile='true'][data-orientation='portrait'] [data-sn-stream-container]
 
 /* ---------------------------------------------------------- touch targets --- */
 
-/* Anything genuinely tappable gets a 44px minimum box. Scoped to controls so it
-   cannot inflate chat message rows or emotes. */
-html[data-mobile='true'] button:not([data-sn-dense]),
-html[data-mobile='true'] [role='button']:not([data-sn-dense]) {
+/* NO blanket min-size rule here, deliberately.
+ *
+ * A global `button { min-height: 44px; min-width: 44px }` looks like the obvious
+ * accessibility win and is actively harmful in this codebase: it inflated the
+ * setup wizard's pagination dots into giant circles, and would do the same to
+ * every badge, inline emote control and icon-only affordance in chat.
+ *
+ * Touch sizing belongs to the mobile components themselves (see MobileNav, which
+ * sizes its own targets), not to a selector that cannot tell a dot from a
+ * button. Opt individual surfaces in with `data-sn-touch` if they need it. */
+html[data-mobile='true'] [data-sn-touch] {
   min-height: 44px;
   min-width: 44px;
-}
-
-/* Chat is dense by nature: badges, inline emotes and the send row would look
-   absurd at 44px. Opt those back out. */
-html[data-mobile='true'] [data-sn-chat-panel] button {
-  min-height: 0;
-  min-width: 0;
 }
 
 /* ------------------------------------------------------------ hover debt --- */
