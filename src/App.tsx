@@ -83,6 +83,10 @@ const WEBVIEW_RELOGIN_MIGRATION_KEY = 'streamnook-webview-relogin-v4.9.1';
 
 // One-time migration flag for v2.2.0 - force re-login with full webview data clear
 const V220_RELOGIN_MIGRATION_KEY = 'streamnook-relogin-v2.2.0';
+// Backstop for the first-run wizard. settings.setup_complete is the source of
+// truth, but it has been seen reverting to false between launches on Android, so
+// completion is also recorded here where nothing else writes it.
+const SETUP_COMPLETE_MARKER = 'streamnook-setup-complete';
 
 // Default sizes for different placements (outside component to avoid recreating on each render)
 const DEFAULT_CHAT_WIDTH = 402; // For 'right' placement
@@ -870,9 +874,22 @@ function App() {
   useEffect(() => {
     if (settings.quality === undefined) return; // wait until settings hydrate
     if (settings.setup_complete) {
+      // Backstop: settings.setup_complete has been observed reverting to false on
+      // Android between launches even after the wizard writes it (root cause not
+      // yet identified — nothing in loadSettings or the updateSettings callers
+      // accounts for it). Without this marker the wizard reopens on every launch
+      // and the app is unusable, so record completion somewhere that survives
+      // independently of the settings file.
+      try { localStorage.setItem(SETUP_COMPLETE_MARKER, 'true'); } catch { /* private mode */ }
       Logger.debug('[App] Setup already complete, skipping wizard');
       return;
     }
+    try {
+      if (localStorage.getItem(SETUP_COMPLETE_MARKER) === 'true') {
+        Logger.debug('[App] Setup marked complete locally, skipping wizard');
+        return;
+      }
+    } catch { /* private mode */ }
     Logger.debug('[App] Setup not complete - showing wizard');
     setShowSetupWizard(true);
   }, [settings.quality, settings.setup_complete]);
@@ -907,6 +924,18 @@ function App() {
         const lastSeenVersion = settings.last_seen_version;
 
         Logger.debug('[App] Version check - Current:', currentVersion, 'Last seen:', lastSeenVersion);
+
+        // The two migrations below force a re-login for DESKTOP users upgrading
+        // from v4.9.1 and v2.2.0. They fire when localStorage lacks a marker key
+        // and the user is signed in. A fresh Android install has empty
+        // localStorage and has never run either version, so both would fire on
+        // first launch, log the user straight back out and re-open the setup
+        // wizard — every single launch, which is exactly what was happening.
+        // Mark them satisfied on mobile so they never run.
+        if (IS_MOBILE) {
+          localStorage.setItem(WEBVIEW_RELOGIN_MIGRATION_KEY, 'true');
+          localStorage.setItem(V220_RELOGIN_MIGRATION_KEY, 'true');
+        }
 
         // One-time force re-login for v4.9.1 webview features
         // This only triggers once per user, ever, and only if they're currently logged in

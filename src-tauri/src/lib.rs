@@ -345,6 +345,18 @@ pub fn run() {
     // per-account profiles and the default WebView2 store are unlocked and the wipe
     // actually lands (a prior frontend attempt failed because the live session held
     // those files locked).
+    //
+    // DESKTOP ONLY. On mobile the app-data base is not resolved until setup(), so
+    // this early call cannot write its marker ("could not resolve marker path:
+    // Read-only file system"). The marker is written only after a successful wipe,
+    // by design, so the run repeats on EVERY launch — wiping tokens and WebView
+    // storage each time. That signs the user out on every start, clears the
+    // localStorage keys the one-time frontend migrations rely on, and re-opens the
+    // setup wizard forever, which makes the Android build unusable.
+    //
+    // Skipping it on mobile is also correct on its own terms: this is a migration
+    // off a pre-2026-06-18 auth layout, and no Android install has ever had one.
+    #[cfg(desktop)]
     if tauri::async_runtime::block_on(
         services::account_store::AccountStore::run_force_reauth_if_needed(),
     ) {
