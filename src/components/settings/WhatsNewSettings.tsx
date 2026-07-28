@@ -250,7 +250,7 @@ const WhatsNewSettings = () => {
             )}
 
             {releases && releases.length > 0 && (
-                <div className="divide-y divide-borderSubtle">
+                <div className="hairline-y">
                     {releases.map((release, idx) => (
                         <ReleaseCard key={release.tag_name} release={release} initiallyOpen={idx === 0} />
                     ))}

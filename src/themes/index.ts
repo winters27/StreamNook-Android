@@ -1549,6 +1549,9 @@ export const applyTheme = (theme: Theme): void => {
     root.style.setProperty('--color-accent-muted', palette.accentMuted);
     // Generate neon variant by lightening accent by 30%
     root.style.setProperty('--color-accent-neon', lightenColor(palette.accent, 30));
+    // Raw accent channels for rgba(var(--color-accent-rgb), a) shadows/halos.
+    const accentRgb = hexToRgb(parseColorToHex(palette.accent));
+    root.style.setProperty('--color-accent-rgb', `${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b}`);
 
     // Border colors
     root.style.setProperty('--color-border', palette.border);
@@ -1610,7 +1613,7 @@ export const applyGlassStrength = (transparency: number): void => {
 // chosen stack is written to --app-font on :root; body and the Tailwind
 // `font-sans` utility both read that variable (see globals.css / tailwind config).
 
-export type FontId = 'satoshi' | 'twitch' | 'geist' | 'manrope' | 'outfit' | 'space-grotesk' | 'serif' | 'system';
+export type FontId = 'satoshi' | 'twitch' | 'geist' | 'manrope' | 'outfit' | 'space-grotesk' | 'serif' | 'system' | 'custom';
 
 export interface FontOption {
     id: FontId;
@@ -1689,12 +1692,160 @@ const FONT_BY_ID: Record<string, FontOption> = Object.fromEntries(
 // Default chat message body weight (most fonts). Inter overrides lighter.
 export const DEFAULT_CHAT_BODY_WEIGHT = 300;
 
+// ─── Custom font ────────────────────────────────────────────────────────────
+// A user-typed family name, stored as settings.font = 'custom' plus
+// settings.font_custom = the bare name. Kept out of FONT_OPTIONS so FONT_BY_ID
+// never holds a fake stack and applyFont's unknown-id fallback still means
+// "unknown".
+export const CUSTOM_FONT_ID: FontId = 'custom';
+
+// Popular free families offered as one-click fills under the text input.
+export const SUGGESTED_FONTS: string[] = [
+    'Poppins', 'Bebas Neue', 'Rubik', 'Lato',
+    'Nunito', 'Playfair Display', 'JetBrains Mono', 'Quicksand',
+];
+
+// Strip anything that would let a typed name break out of its slot in the
+// font-family stack (quotes, commas, semicolons, braces, parens, backslash)
+// and cap the length. What survives is a plain family name.
+export const sanitizeFontFamily = (raw: string): string =>
+    (raw || '').replace(/["',;{}()\\]/g, '').trim().slice(0, 64);
+
+// Same fallback tail the bundled options use, so an unresolvable name still
+// lands somewhere readable instead of blanking the UI.
+export const customFontStack = (family: string): string =>
+    `"${family}", -apple-system, BlinkMacSystemFont, sans-serif`;
+
+// Families that never need a network fetch: CSS generics, and the faces this
+// app already ships as local woff2 (see the @font-face blocks in globals.css).
+const NO_FETCH_FAMILIES = new Set([
+    'system-ui', 'ui-sans-serif', 'ui-serif', 'ui-monospace', 'sans-serif',
+    'serif', 'monospace', 'cursive', 'fantasy', '-apple-system',
+    'blinkmacsystemfont', 'segoe ui', 'roboto', 'inherit', 'initial', 'unset',
+    'satoshi', 'inter', 'geist', 'manrope', 'outfit', 'space grotesk',
+    'fraunces variable',
+]);
+
+const WEBFONT_LINK_ID = 'sn-app-webfont';
+const WEBFONT_DEBOUNCE_MS = 250;
+const FONT_READY_TIMEOUT_MS = 1500;
+// The UI spans 200-800. Bunny returns only the weights a family actually has
+// (measured: Bebas Neue with this list answers 200 with just its 400 face), and
+// the browser downloads only the faces whose weight and unicode-range are used,
+// so asking wide is free.
+const APP_FONT_WEIGHTS = ':wght@200;300;400;500;600;700;800';
+
+// Bunny Fonts is a drop-in Google Fonts mirror with the same css2 API and
+// catalog. It is used instead of fonts.googleapis.com because WebView2's
+// tracking prevention blocks the Google host, so the app would render nothing
+// while a plain browser worked (same reason the overlay uses it).
+const bunnyHref = (family: string, weights = ''): string =>
+    `https://fonts.bunny.net/css2?family=${encodeURIComponent(family).replace(/%20/g, '+')}${weights}&display=swap`;
+
+// Wait until the font engine can actually draw the family, then run `done`.
+// Bounded by a timeout, and `done` runs on every path (resolved, rejected,
+// timed out) so a slow or unreachable CDN can never strand the UI on the old
+// font. A family with no matching @font-face resolves with an empty match list
+// rather than rejecting, which covers both typos and locally-installed fonts.
+const whenFamilyReady = (family: string, done: () => void): void => {
+    let settled = false;
+    const finish = () => { if (!settled) { settled = true; done(); } };
+    const timer = setTimeout(finish, FONT_READY_TIMEOUT_MS);
+    const clear = () => clearTimeout(timer);
+    try {
+        document.fonts.load(`400 1em "${family}"`)
+            .then(() => { clear(); finish(); })
+            .catch(() => { clear(); finish(); });
+    } catch {
+        clear();
+        finish();
+    }
+};
+
+let webfontTimer: ReturnType<typeof setTimeout> | null = null;
+let loadedFamily = '';
+
+// Load a typed family, then call back once it is usable. ONE <link> is reused
+// and its href swapped, so switching fonts never leaves dead stylesheets
+// behind, and the fetch is debounced so typing a name does not fire a request
+// per character.
+export const loadWebFont = (family: string, onReady?: () => void): void => {
+    if (typeof document === 'undefined') { onReady?.(); return; }
+    // Cancel any queued load FIRST, before the dedupe check below can return.
+    // Otherwise a pending request for an earlier prefix of what is now being
+    // typed survives and wins the race, leaving the wrong family loaded.
+    if (webfontTimer) { clearTimeout(webfontTimer); webfontTimer = null; }
+    const lower = family.toLowerCase();
+    if (!family || NO_FETCH_FAMILIES.has(lower) || lower === loadedFamily) {
+        onReady?.();
+        return;
+    }
+    webfontTimer = setTimeout(() => {
+        webfontTimer = null;
+        loadedFamily = lower;
+        let link = document.getElementById(WEBFONT_LINK_ID) as HTMLLinkElement | null;
+        if (!link) {
+            link = document.createElement('link');
+            link.id = WEBFONT_LINK_ID;
+            link.rel = 'stylesheet';
+            document.head.appendChild(link);
+        }
+        const el = link;
+        el.onload = () => whenFamilyReady(family, () => onReady?.());
+        // A network failure is the only thing that fires this (a bad family
+        // name is a 200 with an error comment in the body). Commit anyway so
+        // an offline launch still resolves rather than hanging.
+        el.onerror = () => onReady?.();
+        el.href = bunnyHref(family, APP_FONT_WEIGHTS);
+    }, WEBFONT_DEBOUNCE_MS);
+};
+
+// Preview faces for the suggestion list. One combined request, no weight axis,
+// fired once. A bad entry does not poison the batch.
+export const loadSuggestionPreviews = (): void => {
+    if (typeof document === 'undefined') return;
+    const id = 'sn-app-font-suggestions';
+    if (document.getElementById(id)) return;
+    const link = document.createElement('link');
+    link.id = id;
+    link.rel = 'stylesheet';
+    link.href = 'https://fonts.bunny.net/css2?'
+        + SUGGESTED_FONTS.map((f) => `family=${encodeURIComponent(f).replace(/%20/g, '+')}`).join('&')
+        + '&display=swap';
+    document.head.appendChild(link);
+};
+
+// Bumped on every call so an in-flight custom-font commit that has been
+// superseded (user kept typing, or picked a preset) is discarded instead of
+// landing late over the newer choice.
+let fontApplyToken = 0;
+
 // Apply the chosen interface font to the live document. Unknown ids fall back
 // to the default so a stale/garbage setting can never blank the font. Also sets
 // --chat-body-weight so chat message text can render lighter under denser faces.
-export const applyFont = (fontId: string | undefined): void => {
-    const opt = FONT_BY_ID[fontId ?? DEFAULT_FONT_ID] ?? FONT_BY_ID[DEFAULT_FONT_ID];
+export const applyFont = (fontId: string | undefined, customFamily?: string): void => {
     const root = document.documentElement;
+    const token = ++fontApplyToken;
+
+    if (fontId === CUSTOM_FONT_ID) {
+        const family = sanitizeFontFamily(customFamily ?? '');
+        // An empty custom name falls through to the default rather than writing
+        // an empty stack, so the UI can never end up unstyled.
+        if (family) {
+            // Hold the current font up until the face is actually usable, then
+            // swap once. Writing --app-font first would drop the whole UI to a
+            // system fallback for the length of the request, so every launch
+            // would flash twice.
+            loadWebFont(family, () => {
+                if (token !== fontApplyToken) return;
+                root.style.setProperty('--app-font', customFontStack(family));
+                root.style.setProperty('--chat-body-weight', String(DEFAULT_CHAT_BODY_WEIGHT));
+            });
+            return;
+        }
+    }
+
+    const opt = FONT_BY_ID[fontId ?? DEFAULT_FONT_ID] ?? FONT_BY_ID[DEFAULT_FONT_ID];
     root.style.setProperty('--app-font', opt.stack);
     root.style.setProperty('--chat-body-weight', String(opt.chatWeight ?? DEFAULT_CHAT_BODY_WEIGHT));
 };

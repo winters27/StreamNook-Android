@@ -17,6 +17,7 @@ import type { OverlayMessage } from './sampleMessages';
 import { ProviderIcon } from './ProviderIcon';
 import { AtmosphereChatWash } from './AtmosphereChatWash';
 import { convertMoneyInText, loadRates, ratesReady } from './currency';
+import { giftBombOriginOf, isGiftBombAnnouncement, isGiftBombChild } from '../../utils/giftBombCollapse';
 
 // The StreamNook identity badge on the overlay is just the member's equipped
 // cosmetic image (the app's rich hover card doesn't belong on a broadcast). The
@@ -86,6 +87,30 @@ const FallbackImg = ({ fallback = null, ...props }: FallbackImgProps) => {
 
 const badgeUrl = (b: OverlayMessage['badges'][number]): string | undefined =>
   b.image_url_4x || b.image_url_2x || b.image_url_1x;
+
+// YouTube role badges (mod / owner / verified) carry no image over the API —
+// only an iconType — so a YouTube row gets its authentic platform art here
+// instead of borrowing Twitch's. Glyphs + colors are YouTube's own, extracted
+// from its `live-chat-badges` icon set (moderator/owner use a 16 viewBox, verified
+// a 24 one). Member/supporter badges arrive as real custom images (image_url_1x),
+// so they aren't listed. Keys match the role names youtube.rs emits.
+const ytBadge = (viewBox: string, inner: string): string =>
+  `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">${inner}</svg>`)}`;
+const YT_ROLE_BADGES: Record<string, string> = {
+  moderator: ytBadge(
+    '0 0 24 24',
+    '<path fill="#3ea6ff" d="M3 4.998v9.857a6 6 0 003.365 5.39L12 23l5.635-2.755A6 6 0 0021 14.855V4.998a1 1 0 00-.656-.938L12 1 3.656 4.06A1 1 0 003 4.998Z"/>',
+  ),
+  // Owner has NO badge on YouTube — the name renders in a yellow pill instead
+  // (not yet implemented), so `broadcaster` is intentionally absent here.
+  verified: ytBadge(
+    '0 0 24 24',
+    '<path fill="#999999" d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z"/>',
+  ),
+};
+// YouTube renders badges AFTER the name, ordered verified, then moderator, then
+// the member/subscriber badge (matching YouTube's own chat).
+const YT_BADGE_ORDER: Record<string, number> = { verified: 0, moderator: 1, subscriber: 2 };
 
 // YouTube/TikTok author photos arrive as tiny thumbnails; bump the `=sNN` size
 // param so the avatar renders crisply. Leaves URLs without the param untouched.
@@ -342,23 +367,20 @@ const isBotMessage = (m: OverlayMessage): boolean => {
 // individual `subgift`s that share an origin id. Keep the announcement, drop the
 // individual gifts, so the overlay shows ONE row instead of N. Order-independent
 // (matches how the app's activity feed collapses them).
-const originIdOf = (m: OverlayMessage): string | undefined =>
-  m.tags?.['msg-param-origin-id'] || m.tags?.['msg-param-community-gift-id'];
-
 const collapseGiftBombs = (messages: OverlayMessage[]): OverlayMessage[] => {
   const bombs = new Set<string>();
   for (const m of messages) {
     const mt = m.metadata?.msg_type || m.tags?.['msg-id'];
-    if (mt === 'submysterygift' || mt === 'anonsubmysterygift') {
-      const o = originIdOf(m);
+    if (isGiftBombAnnouncement(mt)) {
+      const o = giftBombOriginOf(m.tags);
       if (o) bombs.add(o);
     }
   }
   if (bombs.size === 0) return messages;
   return messages.filter((m) => {
     const mt = m.metadata?.msg_type || m.tags?.['msg-id'];
-    if (mt === 'subgift' || mt === 'anonsubgift') {
-      const o = originIdOf(m);
+    if (isGiftBombChild(mt)) {
+      const o = giftBombOriginOf(m.tags);
       if (o && bombs.has(o)) return false;
     }
     return true;
@@ -413,7 +435,14 @@ const OverlayRow = ({ message, style, expiring }: { message: OverlayMessage; sty
   const badgeSourceHidden = (src?: string) => hiddenBadgeProviders.includes((src || '').toLowerCase());
   const nativeBadgesOn = style.showBadges;
   const thirdPartyOn = style.showThirdPartyBadges !== false;
-  const showNativeBadges = nativeBadgesOn && (message.badges?.length ?? 0) > 0;
+  // YouTube owners have no badge — their name renders in a gold pill instead — so
+  // the broadcaster "badge" (the owner signal from the service) is dropped from the
+  // rendered set and only used to detect the owner for the pill below.
+  const isYtOwner = provider === 'youtube' && (message.badges ?? []).some((b) => b.name === 'broadcaster');
+  const nativeBadges = (message.badges ?? [])
+    .filter((b) => !(provider === 'youtube' && b.name === 'broadcaster'))
+    .sort((a, b) => (provider === 'youtube' ? (YT_BADGE_ORDER[a.name] ?? 9) - (YT_BADGE_ORDER[b.name] ?? 9) : 0));
+  const showNativeBadges = nativeBadgesOn && nativeBadges.length > 0;
   const showSnBadge = thirdPartyOn && !badgeSourceHidden('streamnook') && message.streamNookUserNumber != null;
   const showSeventvBadge = thirdPartyOn && !!message.seventvBadgeUrl && !badgeSourceHidden('7tv');
   const visibleExtraBadges = thirdPartyOn ? (message.extraBadges ?? []).filter((b) => !badgeSourceHidden(b.source)) : [];
@@ -503,7 +532,7 @@ const OverlayRow = ({ message, style, expiring }: { message: OverlayMessage; sty
   // Reusable pieces so events (decorated style) render the sender exactly like a
   // normal chat row: their badges + paint-decorated name.
   const badgesNode = anyBadge ? (
-    <span className="inline-flex items-center" style={{ gap: '0.2em', marginRight: '0.4em', verticalAlign: '-0.18em' }}>
+    <span className="inline-flex items-center" style={{ gap: '0.2em', verticalAlign: '-0.18em', ...(provider === 'youtube' ? { marginLeft: '0.3em', marginRight: '0.15em' } : { marginRight: '0.4em' }) }}>
       {/* StreamNook identity badge leads the row, mirroring the real chat row. */}
       {showSnBadge && (
         <FallbackImg
@@ -514,8 +543,10 @@ const OverlayRow = ({ message, style, expiring }: { message: OverlayMessage; sty
           style={{ height: badgeSize, width: badgeSize, objectFit: 'contain' }}
         />
       )}
-      {showNativeBadges && (message.badges ?? []).map((b, i) => {
-        const url = badgeUrl(b);
+      {showNativeBadges && nativeBadges.map((b, i) => {
+        // YouTube rows resolve role badges (no API image) to their own platform
+        // art; everything else uses the badge's resolved image.
+        const url = badgeUrl(b) || (provider === 'youtube' ? YT_ROLE_BADGES[b.name] : undefined);
         if (!url) return null;
         return (
           <FallbackImg key={`tw-${b.name}-${i}`} src={url} alt={b.title || b.name} className="inline-block align-middle" style={{ height: badgeSize, width: badgeSize }} />
@@ -537,11 +568,21 @@ const OverlayRow = ({ message, style, expiring }: { message: OverlayMessage; sty
   // Paint (or flat color) on a plain inline-block span so background-clip:text
   // clips to the glyphs, not the box (a flex display makes it clip to the box).
   const rawName = message.display_name || message.username;
+  // YouTube owner: the whole name sits in a gold pill with dark text (no badge),
+  // matching YouTube. Values read from YouTube's own chat DOM; em-sized so they
+  // hold up under the overlay's supersampling. The pill is the owner's role
+  // indicator (in place of a badge), so it follows the Show-badges toggle.
+  const ownerPillStyle: CSSProperties = isYtOwner && nativeBadgesOn
+    ? { color: '#111111', backgroundColor: '#ffd600', padding: '0.13em 0.27em', borderRadius: '0.13em', textShadow: 'none' }
+    : {};
   const nameNode = (
-    <span style={{ ...nameTextStyle, fontWeight: 700, display: 'inline-block', verticalAlign: 'baseline', textShadow: paintOn ? 'none' : undefined }}>
+    <span style={{ ...nameTextStyle, fontWeight: 700, display: 'inline-block', verticalAlign: 'baseline', textShadow: paintOn ? 'none' : undefined, ...ownerPillStyle }}>
       {showAt ? rawName : stripAt(rawName)}
     </span>
   );
+  // YouTube shows the name first, then its badges; Twitch and the rest keep badges
+  // before the name.
+  const nameAndBadges = provider === 'youtube' ? (<>{nameNode}{badgesNode}</>) : (<>{badgesNode}{nameNode}</>);
 
   // Event rows (subs, resubs, gifts, raids, announcements): render an icon + the
   // system message like the main app, with the user's message below if present —
@@ -652,8 +693,7 @@ const OverlayRow = ({ message, style, expiring }: { message: OverlayMessage; sty
             {/* Both styles render the sender decorated (badges + paint name) + the
                 event action; StreamNook style adds the signature multi-color wash. */}
             <div className="min-w-0">
-              {badgesNode}
-              {nameNode}
+              {nameAndBadges}
               <span style={{ fontWeight: 400 }}> {shownAction}</span>
               {giftSegments.map((seg, i) => (
                 <OverlaySegment key={`gift-${i}`} segment={seg} emoteScale={Math.max(style.emoteScale, 1)} emojiStyle={style.emojiStyle} />
@@ -699,8 +739,7 @@ const OverlayRow = ({ message, style, expiring }: { message: OverlayMessage; sty
         </span>
       )}
       {avatarNode}
-      {badgesNode}
-      {nameNode}
+      {nameAndBadges}
       {/* /me actions drop the colon and render the body in the sender's color,
           italic — the Twitch convention. */}
       {message.metadata?.is_action ? ' ' : <><span style={{ color, fontWeight: 700 }}>:</span>{' '}</>}
@@ -887,13 +926,22 @@ export const OverlayChat = ({ messages, style: rawStyle, superSample = 1 }: { me
     if (typeof document === 'undefined') return;
     const fam = primaryFamily(style.fontFamily);
     if (!fam || GENERIC_FAMILIES.has(fam.toLowerCase())) return;
-    const id = 'sn-ov-font-' + fam.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    if (document.getElementById(id)) return;
-    const link = document.createElement('link');
-    link.id = id;
-    link.rel = 'stylesheet';
-    link.href = `https://fonts.bunny.net/css2?family=${encodeURIComponent(fam).replace(/%20/g, '+')}:wght@400;600;700&display=swap`;
-    document.head.appendChild(link);
+    // One reusable <link> whose href is swapped, debounced. The builder's font
+    // box fires on every keystroke, and the previous per-family id appended a
+    // fresh stylesheet (and a wasted request) for every prefix typed, none of
+    // which were ever removed.
+    const timer = setTimeout(() => {
+      const id = 'sn-ov-webfont';
+      let link = document.getElementById(id) as HTMLLinkElement | null;
+      if (!link) {
+        link = document.createElement('link');
+        link.id = id;
+        link.rel = 'stylesheet';
+        document.head.appendChild(link);
+      }
+      link.href = `https://fonts.bunny.net/css2?family=${encodeURIComponent(fam).replace(/%20/g, '+')}:wght@400;600;700&display=swap`;
+    }, 250);
+    return () => clearTimeout(timer);
   }, [style.fontFamily]);
   const containerRef = useRef<HTMLDivElement>(null);
   // How many of the newest messages to mount. Driven by measurement below, not a

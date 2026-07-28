@@ -62,7 +62,7 @@ const WizardThemeCard = ({ theme, selected, onSelect }: { theme: Theme; selected
     return (
         <button
             onClick={onSelect}
-            className={`relative p-3 rounded-lg border-2 text-left transition-all duration-200 ${selected ? 'border-accent ring-2 ring-accent/30' : 'border-borderSubtle hover:border-borderLight'}`}
+            className={`relative p-3 rounded-lg border text-left transition-all duration-200 ${selected ? 'border-accent ring-1 ring-accent/30' : 'border-borderSubtle hover:border-borderLight'}`}
             style={{ backgroundColor: palette.background }}
         >
             <div className="flex gap-1.5 mb-2">
@@ -424,7 +424,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                                 Components ready
                             </h1>
                             <p className="text-textSecondary text-base max-w-md">
-                                Streamlink and the ad blocker are in place. Moving on.
+                                The ad blocker is in place. Moving on.
                             </p>
                         </>
                     );
@@ -437,13 +437,9 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                             Setting things up
                         </h1>
                         <p className="text-textSecondary text-base max-w-md mb-8">
-                            Installing Streamlink and the ad blocker. This only takes a moment.
+                            Installing the ad blocker. This only takes a moment.
                         </p>
                         <div className="flex flex-col gap-2 w-full max-w-xs">
-                            <div className="flex items-center gap-3 glass-panel rounded-lg px-4 py-2.5">
-                                <Loader2 size={14} className="text-accent animate-spin flex-shrink-0" />
-                                <span className="text-sm text-textSecondary">Streamlink</span>
-                            </div>
                             <div className="flex items-center gap-3 glass-panel rounded-lg px-4 py-2.5">
                                 <Loader2 size={14} className="text-accent animate-spin flex-shrink-0" />
                                 <span className="text-sm text-textSecondary">TTV LOL ad blocker</span>
@@ -688,7 +684,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                                     <button
                                         key={opt.id}
                                         onClick={() => handleSelectSidebar(opt.id)}
-                                        className={`flex flex-col items-start gap-2 px-4 py-3.5 rounded-xl border-2 text-left transition-all duration-200 ${active ? 'border-accent bg-accent/10' : 'border-borderSubtle hover:border-borderLight'}`}
+                                        className={`flex flex-col items-start gap-2 px-4 py-3.5 rounded-xl border text-left transition-all duration-200 ${active ? 'border-accent bg-accent/10' : 'border-borderSubtle hover:border-borderLight'}`}
                                     >
                                         <div className="flex items-center gap-2 w-full">
                                             <Icon size={20} className={active ? 'text-accent' : 'text-textSecondary'} />
@@ -721,7 +717,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                                     <button
                                         key={opt.id}
                                         onClick={() => handleSelectNotif(opt.id)}
-                                        className={`flex items-center gap-4 px-4 py-3.5 rounded-xl border-2 text-left transition-all duration-200 ${active ? 'border-accent bg-accent/10' : 'border-borderSubtle hover:border-borderLight'}`}
+                                        className={`flex items-center gap-4 px-4 py-3.5 rounded-xl border text-left transition-all duration-200 ${active ? 'border-accent bg-accent/10' : 'border-borderSubtle hover:border-borderLight'}`}
                                     >
                                         <Icon size={22} className={active ? 'text-accent' : 'text-textSecondary'} />
                                         <div className="flex-1 min-w-0">
@@ -738,7 +734,6 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
 
             case 8: {
                 const rows: Array<{ ok: boolean; pending?: boolean; label: string }> = [
-                    { ok: !!status.componentsInstalled, label: 'Streamlink and ad blocker' },
                     { ok: status.dropsAuthenticated, label: 'Drops sign-in' },
                     { ok: status.mainAuthenticated, label: 'Twitch sign-in' },
                     {

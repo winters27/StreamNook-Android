@@ -1,4 +1,5 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { invoke } from '@tauri-apps/api/core';
 import Hls from 'hls.js';
 import Plyr from 'plyr';
@@ -91,7 +92,28 @@ const VideoPlayer = () => {
   const behindLiveWatchdogRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const progressUpdateIntervalRef = useRef<number | null>(null);
-  const { streamUrl, settings, activeQuality, adSource, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream, reloadStreamAndChat, restartStream, isRestartingStream, exitStream, toggleHome, isHomeActive, streamOriginCategory, setHomeActiveTab, setHomeSelectedCategory, isAuthenticated, currentMediaType, createClip, isCreatingClip, originalMediaUrl, openStreamerMedia } = useAppStore();
+  // Actions are stable for the store's lifetime, so take them without
+  // subscribing; state goes through a shallow-compared selector. This component
+  // is mounted for the whole session, and a bare `useAppStore()` re-rendered it
+  // on every unrelated store tick (toasts, mod logs, drops polling).
+  const { getAvailableQualities, changeStreamQuality, handleStreamOffline, reloadStreamAndChat, restartStream, exitStream, toggleHome, setHomeActiveTab, setHomeSelectedCategory, createClip, openStreamerMedia } = useAppStore.getState();
+  const { streamUrl, settings, activeQuality, adSource, isAutoSwitching, currentStream, isRestartingStream, isHomeActive, streamOriginCategory, isAuthenticated, currentMediaType, isCreatingClip, originalMediaUrl } = useAppStore(
+    useShallow((s) => ({
+      streamUrl: s.streamUrl,
+      settings: s.settings,
+      activeQuality: s.activeQuality,
+      adSource: s.adSource,
+      isAutoSwitching: s.isAutoSwitching,
+      currentStream: s.currentStream,
+      isRestartingStream: s.isRestartingStream,
+      isHomeActive: s.isHomeActive,
+      streamOriginCategory: s.streamOriginCategory,
+      isAuthenticated: s.isAuthenticated,
+      currentMediaType: s.currentMediaType,
+      isCreatingClip: s.isCreatingClip,
+      originalMediaUrl: s.originalMediaUrl,
+    })),
+  );
   // Clippable: a live broadcast, or any VOD that's loaded — including the latest
   // VOD auto-loaded into the offline-chat space (still currentMediaType
   // 'offline_chat', but a real VOD is playing, exposed via originalMediaUrl).
@@ -581,7 +603,13 @@ const VideoPlayer = () => {
     const video = videoRef.current;
     const container = containerRef.current;
     if (!video || !container || !isLiveRef.current) return;
-    
+
+    // Backgrounded window: keep the loop alive but skip the DOM work.
+    if (typeof document !== 'undefined' && document.hidden) {
+      progressUpdateIntervalRef.current = requestAnimationFrame(updateLiveTimeDisplay);
+      return;
+    }
+
     // Only apply live time display if current media is live
     const { currentMediaType } = useAppStore.getState();
     if (currentMediaType !== 'live') {
@@ -593,23 +621,33 @@ const VideoPlayer = () => {
     const currentTimeDisplay = container.querySelector('.plyr__time--current');
     if (currentTimeDisplay) {
       const buffered = video.buffered;
+      let nextText = 'LIVE';
+      let atLive = true;
       if (buffered.length > 0) {
         const bufferedEnd = buffered.end(buffered.length - 1);
         const timeFromLive = bufferedEnd - video.currentTime;
-
-        if (timeFromLive < 5) {
-          currentTimeDisplay.textContent = 'LIVE';
-          currentTimeDisplay.classList.add('plyr__time--live');
-        } else {
+        if (timeFromLive >= 5) {
           const behindSeconds = Math.floor(timeFromLive);
           const mins = Math.floor(behindSeconds / 60);
           const secs = behindSeconds % 60;
-          currentTimeDisplay.textContent = `-${mins}:${secs.toString().padStart(2, '0')}`;
-          currentTimeDisplay.classList.remove('plyr__time--live');
+          nextText = `-${mins}:${secs.toString().padStart(2, '0')}`;
+          atLive = false;
         }
-      } else {
-        currentTimeDisplay.textContent = 'LIVE';
-        currentTimeDisplay.classList.add('plyr__time--live');
+      }
+      // Compare against what is ACTUALLY in the DOM, never against a cached
+      // copy of our own last write. Plyr writes its own playback time into this
+      // same node on every timeupdate, so a cached comparison sees "unchanged",
+      // skips the write, and leaves Plyr's counter on screen (the live badge
+      // turns into a clock counting up from when you joined). Assigning
+      // textContent replaces the text node and invalidates layout even for an
+      // identical string, so the read is still worth it: in the steady state it
+      // drops us from a write every frame to a write only when Plyr has just
+      // clobbered us. Reading textContent does not force layout.
+      if (currentTimeDisplay.textContent !== nextText) {
+        currentTimeDisplay.textContent = nextText;
+      }
+      if (currentTimeDisplay.classList.contains('plyr__time--live') !== atLive) {
+        currentTimeDisplay.classList.toggle('plyr__time--live', atLive);
       }
     }
 
@@ -2175,7 +2213,7 @@ const VideoPlayer = () => {
             
             {/* Content card */}
             <div className="relative z-10 p-8 rounded-2xl glass-panel border border-white/10 shadow-2xl flex flex-col items-center max-w-md text-center bg-black/40">
-              <div className="w-24 h-24 mb-6 rounded-full bg-glass flex items-center justify-center border border-white/20 shadow-[0_0_50px_rgba(145,70,255,0.3)]">
+              <div className="w-24 h-24 mb-6 rounded-full bg-glass flex items-center justify-center border border-white/20 shadow-[0_0_16px_rgba(145,70,255,0.25)]">
                 <span className="text-5xl drop-shadow-lg">😴</span>
               </div>
               <h2 className="text-2xl font-bold text-white mb-3 drop-shadow-md tracking-wide">
@@ -2402,12 +2440,12 @@ const VideoPlayer = () => {
             ) : isFollowing ? (
               <HeartBreak
                 weight="fill"
-                className="w-4 h-4 text-red-400 drop-shadow-[0_0_5px_rgba(239,68,68,0.7)]"
+                className="w-4 h-4 text-red-400 drop-shadow-[0_0_5px_color-mix(in_srgb,var(--color-error)_70%,transparent)]"
               />
             ) : (
               <Heart
                 weight="fill"
-                className="w-4 h-4 text-emerald-400 drop-shadow-[0_0_5px_rgba(16,185,129,0.7)]"
+                className="w-4 h-4 text-emerald-400 drop-shadow-[0_0_5px_color-mix(in_srgb,var(--color-success)_70%,transparent)]"
               />
             )}
           </button>

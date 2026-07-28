@@ -18,6 +18,10 @@ export interface Emote {
   owner_name?: string;
   /** Emote width in pixels (for aspect ratio sorting) */
   width?: number;
+  /** FFZ modifier bitmask (Hidden=1, FlipX=2, ...); present only on FFZ modifiers */
+  modifierFlags?: number;
+  /** FFZ effect emote composable only by FFZ subscribers (rendering ungated) */
+  ffzSubOnly?: boolean;
 }
 
 export interface EmoteSet {
@@ -412,6 +416,8 @@ export async function fetchAllEmotes(channelName?: string, channelId?: string): 
         return {
           ...emote,
           isZeroWidth: zeroWidth,
+          modifierFlags: emote.modifier_flags ?? emote.modifierFlags,
+          ffzSubOnly: emote.ffz_sub_only ?? emote.ffzSubOnly,
           localUrl: localPath ? convertFileSrc(localPath) : undefined
         };
       });
@@ -473,7 +479,13 @@ export async function fetchKickChannelEmotes(slug: string): Promise<EmoteSet> {
       (emotes ?? []).map((emote) => {
         const localPath = cachedEmoteFiles.get(emoteCacheKey(emote.id, emote.provider));
         const zeroWidth = emote.is_zero_width !== undefined ? emote.is_zero_width : emote.isZeroWidth;
-        return { ...emote, isZeroWidth: zeroWidth, localUrl: localPath ? convertFileSrc(localPath) : undefined };
+        return {
+          ...emote,
+          isZeroWidth: zeroWidth,
+          modifierFlags: emote.modifier_flags ?? emote.modifierFlags,
+          ffzSubOnly: emote.ffz_sub_only ?? emote.ffzSubOnly,
+          localUrl: localPath ? convertFileSrc(localPath) : undefined,
+        };
       });
     return {
       twitch: enhance(emoteSet.twitch),
@@ -506,6 +518,8 @@ export async function getEmoteByName(channelId: string | null, emoteName: string
       return {
         ...emote,
         isZeroWidth: zeroWidth,
+        modifierFlags: anyEmote.modifier_flags ?? emote.modifierFlags,
+        ffzSubOnly: anyEmote.ffz_sub_only ?? emote.ffzSubOnly,
         localUrl: localPath ? convertFileSrc(localPath) : undefined
       };
     }

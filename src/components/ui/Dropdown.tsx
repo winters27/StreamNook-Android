@@ -114,7 +114,7 @@ export function Dropdown<T extends string | number>({
                 aria-expanded={open}
                 aria-label={ariaLabel}
                 onClick={() => !disabled && setOpen(o => !o)}
-                className={`flex items-center gap-2 rounded-lg bg-glass hover:bg-glass-hover border border-borderLight px-2.5 py-1.5 text-sm font-medium text-textPrimary transition-colors focus:outline-none focus:border-accent/60 disabled:opacity-50 disabled:cursor-not-allowed ${className}`}
+                className={`flex items-center gap-2 rounded-lg bg-glass hover:bg-glass-hover border border-transparent shadow-[inset_1px_1px_0_0_rgba(255,255,255,0.08),inset_-1px_-1px_0_0_rgba(0,0,0,0.14)] px-2.5 py-1.5 text-sm font-medium text-textPrimary transition-colors focus:outline-none focus:border-accent/60 disabled:opacity-50 disabled:cursor-not-allowed ${className}`}
             >
                 {leadingIcon && (
                     <span className="shrink-0 flex items-center text-accent">{leadingIcon}</span>

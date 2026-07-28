@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import PenroseCanvas from './PenroseCanvas';
+import PenroseMarch from './PenroseMarch';
 import { Tooltip } from './ui/Tooltip';
 
 // Emote URLs for Twitch emotes (using static.twitchemotes.com)
@@ -269,8 +269,8 @@ const LoadingWidget = ({ message, useFunnyMessages = false, showProxyNote = fals
       )}
 
       <div className="flex flex-col items-center gap-6">
-        {/* Use the canvas-based Penrose triangle animation */}
-        <PenroseCanvas />
+        {/* The StreamNook mark, sharing its geometry with the badges */}
+        <PenroseMarch />
 
         <p className="text-textSecondary text-sm font-medium flex items-center">
           {useFunnyMessages ? renderMessage(displayMessage) : displayMessage}

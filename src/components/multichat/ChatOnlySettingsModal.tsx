@@ -18,11 +18,9 @@ import { searchSettings, type SettingsIndexEntry } from '../settings/searchIndex
 
 type SettingsTab = 'chat' | 'theme' | 'connections' | 'panes';
 
-// Inset bevels lifted from the core SettingsDialog so the icon tiles read the same.
-const TILE_BEVEL =
-  'inset 1px 1px 0 0 rgba(255,255,255,0.10), inset -1px -1px 0 0 rgba(0,0,0,0.18)';
-const HERO_BEVEL =
-  'inset 1px 1px 0 0 rgba(255,255,255,0.14), inset -1px -1px 0 0 rgba(0,0,0,0.22), 0 4px 10px rgba(0,0,0,0.18)';
+// Canonical bevel recipes live in globals.css as --bevel-tile / --bevel-hero.
+const TILE_BEVEL = 'var(--bevel-tile)';
+const HERO_BEVEL = 'var(--bevel-hero)';
 
 interface TabMeta {
   id: SettingsTab;

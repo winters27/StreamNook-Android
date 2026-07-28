@@ -4,6 +4,7 @@ import { Minus, X, CornersOut, CornersIn, ArrowsOut, ArrowsIn, Medal } from 'pho
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../stores/AppStore';
 import PenroseLogo from './PenroseLogo';
 import AboutWidget from './AboutWidget';
@@ -41,9 +42,25 @@ const getUpdateStageProgress = (stage: string | null): number => {
 };
 
 const TitleBar = () => {
-  const store = useAppStore();
-
-  const { openSettings, setShowDropsOverlay, setShowMarketplaceOverlay, setShowBadgesOverlay, setShowWhispersOverlay, isAuthenticated, currentUser, dropProgressActive, dropProgressComplete, isTheaterMode, toggleTheaterMode, isWindowFullscreen, toggleWindowFullscreen, streamUrl, settings, whisperImportState, updateInfo, addToast } = store;
+  // Actions are stable for the store's lifetime, so take them without
+  // subscribing; state goes through a shallow-compared selector. This was a
+  // whole-store subscription, so the title bar re-rendered on every unrelated
+  // store tick.
+  const { openSettings, setShowDropsOverlay, setShowMarketplaceOverlay, setShowBadgesOverlay, setShowWhispersOverlay, toggleTheaterMode, toggleWindowFullscreen, addToast } = useAppStore.getState();
+  const { isAuthenticated, currentUser, dropProgressActive, dropProgressComplete, isTheaterMode, isWindowFullscreen, streamUrl, settings, whisperImportState, updateInfo } = useAppStore(
+    useShallow((s) => ({
+      isAuthenticated: s.isAuthenticated,
+      currentUser: s.currentUser,
+      dropProgressActive: s.dropProgressActive,
+      dropProgressComplete: s.dropProgressComplete,
+      isTheaterMode: s.isTheaterMode,
+      isWindowFullscreen: s.isWindowFullscreen,
+      streamUrl: s.streamUrl,
+      settings: s.settings,
+      whisperImportState: s.whisperImportState,
+      updateInfo: s.updateInfo,
+    })),
+  );
   // Count of installed plugins with an update available, for the Marketplace badge.
   const pluginUpdateCount = usePluginUpdates((s) => s.ids.length);
   // Update flow: 'idle' → 'installing' (download/extract) → 'installed' (staged;

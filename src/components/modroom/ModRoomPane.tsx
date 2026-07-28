@@ -1,19 +1,26 @@
-import { useEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore } from 'react';
-import type { ReactNode, MouseEvent, CSSProperties, ChangeEvent } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo, Fragment, useSyncExternalStore } from 'react';
+import type { ReactNode, MouseEvent, CSSProperties, ChangeEvent, ClipboardEvent, KeyboardEvent } from 'react';
 import { ShieldCheck, Paperclip, X, CornerUpLeft, Pencil } from 'lucide-react';
 import { EmotePickerPanel, useSwappingSmiley } from '../chat/EmotePickerPanel';
 import { open as openExternal } from '@tauri-apps/plugin-shell';
+import { connectModRoomConsent, type ModRoomChat, type ModRoomMember } from '../../services/modRoomService';
+import { isEncrypted, encryptText, encryptBytes, decryptBytes } from '../../services/modRoomCrypto';
 import {
-  connectModRoom,
-  connectModRoomConsent,
-  type ModRoomController,
-  type ModRoomChat,
-  type ModRoomMember,
-  type ModRoomState,
-  type ModRoomDenial,
-} from '../../services/modRoomService';
-import { isEncrypted, importRoomKey, encryptText, decryptText, encryptBytes, decryptBytes } from '../../services/modRoomCrypto';
+  ensureRoom,
+  releaseRoom,
+  retryRoom,
+  setViewing,
+  sendOptimistic,
+  sendEdit,
+  sendTyping,
+  uploadAttachment,
+  retryPending,
+  discardPending,
+  mentionsMe,
+} from '../../services/modRoomManager';
+import { useModRoomStore, type ResolvedPayload } from '../../stores/modRoomStore';
 import { StreamNookBadge } from '../StreamNookBadge';
+import { Tooltip } from '../ui/Tooltip';
 import { AtmosphereBackground } from '../AtmosphereBackground';
 import { MajorCologneChrome } from '../MajorCologneChrome';
 import { MAJOR_COLOGNE_THEME_ID } from '../../services/cologneEvent';
@@ -37,12 +44,18 @@ interface ModRoomPaneProps {
   channelLogin?: string;
   emotes?: EmoteSet | null;
   /** Reports room state up so the host (chat header) can display it. */
-  onStatus?: (s: { memberCount: number; encrypted: boolean; connected: boolean }) => void;
+  onStatus?: (s: { memberCount: number; encrypted: boolean; connected: boolean; members: ModRoomMember[] }) => void;
   onUsernameClick?: (login: string, userId: string, event: MouseEvent) => void;
 }
 
 const TYPING_TTL_MS = 3000;
 const TYPING_PING_MS = 1500;
+// Plaintext bound. The server caps the CIPHERTEXT at 16000 chars and rejects
+// (never truncates) oversize bodies; these caps keep the worst-case encrypted
+// payload comfortably under that.
+const MAX_DRAFT = 4000;
+const MAX_EMOTE_REFS = 40;
+const MAX_TOKEN_CHARS = 15000;
 
 interface ReplyRef {
   id: string;
@@ -59,13 +72,11 @@ interface EmoteRef {
   u: string; // url
 }
 
-// Decrypted (or plaintext) message payload.
-interface Resolved {
-  text: string;
-  attachment?: string;
-  reply?: ReplyRef;
-  emotes?: EmoteRef[];
-}
+type LockState = false | 'pending' | 'failed';
+
+// Stable fallbacks so hooks keyed on these don't churn while a session boots.
+const EMPTY_MESSAGES: ModRoomChat[] = [];
+const EMPTY_MEMBERS: ModRoomMember[] = [];
 
 function roleColorClass(role: string): string {
   if (role === 'broadcaster') return 'text-[#f0c674]';
@@ -88,7 +99,8 @@ function ensureUser(userId: string, login: string) {
 type BodySeg =
   | { kind: 'text'; text: string }
   | { kind: 'emote'; name: string; url: string }
-  | { kind: 'emoji'; alt: string; url: string };
+  | { kind: 'emoji'; alt: string; url: string }
+  | { kind: 'link'; url: string };
 
 function findEmote(word: string, emotes?: EmoteSet | null): Emote | undefined {
   if (!emotes) return undefined;
@@ -102,7 +114,7 @@ function findEmote(word: string, emotes?: EmoteSet | null): Emote | undefined {
 
 // Collect the emotes a message used, resolved once at send time against the
 // sender's full emote set, so they travel WITH the message (persistent +
-// consistent for every viewer).
+// consistent for every viewer). Capped so the encrypted payload stays bounded.
 function collectEmoteRefs(text: string, emotes?: EmoteSet | null): EmoteRef[] {
   if (!emotes) return [];
   const out: EmoteRef[] = [];
@@ -113,6 +125,7 @@ function collectEmoteRefs(text: string, emotes?: EmoteSet | null): EmoteRef[] {
     if (e) {
       seen.add(word);
       out.push({ n: e.name, id: e.id, p: e.provider, u: e.url });
+      if (out.length >= MAX_EMOTE_REFS) break;
     }
   }
   return out;
@@ -138,6 +151,10 @@ function tokenizeBody(body: string, emotes?: EmoteSet | null, embedded?: Map<str
       segs.push({ kind: 'emote', name: emote.name, url: emote.url });
       continue;
     }
+    if (/^https?:\/\/\S+$/i.test(part)) {
+      segs.push({ kind: 'link', url: part });
+      continue;
+    }
     for (const es of parseEmojisSync(part)) {
       if (es.type === 'emoji' && es.emojiUrl) segs.push({ kind: 'emoji', alt: es.content, url: es.emojiUrl });
       else segs.push({ kind: 'text', text: es.content });
@@ -149,15 +166,15 @@ function tokenizeBody(body: string, emotes?: EmoteSet | null, embedded?: Map<str
 function renderSeg(seg: BodySeg, i: number): ReactNode {
   if (seg.kind === 'emote') {
     return (
-      <img
-        key={i}
-        src={seg.url}
-        alt={seg.name}
-        title={seg.name}
-        loading="lazy"
-        className="mx-px inline-block align-middle"
-        style={{ height: '1.8em', maxWidth: '9em', objectFit: 'contain' }}
-      />
+      <Tooltip key={i} content={seg.name}>
+        <img
+          src={seg.url}
+          alt={seg.name}
+          loading="lazy"
+          className="mx-px inline-block align-middle"
+          style={{ height: '1.8em', maxWidth: '9em', objectFit: 'contain' }}
+        />
+      </Tooltip>
     );
   }
   if (seg.kind === 'emoji') {
@@ -172,8 +189,36 @@ function renderSeg(seg: BodySeg, i: number): ReactNode {
       />
     );
   }
+  if (seg.kind === 'link') {
+    return (
+      <button
+        key={i}
+        onClick={() => void openExternal(seg.url)}
+        className="break-all align-middle text-accent underline decoration-accent/40 underline-offset-2 transition-colors hover:decoration-accent"
+      >
+        {seg.url}
+      </button>
+    );
+  }
   return <span key={i}>{seg.text}</span>;
 }
+
+function dayLabel(ts: number): string {
+  const d = new Date(ts);
+  const today = new Date();
+  if (d.toDateString() === today.toDateString()) return 'Today';
+  const yesterday = new Date(today.getTime() - 86_400_000);
+  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+const HairlineDivider = ({ label, accent }: { label: string; accent?: boolean }) => (
+  <div className="my-2 flex items-center justify-center gap-2 px-6">
+    <span className={`h-px w-10 ${accent ? 'bg-accent/40' : 'bg-white/10'}`} />
+    <span className={`text-[10px] font-medium ${accent ? 'text-accent' : 'text-textSecondary'}`}>{label}</span>
+    <span className={`h-px w-10 ${accent ? 'bg-accent/40' : 'bg-white/10'}`} />
+  </div>
+);
 
 // ----- one message row, decorated like live chat ----------------------------
 
@@ -188,23 +233,33 @@ const ModRoomMessageRow = ({
   emotes,
   fontSize,
   roomKey,
+  pending,
+  sendFailed,
+  mentioned,
   onUsernameClick,
   onReply,
   onEdit,
+  onRetry,
+  onDiscard,
 }: {
   m: ModRoomChat;
   body: string;
   attachment?: string;
   reply?: ReplyRef;
   emoteRefs?: EmoteRef[];
-  locked: boolean;
+  locked: LockState;
   canEdit: boolean;
   emotes?: EmoteSet | null;
   fontSize: number;
   roomKey: CryptoKey | null;
+  pending?: boolean;
+  sendFailed?: boolean;
+  mentioned?: boolean;
   onUsernameClick?: (login: string, userId: string, event: MouseEvent) => void;
   onReply: () => void;
   onEdit: () => void;
+  onRetry?: () => void;
+  onDiscard?: () => void;
 }) => {
   useSyncExternalStore(subscribeCosmeticsVersion, getCosmeticsVersion);
   // The StreamNook registry (badge / member status) and theme catalog load async;
@@ -242,7 +297,10 @@ const ModRoomMessageRow = ({
   // paints behind this row's content but ABOVE the chat panel background. Without
   // it the wash sinks behind the opaque panel and never shows.
   return (
-    <div className="group relative isolate px-1 py-0.5 leading-snug hover:bg-glass" style={rowStyle}>
+    <div
+      className={`group relative isolate px-1 py-0.5 leading-snug hover:bg-glass ${mentioned ? 'bg-accent/10' : ''}`}
+      style={rowStyle}
+    >
       {cologne && cologneAtm ? (
         <MajorCologneChrome
           textureUrl={cologneAtm.chromeTexture ?? ''}
@@ -254,7 +312,7 @@ const ModRoomMessageRow = ({
       ) : atmosphere ? (
         <AtmosphereBackground atm={atmosphere} variant="chat" />
       ) : null}
-      <div className="relative z-10">
+      <div className={`relative z-10 ${pending && !sendFailed ? 'opacity-60' : ''}`}>
         {reply && (
           <div className="mb-0.5 flex items-center gap-1 pl-1 text-[11px] text-textSecondary">
             <CornerUpLeft size={11} className="shrink-0" />
@@ -283,13 +341,26 @@ const ModRoomMessageRow = ({
             </span>
           )}
           {locked ? (
-            <span className="align-middle italic text-textSecondary">decrypting...</span>
+            <span className="align-middle italic text-textSecondary">
+              {locked === 'failed' ? 'Unable to decrypt' : 'decrypting...'}
+            </span>
           ) : (
             <span className="align-middle text-textPrimary break-words">
               {segments.map(renderSeg)}
               {m.editedAt ? (
                 <span className="ml-1 align-middle text-[10px] text-textSecondary">(edited)</span>
               ) : null}
+              {sendFailed && (
+                <span className="ml-1.5 inline-flex items-center gap-1.5 align-middle text-[10px]">
+                  <span className="font-semibold text-red-400">Failed</span>
+                  <button onClick={onRetry} className="text-textSecondary underline underline-offset-2 transition-colors hover:text-textPrimary">
+                    Retry
+                  </button>
+                  <button onClick={onDiscard} className="text-textSecondary underline underline-offset-2 transition-colors hover:text-textPrimary">
+                    Discard
+                  </button>
+                </span>
+              )}
             </span>
           )}
         </span>
@@ -299,7 +370,7 @@ const ModRoomMessageRow = ({
           </div>
         )}
       </div>
-      {!locked && (
+      {!locked && !pending && (
         <div
           className="absolute right-1 top-0 z-20 hidden items-center gap-0.5 rounded-md group-hover:flex"
           style={{ background: 'rgba(20,20,22,0.92)', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.06)' }}
@@ -329,22 +400,18 @@ const ModRoomMessageRow = ({
 // ----- the pane -------------------------------------------------------------
 
 const ModRoomPane = ({ channelId, channelLogin, emotes, onStatus, onUsernameClick }: ModRoomPaneProps) => {
-  const [state, setState] = useState<ModRoomState>('connecting');
-  const [denial, setDenial] = useState<ModRoomDenial | null>(null);
-  const [messages, setMessages] = useState<ModRoomChat[]>([]);
-  const [members, setMembers] = useState<ModRoomMember[]>([]);
-  const [typing, setTyping] = useState<Record<string, { login: string; at: number }>>({});
-  const [draft, setDraft] = useState('');
+  const session = useModRoomStore((s) => s.sessions[channelId]);
+  const draft = useModRoomStore((s) => s.drafts[channelId] ?? '');
+  const storeSetDraft = useModRoomStore((s) => s.setDraft);
+
   const [connecting, setConnecting] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [hasLoaded, setHasLoaded] = useState(false);
   const [showEmotes, setShowEmotes] = useState(false);
-
-  const [key, setKey] = useState<CryptoKey | null>(null);
-  const [decrypted, setDecrypted] = useState<Record<string, Resolved | null>>({});
-  const [myUserId, setMyUserId] = useState('');
   const [replyingTo, setReplyingTo] = useState<ReplyRef | null>(null);
   const [editing, setEditing] = useState<{ id: string; attachment?: string; reply?: ReplyRef } | null>(null);
+  const [showJump, setShowJump] = useState(false);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [, setTypingTick] = useState(0);
 
   const fontSize = useAppStore((s) => s.settings.chat_design?.font_size) ?? 14;
   const snRegVersion = useSyncExternalStore(
@@ -353,149 +420,82 @@ const ModRoomPane = ({ channelId, channelLogin, emotes, onStatus, onUsernameClic
     getStreamNookRegistryVersion,
   );
 
-  const ctrlRef = useRef<ModRoomController | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const lastTypingSent = useRef(0);
-  const lastKeyB64 = useRef('');
-  const [attempt, setAttempt] = useState(0);
+  const nearBottomRef = useRef(true);
 
   const smiley = useSwappingSmiley();
 
-  const insertEmote = (name: string) => {
-    setDraft((prev) => prev + (prev && !prev.endsWith(' ') ? ' ' : '') + name + ' ');
-    textareaRef.current?.focus();
-  };
+  const state = session?.state ?? 'connecting';
+  const denial = session?.denial ?? null;
+  const messages = session?.messages ?? EMPTY_MESSAGES;
+  const members = session?.members ?? EMPTY_MEMBERS;
+  const key = session?.key ?? null;
+  const myUserId = session?.myUserId ?? '';
+  const myLogin = session?.myLogin ?? '';
+  const hasLoaded = session?.hasLoaded ?? false;
+  const decrypted = session?.decrypted ?? {};
+  const pending = session?.pending ?? {};
+  const dividerTs = session?.dividerTs ?? 0;
 
-  // Decrypt any encrypted bodies not yet resolved. Each payload is JSON
-  // { x: text, a?: attachmentUrl } so the attachment URL is encrypted too.
-  useEffect(() => {
-    if (!key) return;
-    const todo = messages.filter((m) => isEncrypted(m.body) && decrypted[m.id] === undefined);
-    if (todo.length === 0) return;
-    let cancelled = false;
-    (async () => {
-      const updates: Record<string, Resolved | null> = {};
-      for (const m of todo) {
-        const pt = await decryptText(key, m.body);
-        if (pt === null) {
-          updates[m.id] = null;
-          continue;
-        }
-        try {
-          const obj = JSON.parse(pt) as { x?: string; a?: string; r?: ReplyRef; e?: EmoteRef[] };
-          updates[m.id] = { text: obj.x ?? '', attachment: obj.a, reply: obj.r, emotes: obj.e };
-        } catch {
-          updates[m.id] = { text: pt };
-        }
-      }
-      if (!cancelled) setDecrypted((prev) => ({ ...prev, ...updates }));
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [messages, key, decrypted]);
+  const setDraft = useCallback(
+    (value: string) => storeSetDraft(channelId, value),
+    [channelId, storeSetDraft],
+  );
 
-  // If the key changes (e.g. a re-mint delivers a corrected key), give messages
-  // that failed to decrypt under the old key another pass instead of leaving them
-  // locked forever. Dropping the null entries re-arms the decrypt pass above.
-  useEffect(() => {
-    if (!key) return;
-    setDecrypted((prev) => {
-      let changed = false;
-      const next: Record<string, Resolved | null> = {};
-      for (const [id, v] of Object.entries(prev)) {
-        if (v === null) {
-          changed = true;
-          continue;
-        }
-        next[id] = v;
-      }
-      return changed ? next : prev;
-    });
-  }, [key]);
-
+  // The room connection outlives this pane (the manager holds it for unread
+  // tracking); mounting just adds a reference and flags the room as viewed.
   useEffect(() => {
     if (!channelId) return;
-    setDenial(null);
-    setMessages([]);
-    setMembers([]);
-    setTyping({});
-    setKey(null);
-    setDecrypted({});
-    setHasLoaded(false);
-    lastKeyB64.current = '';
-
-    const ctrl = connectModRoom(channelId, {
-      onState: setState,
-      onIdentity: setMyUserId,
-      onEdit: (id, body, editedAt) => {
-        setMessages((prev) => prev.map((mm) => (mm.id === id ? { ...mm, body, editedAt } : mm)));
-        setDecrypted((prev) => {
-          const next = { ...prev };
-          delete next[id];
-          return next;
-        });
-      },
-      onKey: (b64) => {
-        if (b64 === lastKeyB64.current) return;
-        lastKeyB64.current = b64;
-        importRoomKey(b64)
-          .then(setKey)
-          .catch(() => setKey(null));
-      },
-      onHistory: (msgs) => {
-        msgs.forEach((mm) => ensureUser(mm.userId, mm.login));
-        setMessages(msgs);
-        setHasLoaded(true);
-      },
-      onChat: (mm) => {
-        ensureUser(mm.userId, mm.login);
-        setMessages((prev) => [...prev, mm]);
-      },
-      onPresence: (mem) => {
-        mem.forEach((mm) => ensureUser(mm.userId, mm.login));
-        setMembers(mem);
-      },
-      onTyping: (mm) =>
-        setTyping((prev) => ({ ...prev, [mm.userId]: { login: mm.login, at: Date.now() } })),
-      onDenied: (reason) => setDenial(reason),
-    });
-    ctrlRef.current = ctrl;
-
+    ensureRoom(channelId);
+    setViewing(channelId, true);
+    nearBottomRef.current = true;
+    setReplyingTo(null);
+    setEditing(null);
+    setShowJump(false);
     return () => {
-      ctrl.close();
-      ctrlRef.current = null;
+      setViewing(channelId, false);
+      releaseRoom(channelId);
     };
-  }, [channelId, attempt]);
+  }, [channelId]);
 
+  // Expire stale typing entries (they only clear on a re-render tick).
+  const typingUsers = session?.typingUsers ?? {};
+  const typingActive = Object.keys(typingUsers).length > 0;
   useEffect(() => {
-    if (Object.keys(typing).length === 0) return;
-    const t = setInterval(() => {
-      const now = Date.now();
-      setTyping((prev) => {
-        let changed = false;
-        const next: typeof prev = {};
-        for (const [id, v] of Object.entries(prev)) {
-          if (now - v.at < TYPING_TTL_MS) next[id] = v;
-          else changed = true;
-        }
-        return changed ? next : prev;
-      });
-    }, 1000);
+    if (!typingActive) return;
+    const t = setInterval(() => setTypingTick((v) => v + 1), 1000);
     return () => clearInterval(t);
-  }, [typing]);
+  }, [typingActive]);
 
+  const handleListScroll = useCallback(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    nearBottomRef.current = near;
+    if (near) setShowJump(false);
+  }, []);
+
+  // Autoscroll only when already at the bottom (or the newest message is own);
+  // otherwise offer a jump affordance instead of yanking the reader down.
   useEffect(() => {
     const el = listRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messages]);
+    if (!el || messages.length === 0) return;
+    const last = messages[messages.length - 1];
+    const own = !!myUserId && last.userId === myUserId;
+    if (nearBottomRef.current || own) {
+      el.scrollTop = el.scrollHeight;
+    } else {
+      setShowJump(true);
+    }
+  }, [messages, myUserId]);
 
   // Surface room state to the host so the chat header can show it (no sub-header).
   useEffect(() => {
-    onStatus?.({ memberCount: members.length, encrypted: !!key, connected: state === 'connected' });
-  }, [members.length, key, state, onStatus]);
+    onStatus?.({ memberCount: members.length, encrypted: !!key, connected: state === 'connected', members });
+  }, [members, key, state, onStatus]);
 
   // Once the StreamNook registry/theme catalog loads, re-resolve decorations for
   // everyone in view (their atmosphere/cologne/badge may have no-op'd before it
@@ -506,23 +506,52 @@ const ModRoomPane = ({ channelId, channelLogin, emotes, onStatus, onUsernameClic
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [snRegVersion]);
 
-  // Encrypt + send a message (text and/or an attachment URL), folding both into
-  // one encrypted payload so nothing readable hits the server.
-  const sendNew = useCallback(
-    async (text: string, attachment?: string, reply?: ReplyRef | null) => {
-      if (!text && !attachment) return;
-      // Never emit plaintext from a mod room. If the key isn't ready yet, drop the
-      // send rather than leaking the message to the server in the clear (the
-      // composer is disabled in this state, so this is just defense in depth).
-      if (!key) return;
+  // Encrypt a message payload, dropping the embedded emote refs if the result
+  // would exceed the server's body cap (viewers then fall back to their own
+  // emote sets). Returns null only if even the ref-less payload is too big.
+  const encryptPayload = useCallback(
+    async (text: string, attachment?: string, reply?: ReplyRef, nonce?: string): Promise<string | null> => {
+      if (!key) return null;
       const refs = collectEmoteRefs(text, emotes);
-      const token = await encryptText(
-        key,
-        JSON.stringify({ x: text, a: attachment, r: reply ?? undefined, e: refs.length ? refs : undefined }),
-      );
-      ctrlRef.current?.send(token);
+      const build = (withRefs: boolean) =>
+        JSON.stringify({
+          x: text,
+          a: attachment,
+          r: reply,
+          e: withRefs && refs.length ? refs : undefined,
+          n: nonce,
+        });
+      let token = await encryptText(key, build(true));
+      if (token.length > MAX_TOKEN_CHARS) token = await encryptText(key, build(false));
+      return token.length > MAX_TOKEN_CHARS ? null : token;
     },
     [key, emotes],
+  );
+
+  // Encrypt + send a new message optimistically: it renders immediately and
+  // solidifies when the server echo (matched by the encrypted nonce) arrives.
+  const sendNew = useCallback(
+    async (text: string, attachment?: string, reply?: ReplyRef | null): Promise<boolean> => {
+      if (!text && !attachment) return false;
+      // Never emit plaintext from a mod room. The composer is disabled while
+      // the key is missing, so this is just defense in depth.
+      if (!key) return false;
+      const clipped = text.slice(0, MAX_DRAFT); // insertEmote bypasses the textarea maxLength
+      const nonce = crypto.randomUUID();
+      const token = await encryptPayload(clipped, attachment, reply ?? undefined, nonce);
+      if (!token) return false;
+      const refs = collectEmoteRefs(clipped, emotes);
+      const resolved: ResolvedPayload = {
+        text: clipped,
+        attachment,
+        reply: reply ?? undefined,
+        emotes: refs.length ? refs : undefined,
+        n: nonce,
+      };
+      sendOptimistic(channelId, token, resolved);
+      return true;
+    },
+    [key, emotes, channelId, encryptPayload],
   );
 
   const handleSend = useCallback(async () => {
@@ -533,12 +562,9 @@ const ModRoomPane = ({ channelId, channelLogin, emotes, onStatus, onUsernameClic
       // no key yet, keep the composer as-is rather than dropping the edit silently.
       if (text && !key) return;
       if (key && text) {
-        const refs = collectEmoteRefs(text, emotes);
-        const token = await encryptText(
-          key,
-          JSON.stringify({ x: text, a: editing.attachment, r: editing.reply, e: refs.length ? refs : undefined }),
-        );
-        ctrlRef.current?.edit(editing.id, token);
+        const token = await encryptPayload(text.slice(0, MAX_DRAFT), editing.attachment, editing.reply);
+        if (!token) return; // keep the editing state; the caps make this unreachable
+        sendEdit(channelId, editing.id, token);
       }
       setEditing(null);
       setDraft('');
@@ -546,34 +572,35 @@ const ModRoomPane = ({ channelId, channelLogin, emotes, onStatus, onUsernameClic
     }
     if (!text) return;
     if (!key) return; // wait until we can encrypt; the composer is disabled too
-    await sendNew(text, undefined, replyingTo);
+    const ok = await sendNew(text, undefined, replyingTo);
+    if (!ok) return;
     setReplyingTo(null);
     setDraft('');
-  }, [draft, editing, key, emotes, replyingTo, sendNew]);
+  }, [draft, editing, key, replyingTo, sendNew, encryptPayload, channelId, setDraft]);
 
   const handleDraftChange = (value: string) => {
     setDraft(value);
+    setMentionIndex(0);
     const now = Date.now();
     if (now - lastTypingSent.current > TYPING_PING_MS) {
       lastTypingSent.current = now;
-      ctrlRef.current?.sendTyping();
+      sendTyping(channelId);
     }
   };
 
-  const handleFilePick = async (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file || !ctrlRef.current) return;
+  const sendImageFile = async (file: File) => {
     // Don't upload/send attachments before encryption is ready: the bytes would
     // be stored in the clear. The attach button is disabled in this state too.
-    if (!key) return;
+    if (!file || !key) return;
     setUploading(true);
     try {
       const body = await encryptBytes(key, new Uint8Array(await file.arrayBuffer()));
-      const url = await ctrlRef.current.upload(body, 'application/x-sn-enc');
-      await sendNew(draft.trim(), url, replyingTo);
-      setReplyingTo(null);
-      setDraft('');
+      const url = await uploadAttachment(channelId, body, 'application/x-sn-enc');
+      const ok = await sendNew(draft.trim(), url, replyingTo);
+      if (ok) {
+        setReplyingTo(null);
+        setDraft('');
+      }
     } catch {
       // upload failed; leave the draft so the user can retry
     } finally {
@@ -581,12 +608,25 @@ const ModRoomPane = ({ channelId, channelLogin, emotes, onStatus, onUsernameClic
     }
   };
 
+  const handleFilePick = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (file) await sendImageFile(file);
+  };
+
+  const handlePaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const file = Array.from(e.clipboardData?.files ?? []).find((f) => f.type.startsWith('image/'));
+    if (file) {
+      e.preventDefault();
+      void sendImageFile(file);
+    }
+  };
+
   const handleConnectConsent = async () => {
     setConnecting(true);
     try {
       await connectModRoomConsent();
-      setDenial(null);
-      setAttempt((a) => a + 1);
+      retryRoom(channelId);
     } catch {
       // cancelled / failed; leave the CTA
     } finally {
@@ -612,6 +652,85 @@ const ModRoomPane = ({ channelId, channelLogin, emotes, onStatus, onUsernameClic
     setReplyingTo(null);
     setDraft('');
   };
+
+  const resolve = (
+    m: ModRoomChat,
+  ): { text: string; attachment?: string; reply?: ReplyRef; emotes?: EmoteRef[]; locked: LockState } => {
+    if (!isEncrypted(m.body)) return { text: m.body, attachment: m.attachment, locked: false };
+    const d = decrypted[m.id];
+    if (key && d === null) return { text: '', locked: 'failed' };
+    if (!key || d === undefined || d === null) return { text: '', locked: 'pending' };
+    return { text: d.text, attachment: d.attachment, reply: d.reply, emotes: d.emotes, locked: false };
+  };
+
+  // ----- @mention autocomplete ------------------------------------------------
+
+  const mentionMatch = /(^|\s)@(\w*)$/.exec(draft);
+  const mentionCandidates = useMemo(() => {
+    if (!mentionMatch) return [];
+    const prefix = mentionMatch[2].toLowerCase();
+    return members
+      .filter((m) => m.login && m.login.toLowerCase().startsWith(prefix))
+      .slice(0, 6);
+  }, [mentionMatch, members]);
+  const mentionOpen = mentionCandidates.length > 0;
+
+  const insertMention = (login: string) => {
+    if (!mentionMatch) return;
+    const start = draft.slice(0, mentionMatch.index) + mentionMatch[1];
+    setDraft(`${start}@${login} `);
+    setMentionIndex(0);
+    textareaRef.current?.focus();
+  };
+
+  const handleComposerKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (mentionOpen) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setMentionIndex((i) => (i + 1) % mentionCandidates.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMentionIndex((i) => (i - 1 + mentionCandidates.length) % mentionCandidates.length);
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        insertMention(mentionCandidates[Math.min(mentionIndex, mentionCandidates.length - 1)].login);
+        return;
+      }
+      if (e.key === 'Escape') {
+        // Break the @word so the popover closes without touching reply/edit state.
+        e.preventDefault();
+        setDraft(draft + ' ');
+        return;
+      }
+    }
+    if (e.key === 'Escape' && (editing || replyingTo)) {
+      e.preventDefault();
+      cancelComposer();
+      return;
+    }
+    if (e.key === 'ArrowUp' && !draft && !editing) {
+      // Edit the own most recent message, the muscle-memory chat-room gesture.
+      const own = [...messages].reverse().find((m) => m.userId === myUserId && !pending[m.id]);
+      if (own) {
+        const r = resolve(own);
+        if (!r.locked) {
+          e.preventDefault();
+          startEdit(own, r.text, r.attachment, r.reply);
+        }
+      }
+      return;
+    }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      void handleSend();
+    }
+  };
+
+  // ----- gated states -----------------------------------------------------------
 
   if (denial === 'needs_connect') {
     return (
@@ -665,54 +784,85 @@ const ModRoomPane = ({ channelId, channelLogin, emotes, onStatus, onUsernameClic
         icon={<ShieldCheck size={28} className="text-textSecondary" />}
         title="Couldn't reach the mod room"
         body="Something went wrong connecting. Try again in a moment."
-        action={<MinimalButton onClick={() => setAttempt((a) => a + 1)}>Retry</MinimalButton>}
+        action={<MinimalButton onClick={() => retryRoom(channelId)}>Retry</MinimalButton>}
       />
     );
   }
 
-  const typingLogins = Object.values(typing).map((t) => t.login).filter(Boolean);
+  const now = Date.now();
+  const typingLogins = Object.values(typingUsers)
+    .filter((t) => now - t.at < TYPING_TTL_MS)
+    .map((t) => t.login)
+    .filter(Boolean);
 
-  const resolve = (
-    m: ModRoomChat,
-  ): { text: string; attachment?: string; reply?: ReplyRef; emotes?: EmoteRef[]; locked: boolean } => {
-    if (!isEncrypted(m.body)) return { text: m.body, attachment: m.attachment, locked: false };
-    const d = decrypted[m.id];
-    if (!key || d === undefined || d === null) return { text: '', locked: true };
-    return { text: d.text, attachment: d.attachment, reply: d.reply, emotes: d.emotes, locked: false };
-  };
+  let dividerShown = false;
 
   return (
     <div className="flex h-full flex-col">
-      <div ref={listRef} className="flex-1 overflow-y-auto py-1">
-        {messages.length === 0 ? (
-          <div className="flex h-full items-center justify-center px-6">
-            {state === 'connected' && hasLoaded && (
-              <p className="text-center text-sm text-textSecondary">No messages yet. Say hello to your mod team.</p>
-            )}
-          </div>
-        ) : (
-          messages.map((m) => {
-            const { text, attachment, reply, emotes: msgEmotes, locked } = resolve(m);
-            const canEdit = !!myUserId && m.userId === myUserId && !locked;
-            return (
-              <ModRoomMessageRow
-                key={m.id}
-                m={m}
-                body={text}
-                attachment={attachment}
-                reply={reply}
-                emoteRefs={msgEmotes}
-                locked={locked}
-                canEdit={canEdit}
-                emotes={emotes}
-                fontSize={fontSize}
-                roomKey={key}
-                onUsernameClick={onUsernameClick}
-                onReply={() => startReply(m, text)}
-                onEdit={() => startEdit(m, text, attachment, reply)}
-              />
-            );
-          })
+      <div className="relative min-h-0 flex-1">
+        <div ref={listRef} onScroll={handleListScroll} className="h-full overflow-y-auto py-1">
+          {messages.length === 0 ? (
+            <div className="flex h-full items-center justify-center px-6">
+              {state === 'connected' && hasLoaded && (
+                <p className="text-center text-sm text-textSecondary">No messages yet. Say hello to your mod team.</p>
+              )}
+            </div>
+          ) : (
+            messages.map((m, i) => {
+              const prev = messages[i - 1];
+              const dayChanged = prev
+                ? new Date(prev.ts).toDateString() !== new Date(m.ts).toDateString()
+                : new Date(m.ts).toDateString() !== new Date().toDateString();
+              const showNew = !dividerShown && dividerTs > 0 && m.ts > dividerTs && m.userId !== myUserId;
+              if (showNew) dividerShown = true;
+              const { text, attachment, reply, emotes: msgEmotes, locked } = resolve(m);
+              const pend = pending[m.id];
+              const canEdit = !!myUserId && m.userId === myUserId && !locked && !pend;
+              return (
+                <Fragment key={m.id}>
+                  {dayChanged && <HairlineDivider label={dayLabel(m.ts)} />}
+                  {showNew && <HairlineDivider label="New" accent />}
+                  <ModRoomMessageRow
+                    m={m}
+                    body={text}
+                    attachment={attachment}
+                    reply={reply}
+                    emoteRefs={msgEmotes}
+                    locked={locked}
+                    canEdit={canEdit}
+                    emotes={emotes}
+                    fontSize={fontSize}
+                    roomKey={key}
+                    pending={!!pend}
+                    sendFailed={pend?.failed}
+                    mentioned={!locked && m.userId !== myUserId && mentionsMe(text, myLogin)}
+                    onUsernameClick={onUsernameClick}
+                    onReply={() => startReply(m, text)}
+                    onEdit={() => startEdit(m, text, attachment, reply)}
+                    onRetry={() => retryPending(channelId, m.id)}
+                    onDiscard={() => {
+                      discardPending(channelId, m.id);
+                      if (!draft) setDraft(text);
+                    }}
+                  />
+                </Fragment>
+              );
+            })
+          )}
+        </div>
+        {showJump && (
+          <button
+            onClick={() => {
+              const el = listRef.current;
+              if (el) el.scrollTop = el.scrollHeight;
+              nearBottomRef.current = true;
+              setShowJump(false);
+            }}
+            className="absolute bottom-2 right-3 z-20 rounded-full px-2.5 py-1 text-[11px] font-medium text-textPrimary transition-colors hover:text-accent"
+            style={{ background: 'rgba(24,24,26,0.92)', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.08)' }}
+          >
+            Jump to latest
+          </button>
         )}
       </div>
 
@@ -731,8 +881,28 @@ const ModRoomPane = ({ channelId, channelLogin, emotes, onStatus, onUsernameClic
           isKick={false}
           channelId={channelId}
           channelLogin={channelLogin}
-          onInsert={insertEmote}
+          onInsert={(name) => {
+            setDraft(draft + (draft && !draft.endsWith(' ') ? ' ' : '') + name + ' ');
+            textareaRef.current?.focus();
+          }}
         />
+        {mentionOpen && (
+          <div
+            className="absolute bottom-full left-2 z-30 mb-1 min-w-[160px] overflow-hidden rounded-lg py-1"
+            style={{ background: 'rgba(18,18,20,0.98)', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.08)' }}
+          >
+            {mentionCandidates.map((c, i) => (
+              <button
+                key={c.userId}
+                onClick={() => insertMention(c.login)}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-surface-hover ${i === mentionIndex ? 'bg-white/[0.06] text-textPrimary' : 'text-textSecondary'}`}
+              >
+                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${c.active !== false ? 'bg-accent' : 'bg-white/25'}`} />
+                <span className="truncate">{c.login}</span>
+              </button>
+            ))}
+          </div>
+        )}
         {(replyingTo || editing) && (
           <div
             className="mb-2 flex items-center gap-2 rounded-md px-2 py-1 text-[11px]"
@@ -794,13 +964,10 @@ const ModRoomPane = ({ channelId, channelLogin, emotes, onStatus, onUsernameClic
           <textarea
             ref={textareaRef}
             value={draft}
+            maxLength={MAX_DRAFT}
             onChange={(e) => handleDraftChange(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                void handleSend();
-              }
-            }}
+            onKeyDown={handleComposerKeyDown}
+            onPaste={handlePaste}
             rows={1}
             placeholder={state !== 'connected' ? 'Connecting...' : key ? 'Encrypted message' : 'Securing room...'}
             disabled={state !== 'connected' || !key}
@@ -832,29 +999,39 @@ function sniffImageType(b: Uint8Array): string {
 
 // Fetches an attachment and, if it was stored encrypted (application/x-sn-enc),
 // decrypts it with the room key into a blob URL. Legacy plaintext images render
-// as-is. The bytes never sit decrypted anywhere but this client.
+// as-is. The bytes never sit decrypted anywhere but this client. Click to expand.
 const AttachmentImage = ({ url, roomKey }: { url: string; roomKey: CryptoKey | null }) => {
   const [src, setSrc] = useState<string | null>(null);
+  // Keyed by url so a re-run for a new url resets failure without a sync setState.
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const failed = failedUrl === url;
   useEffect(() => {
     let active = true;
     let blobUrl: string | null = null;
     void (async () => {
       try {
         const res = await fetch(url);
-        if (!res.ok) return;
+        if (!res.ok) {
+          if (active) setFailedUrl(url);
+          return;
+        }
         const ct = res.headers.get('Content-Type') || '';
         let bytes = new Uint8Array(await res.arrayBuffer());
         if (ct.includes('x-sn-enc')) {
-          if (!roomKey) return;
+          if (!roomKey) return; // key not here yet; the effect re-runs when it lands
           const dec = await decryptBytes(roomKey, bytes);
-          if (!dec) return;
+          if (!dec) {
+            if (active) setFailedUrl(url);
+            return;
+          }
           bytes = dec;
         }
         blobUrl = URL.createObjectURL(new Blob([bytes], { type: sniffImageType(bytes) }));
         if (active) setSrc(blobUrl);
         else URL.revokeObjectURL(blobUrl);
       } catch {
-        // leave the placeholder
+        if (active) setFailedUrl(url);
       }
     })();
     return () => {
@@ -862,8 +1039,26 @@ const AttachmentImage = ({ url, roomKey }: { url: string; roomKey: CryptoKey | n
       if (blobUrl) URL.revokeObjectURL(blobUrl);
     };
   }, [url, roomKey]);
+  if (failed) return <p className="text-[11px] italic text-textSecondary">Attachment unavailable</p>;
   if (!src) return <div className="h-24 w-40 animate-pulse rounded-md bg-white/5" />;
-  return <img src={src} alt="attachment" className="max-h-48 max-w-[85%] rounded-md object-contain" />;
+  return (
+    <>
+      <img
+        src={src}
+        alt="attachment"
+        onClick={() => setExpanded(true)}
+        className="max-h-48 max-w-[85%] cursor-zoom-in rounded-md object-contain"
+      />
+      {expanded && (
+        <div
+          className="fixed inset-0 z-50 flex cursor-zoom-out items-center justify-center bg-black/80"
+          onClick={() => setExpanded(false)}
+        >
+          <img src={src} alt="attachment" className="max-h-[90vh] max-w-[90vw] rounded-md object-contain" />
+        </div>
+      )}
+    </>
+  );
 };
 
 const CenterNote = ({

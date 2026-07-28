@@ -1,8 +1,10 @@
 use crate::services::twitch_service::TwitchService;
 use crate::services::universal_cache_service::{cache_item, get_cached_item, CacheType};
 use log::debug;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::Mutex as TokioMutex;
 
 // --- HELIX API STRUCTS ---
 
@@ -92,6 +94,9 @@ pub async fn fetch_global_badges(
     client_id: String,
     token: String,
 ) -> Result<HelixBadgesResponse, String> {
+    // Serialize against the socket-drop merge so a fetch and a merge can't
+    // clobber each other's write of the shared global_badges entry.
+    let _guard = GLOBAL_BADGES_LOCK.lock().await;
     // Try to get from cache first
     let cache_key = "global_badges";
 
@@ -214,6 +219,8 @@ pub async fn prefetch_global_badges() -> Result<(), String> {
 /// Force refresh global badges from Twitch API (bypasses cache)
 #[tauri::command]
 pub async fn force_refresh_global_badges() -> Result<HelixBadgesResponse, String> {
+    // Serialize against the socket-drop merge (see fetch_global_badges).
+    let _guard = GLOBAL_BADGES_LOCK.lock().await;
     debug!("[Badges] Force refreshing global badges from Twitch API...");
 
     let client_id = env!("TWITCH_APP_CLIENT_ID").to_string();
@@ -355,6 +362,138 @@ pub async fn get_badges_missing_metadata() -> Result<Vec<(String, String)>, Stri
         missing.len()
     );
     Ok(missing)
+}
+
+/// Serializes every read-modify-write of the single `global_badges` cache entry
+/// (the socket-drop merge below + the Helix fetch/refresh writers) so concurrent
+/// startup-catch-up drops and a lazy gallery fetch can't lose each other's writes.
+static GLOBAL_BADGES_LOCK: Lazy<TokioMutex<()>> = Lazy::new(|| TokioMutex::new(()));
+
+/// Derive Twitch's 1x/2x/4x badge CDN URLs from a single pushed URL. Twitch badge
+/// URLs end in a size segment (/1, /2, /3); if the pushed URL matches, build the
+/// three variants, else reuse the same URL for every size so the tile still shows.
+fn derive_badge_image_urls(url: &str) -> (String, String, String) {
+    for suffix in ["/1", "/2", "/3"] {
+        if let Some(base) = url.strip_suffix(suffix) {
+            return (format!("{base}/1"), format!("{base}/2"), format!("{base}/3"));
+        }
+    }
+    (url.to_string(), url.to_string(), url.to_string())
+}
+
+/// Real badge art always comes from Twitch's CDN. Anything else in a drop
+/// payload is a test or malformed push, and merging it leaves a broken tile.
+fn is_twitch_badge_image(url: &str) -> bool {
+    url.starts_with("https://static-cdn.jtvnw.net/badges/")
+}
+
+/// Merge a relay-pushed badge drop into the cached `global_badges` set so the
+/// Global Cosmetics gallery shows it without waiting for a Helix refresh.
+/// Idempotent (an existing version is a no-op). Preserves `cached_at` so the
+/// Helix refresh cadence is unchanged. Returns Ok(true) when the cache changed.
+/// No-ops (returns Ok(false)) when the gallery cache hasn't been populated yet —
+/// the badge then appears the next time the gallery fetches Helix.
+pub async fn merge_pushed_badge_into_global_cache(
+    badge: &crate::services::badge_polling_service::BadgeNotification,
+) -> Result<bool, String> {
+    if !is_twitch_badge_image(&badge.badge_image_url) {
+        return Ok(false);
+    }
+
+    let _guard = GLOBAL_BADGES_LOCK.lock().await;
+    let cache_key = "global_badges";
+
+    let cached = match get_cached_item(CacheType::Badge, cache_key).await {
+        Ok(Some(c)) => c,
+        _ => return Ok(false),
+    };
+    let mut cached_data: CachedBadgesData = serde_json::from_value(cached.data)
+        .map_err(|e| format!("parse cached badges: {e}"))?;
+
+    let (u1, u2, u4) = derive_badge_image_urls(&badge.badge_image_url);
+    let version = HelixBadgeVersion {
+        id: badge.badge_version.clone(),
+        image_url_1x: u1,
+        image_url_2x: u2,
+        image_url_4x: u4,
+        title: badge.badge_name.clone(),
+        description: badge.badge_description.clone().unwrap_or_default(),
+        click_action: None,
+        click_url: None,
+    };
+
+    if let Some(set) = cached_data
+        .badges
+        .data
+        .iter_mut()
+        .find(|s| s.set_id == badge.badge_set_id)
+    {
+        if set.versions.iter().any(|v| v.id == version.id) {
+            return Ok(false);
+        }
+        set.versions.push(version);
+    } else {
+        cached_data.badges.data.push(HelixBadgeSet {
+            set_id: badge.badge_set_id.clone(),
+            versions: vec![version],
+        });
+    }
+
+    if let Ok(json_value) = serde_json::to_value(&cached_data) {
+        let _ = cache_item(
+            CacheType::Badge,
+            cache_key.to_string(),
+            json_value,
+            "twitch".to_string(),
+            7,
+        )
+        .await;
+    }
+    Ok(true)
+}
+
+/// Drop gallery entries whose art does not come from Twitch's badge CDN, for
+/// installs that merged a bad drop before the guard above existed. Runs once
+/// per process, on the first feed ingest. Returns the number of sets removed.
+pub async fn prune_invalid_global_badges() -> Result<usize, String> {
+    static PRUNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if PRUNED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Ok(0);
+    }
+
+    let _guard = GLOBAL_BADGES_LOCK.lock().await;
+    let cache_key = "global_badges";
+
+    let cached = match get_cached_item(CacheType::Badge, cache_key).await {
+        Ok(Some(c)) => c,
+        _ => return Ok(0),
+    };
+    let mut cached_data: CachedBadgesData = serde_json::from_value(cached.data)
+        .map_err(|e| format!("parse cached badges: {e}"))?;
+
+    let before = cached_data.badges.data.len();
+    cached_data.badges.data.retain(|set| {
+        set.versions
+            .iter()
+            .any(|v| is_twitch_badge_image(&v.image_url_4x) || is_twitch_badge_image(&v.image_url_1x))
+    });
+    let removed = before - cached_data.badges.data.len();
+    if removed == 0 {
+        return Ok(0);
+    }
+
+    if let Ok(json_value) = serde_json::to_value(&cached_data) {
+        let _ = cache_item(
+            CacheType::Badge,
+            cache_key.to_string(),
+            json_value,
+            "twitch".to_string(),
+            7,
+        )
+        .await;
+    }
+    debug!("[Badges] Pruned {removed} gallery entr(ies) with non-Twitch art");
+    Ok(removed)
 }
 
 /// Get Twitch credentials for badge fetching

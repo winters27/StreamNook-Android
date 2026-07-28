@@ -6,7 +6,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode, RefObject } from 'react';
 import { motion } from 'framer-motion';
-import { Settings } from 'lucide-react';
+import { Lock, Settings } from 'lucide-react';
 import { Tooltip } from '../ui/Tooltip';
 import {
   type Emote,
@@ -30,6 +30,28 @@ import { useAppStore } from '../../stores/AppStore';
 import { Logger } from '../../utils/logger';
 
 type ProviderTab = 'twitch' | 'bttv' | '7tv' | 'ffz' | 'favorites' | 'emoji' | 'kick';
+
+// Static preview styling for FFZ modifier emotes in the hover card, so the
+// card shows what the effect DOES instead of the placeholder art alone.
+// Animated effects are deliberately left out of the preview.
+const ffzPreviewStyle = (flags?: number): React.CSSProperties => {
+  if (!flags) return {};
+  const transforms: string[] = [];
+  if (flags & 2) transforms.push('scaleX(-1)'); // FlipX
+  if (flags & 4) transforms.push('scaleY(-1)'); // FlipY
+  if (flags & 8) transforms.push('scaleX(2)'); // GrowX (preview-only stretch)
+  const filters: string[] = [];
+  if (flags & 512) filters.push('grayscale(1)'); // Greyscale
+  if (flags & 1024) filters.push('sepia(1)'); // Sepia
+  if (flags & 16384) filters.push('grayscale(1) brightness(0.7) contrast(2.5)'); // Cursed
+  if (flags & 4096) {
+    filters.push('brightness(0.2) sepia(1) brightness(2.2) contrast(3) saturate(8)'); // HyperRed
+  }
+  return {
+    ...(transforms.length ? { transform: transforms.join(' ') } : {}),
+    ...(filters.length ? { filter: filters.join(' ') } : {}),
+  };
+};
 
 // ── swapping smiley (shared trigger icon) ────────────────────────────────────
 const SMILEY_POOL = ['😀', '😄', '😁', '😆', '🤣', '😂', '😊', '😇', '🙂', '😉', '😌', '😍', '🥰', '😜', '🤪', '😎', '🤩', '🥳', '😏', '😋', '🤗', '🫠', '🫡', '😺'];
@@ -64,6 +86,11 @@ const EmoteGridItem = memo(
     onToggleFavorite: () => void;
   }) => {
     const is7tv = emote.provider === '7tv';
+    const ffzIsSubwoofer = useAppStore((s) => s.ffzIsSubwoofer);
+    const isModifier = emote.modifierFlags != null;
+    // Subscriber-only FFZ effects are visible but locked for non-subscribers
+    // (composition gating; effects in incoming messages render for everyone).
+    const lockedSub = !!emote.ffzSubOnly && !ffzIsSubwoofer;
     const emoteTier = inlineEmoteTier();
     const liveLocal = getCachedEmoteUrl(emote.id, emote.provider, emoteTier);
     const gridSrc = is7tv
@@ -81,7 +108,7 @@ const EmoteGridItem = memo(
               src={emote.provider === '7tv' ? `https://cdn.7tv.app/emote/${emote.id}/4x.avif` : emote.localUrl || emote.url}
               alt={emote.name}
               className="w-auto object-contain mx-auto drop-shadow-md"
-              style={{ height: hoverPreviewSize, maxWidth: hoverPreviewSize * 2 }}
+              style={{ height: hoverPreviewSize, maxWidth: hoverPreviewSize * 2, ...ffzPreviewStyle(emote.modifierFlags) }}
               onError={(e) => {
                 const t = e.currentTarget;
                 if (emote.provider === '7tv') {
@@ -105,9 +132,20 @@ const EmoteGridItem = memo(
               <span className="text-[10px] text-white/60 leading-tight">
                 {emote.owner_name ? `by ${emote.owner_name}` : emote.provider}
               </span>
-              {emote.isZeroWidth && (
-                <span className="text-[9px] font-bold tracking-wider uppercase text-yellow-400 mt-0.5 mix-blend-screen drop-shadow-sm">
-                  Zero-Width
+              {isModifier ? (
+                <span className="text-[9px] font-bold tracking-wider uppercase text-purple-300 mt-0.5 mix-blend-screen drop-shadow-sm">
+                  Modifier - applies to the previous emote
+                </span>
+              ) : (
+                emote.isZeroWidth && (
+                  <span className="text-[9px] font-bold tracking-wider uppercase text-yellow-400 mt-0.5 mix-blend-screen drop-shadow-sm">
+                    Zero-Width
+                  </span>
+                )
+              )}
+              {emote.ffzSubOnly && (
+                <span className={`text-[9px] font-bold tracking-wider uppercase mt-0.5 mix-blend-screen drop-shadow-sm ${lockedSub ? 'text-white/50' : 'text-emerald-300'}`}>
+                  {lockedSub ? 'FFZ subscriber effect - locked' : 'FFZ subscriber effect'}
                 </span>
               )}
             </div>
@@ -120,7 +158,14 @@ const EmoteGridItem = memo(
         >
           <button
             onClick={onInsert}
-            className={`flex items-center justify-center p-1 w-full h-full min-w-8 min-h-8 hover:bg-glass rounded transition-colors ${emote.isZeroWidth ? 'ring-1 ring-yellow-400/50 bg-yellow-400/10' : ''}`}
+            disabled={lockedSub}
+            className={`flex items-center justify-center p-1 w-full h-full min-w-8 min-h-8 hover:bg-glass rounded transition-colors ${
+              isModifier
+                ? 'ring-1 ring-purple-400/50 bg-purple-400/10'
+                : emote.isZeroWidth
+                  ? 'ring-1 ring-yellow-400/50 bg-yellow-400/10'
+                  : ''
+            } ${lockedSub ? 'opacity-40 cursor-not-allowed' : ''}`}
           >
             <img
               src={gridSrc}
@@ -129,7 +174,13 @@ const EmoteGridItem = memo(
               loading="lazy"
               decoding="async"
               referrerPolicy="no-referrer"
-              className={`max-h-8 w-auto max-w-full object-contain ${emote.isZeroWidth ? 'drop-shadow-[0_0_3px_rgba(234,179,8,0.6)]' : ''}`}
+              className={`max-h-8 w-auto max-w-full object-contain ${
+                isModifier
+                  ? 'drop-shadow-[0_0_3px_color-mix(in_srgb,#c084fc_60%,transparent)]'
+                  : emote.isZeroWidth
+                    ? 'drop-shadow-[0_0_3px_color-mix(in_srgb,var(--color-warning)_60%,transparent)]'
+                    : ''
+              }`}
               onError={(e) => {
                 const t = e.currentTarget;
                 if (is7tv) {
@@ -153,6 +204,9 @@ const EmoteGridItem = memo(
               }}
             />
           </button>
+          {lockedSub && (
+            <Lock className="absolute bottom-0.5 right-0.5 w-3 h-3 text-white/60 pointer-events-none" />
+          )}
           <Tooltip content={isFavorited ? 'Remove from favorites' : 'Add to favorites'}>
             <button
               onClick={(e) => {
@@ -450,7 +504,7 @@ export function EmotePickerPanel({
   if (!mounted) return null;
 
   const tabClass = (active: boolean) =>
-    `flex-1 py-1.5 text-xs transition-all flex items-center justify-center gap-1 ${active ? 'glass-input text-emerald-400 font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`;
+    `flex-1 py-1.5 text-xs transition-all flex items-center justify-center gap-1 ${active ? 'glass-button-active text-success font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`;
 
   return (
     <motion.div
@@ -463,7 +517,7 @@ export function EmotePickerPanel({
       }}
       className={className || DEFAULT_PANEL_CLASS}
       style={{
-        backgroundColor: 'rgba(12, 12, 13, 0.95)',
+        backgroundColor: 'color-mix(in srgb, var(--color-background) 95%, transparent)',
         display: !open && fullyClosed ? 'none' : undefined,
         pointerEvents: open ? 'auto' : 'none',
       }}
@@ -559,7 +613,7 @@ export function EmotePickerPanel({
                 if (filteredCategoryEmojis.length === 0) return null;
                 return (
                   <div key={category} className="flex flex-col">
-                    <h3 className="text-[10px] text-textSecondary uppercase tracking-wider font-bold mb-2 -mx-2 px-4 sticky top-0 py-1.5 border-b border-white/[0.03] z-10 backdrop-blur-ultra" style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)' }}>{category}</h3>
+                    <h3 className="text-[10px] text-textSecondary uppercase tracking-wider font-bold mb-2 -mx-2 px-4 sticky top-0 py-1.5 border-b border-white/[0.03] z-10 backdrop-blur-ultra" style={{ backgroundColor: 'color-mix(in srgb, var(--color-background) 95%, transparent)' }}>{category}</h3>
                     <div className="grid grid-cols-8 gap-1 px-1">
                       {filteredCategoryEmojis.map((emoji, idx) => (
                         <Tooltip key={`${category}-${idx}`} content={emoji}>
@@ -596,7 +650,7 @@ export function EmotePickerPanel({
           <div className="flex flex-col gap-4 pt-2">
             {Array.from((selectedProvider === 'kick' ? groupedKickEmotes : groupedTwitchEmotes).entries()).map(([groupKey, group]) => (
               <div key={groupKey} className="flex flex-col">
-                <h3 className="text-[10px] text-textSecondary uppercase tracking-wider font-bold mb-2 -mx-2 px-4 sticky top-0 py-1.5 border-b border-borderSubtle z-10 backdrop-blur-ultra" style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)' }}>
+                <h3 className="text-[10px] text-textSecondary uppercase tracking-wider font-bold mb-2 -mx-2 px-4 sticky top-0 py-1.5 border-b border-borderSubtle z-10 backdrop-blur-ultra" style={{ backgroundColor: 'color-mix(in srgb, var(--color-background) 95%, transparent)' }}>
                   <span className="text-textPrimary">{group.name}</span> <span className="opacity-50">({group.emotes.length})</span>
                 </h3>
                 {chunkArray(group.emotes, TWITCH_COLS * TWITCH_BLOCK_ROWS).map((block, bi) => {
@@ -664,7 +718,7 @@ export function EmotePickerPanel({
               .filter((g) => g.emotes.length > 0)
               .map((group) => (
                 <div key={group.label} className="flex flex-col">
-                  <h3 className="text-[10px] text-textSecondary uppercase tracking-wider font-bold mb-2 -mx-2 px-4 sticky top-0 py-1.5 border-b border-borderSubtle z-10 backdrop-blur-ultra" style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)' }}>
+                  <h3 className="text-[10px] text-textSecondary uppercase tracking-wider font-bold mb-2 -mx-2 px-4 sticky top-0 py-1.5 border-b border-borderSubtle z-10 backdrop-blur-ultra" style={{ backgroundColor: 'color-mix(in srgb, var(--color-background) 95%, transparent)' }}>
                     <span className="text-textPrimary">{group.label}</span> <span className="opacity-50">({group.emotes.length})</span>
                   </h3>
                   {chunkArray(group.emotes, group.cols * WIDTH_BLOCK_ROWS).map((block, bi) => {

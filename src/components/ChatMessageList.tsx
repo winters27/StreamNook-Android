@@ -63,6 +63,20 @@ const MessageRow = function MessageRow({
 
 interface ChatMessageListProps {
   messages: (string | BackendChatMessage)[];
+  /**
+   * Bump this whenever the feed changed. It is not read in the body — it exists
+   * purely so this component's `memo` has a reliable change signal.
+   *
+   * REQUIRED. Do not delete it as "unused", and do not rely on `messages`
+   * identity instead: the store appends in place and keeps the SAME array
+   * reference while the buffer is under its cap, so the array does not change
+   * identity for roughly the first 100 messages after joining a channel.
+   * Several paths (CLEARMSG/CLEARCHAT, the own-echo upgrade, repaintOwnBadges)
+   * also mutate messages in place. Without this, the list silently stops
+   * updating and chat looks dead on join. Use the channel's `renderToken` from
+   * ChannelChatSnapshot.
+   */
+  renderToken: number;
   isPaused: boolean;
   onScroll: (distanceToBottom: number, isUserScroll: boolean) => void;
   // Fired the instant a real user scroll-up gesture is detected (wheel/touch/

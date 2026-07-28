@@ -229,7 +229,7 @@ export default function ChannelAboutReveal({ enabled, channelLogin, children }: 
               type="button"
               onClick={() => setShowAbout(true)}
               aria-hidden={open}
-              className={`absolute bottom-2 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-full border border-white/10 bg-black/40 px-2.5 py-0.5 text-[11px] font-medium text-white/60 backdrop-blur-sm transition-all duration-300 hover:bg-black/60 hover:text-white group-hover/reveal:pointer-events-none group-hover/reveal:opacity-0 ${open ? 'pointer-events-none opacity-0' : 'pointer-events-auto opacity-80'}`}
+              className={`absolute bottom-2 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-full border border-transparent bg-black/40 shadow-[inset_1px_1px_0_0_rgba(255,255,255,0.10),inset_-1px_-1px_0_0_rgba(0,0,0,0.18)] px-2.5 py-0.5 text-[11px] font-medium text-white/60 backdrop-blur-sm transition-all duration-300 hover:bg-black/60 hover:text-white group-hover/reveal:pointer-events-none group-hover/reveal:opacity-0 ${open ? 'pointer-events-none opacity-0' : 'pointer-events-auto opacity-80'}`}
             >
               About
               <ChevronDown className="h-3 w-3" />

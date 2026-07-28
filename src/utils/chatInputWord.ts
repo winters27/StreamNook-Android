@@ -41,6 +41,10 @@ export interface EmoteTabCandidate {
     localUrl?: string;
     provider: 'twitch' | 'bttv' | '7tv' | 'ffz' | 'kick';
     isZeroWidth?: boolean;
+    /** FFZ modifier bitmask; present only on FFZ modifier emotes */
+    modifierFlags?: number;
+    /** FFZ effect composable only by FFZ subscribers */
+    ffzSubOnly?: boolean;
   };
   /** Set for chatter completions; the value is prefixed with @ if user typed @-prefix */
   chatter?: { username: string; displayName: string };

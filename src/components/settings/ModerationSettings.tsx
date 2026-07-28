@@ -1,7 +1,10 @@
+import { useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import { SettingsSection, SettingsRow, SegmentedSelect } from './_primitives';
 import { MOD_LOG_CATEGORIES, MOD_LOG_STYLES, highlightContainerStyle } from '../../utils/modLogCategories';
 import { Tooltip } from '../ui/Tooltip';
+import { connectModRoomConsent, clearModeratedCache, loadModeratedChannelIds } from '../../services/modRoomService';
 
 const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
   <button
@@ -21,6 +24,39 @@ const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void 
 const ModerationSettings = () => {
   const { settings, updateSettings } = useAppStore();
   const mod = settings.moderation ?? {};
+
+  // Mod-room scoped consent: which account it belongs to, and the two actions.
+  const [modRoomLogin, setModRoomLogin] = useState<string | null>(null);
+  const [modRoomBusy, setModRoomBusy] = useState(false);
+  useEffect(() => {
+    invoke<{ connected: boolean; login: string | null }>('modroom_status')
+      .then((s) => setModRoomLogin(s.connected ? s.login : null))
+      .catch(() => {});
+  }, []);
+  const handleModRoomConnect = async () => {
+    setModRoomBusy(true);
+    try {
+      const login = await connectModRoomConsent();
+      if (login) setModRoomLogin(login);
+    } catch {
+      // cancelled / failed; leave the button
+    } finally {
+      setModRoomBusy(false);
+    }
+  };
+  const handleModRoomDisconnect = async () => {
+    setModRoomBusy(true);
+    try {
+      await invoke('modroom_disconnect');
+      setModRoomLogin(null);
+      clearModeratedCache();
+      void loadModeratedChannelIds(true);
+    } catch {
+      // nothing to disconnect
+    } finally {
+      setModRoomBusy(false);
+    }
+  };
 
   const setMod = (patch: Partial<typeof mod>) =>
     updateSettings({ ...settings, moderation: { ...mod, ...patch } });
@@ -107,6 +143,39 @@ const ModerationSettings = () => {
                 updateSettings({ ...settings, show_mod_logs: !(settings.show_mod_logs ?? false) })
               }
             />
+          }
+        />
+      </SettingsSection>
+
+      <SettingsSection
+        label="Mod Rooms"
+        description="Private, encrypted chat rooms for the mod teams of channels you moderate. Rooms use a separate one-time Twitch consent that only proves which channels you moderate; it cannot act on your account."
+      >
+        <SettingsRow
+          title="Connection"
+          description={
+            modRoomLogin
+              ? `Connected as ${modRoomLogin}. Rooms verify mod status and open as this account. Disconnect to switch accounts or revoke access.`
+              : 'Not connected. Grant the one-time consent to unlock rooms for the channels you moderate.'
+          }
+          control={
+            modRoomLogin ? (
+              <button
+                onClick={handleModRoomDisconnect}
+                disabled={modRoomBusy}
+                className="px-3 py-1.5 text-xs font-medium text-textSecondary transition-colors hover:text-accent disabled:opacity-50"
+              >
+                Disconnect
+              </button>
+            ) : (
+              <button
+                onClick={handleModRoomConnect}
+                disabled={modRoomBusy}
+                className="px-3 py-1.5 text-xs font-medium text-textSecondary transition-colors hover:text-accent disabled:opacity-50"
+              >
+                {modRoomBusy ? 'Opening browser...' : 'Connect'}
+              </button>
+            )
           }
         />
       </SettingsSection>

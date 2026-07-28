@@ -86,7 +86,7 @@ function PurpleDrop({
         transform: `translate(-50%, -50%) scale(${flying ? 0.3 : 1})`,
         transition: 'all 600ms cubic-bezier(0.22, 1, 0.36, 1)',
         backgroundColor: '#9146FF',
-        boxShadow: '0 0 14px rgba(145,70,255,0.85)',
+        boxShadow: '0 0 14px rgba(145,70,255,0.35)',
       }}
     >
       <ArrowUpRight size={12} className="text-white" />

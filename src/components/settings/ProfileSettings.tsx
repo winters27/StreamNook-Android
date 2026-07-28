@@ -49,9 +49,10 @@ import { getIdentityWithCache, setIdentity } from '../../services/identityServic
 import { readOwnProfileCache, writeOwnProfileCache } from '../../services/ownProfileCache';
 import { isSubscriber } from '../../services/subscriberService';
 import { listAtmospheres, getAtmosphere, type Atmosphere } from '../../services/atmospheres';
+import { resolveEntitlement } from '../../services/cosmetics/ownership';
 import { MAJOR_COLOGNE_THEME_ID, MAJOR_COLOGNE_ACCOLADE_ID, parseCologneTheme, buildCologneTheme, isCologneTheme } from '../../services/cologneEvent';
 import { getTier, getTierAccent, StreamNookBadge } from '../StreamNookBadge';
-import { COSMETIC_ASSET_BY_SLUG } from '../cosmeticAssets';
+import { resolveCosmeticAsset } from '../cosmeticAssets';
 import {
   captureProfileCard,
   copyImageToClipboard,
@@ -174,6 +175,9 @@ const ProfileSettings = () => {
     ? getOwnedCosmeticSlugs(currentUser.user_id)
     : new Set<string>();
   const ownedCosmetics = cosmeticsCatalog.filter((c) => ownedCosmeticSlugs.has(c.slug));
+  // Only badges are equippable in the badge slot; relics/frames live in their own
+  // slots, so keep non-badge kinds out of the badge picker below.
+  const ownedBadges = ownedCosmetics.filter((c) => c.kind === 'badge');
   const activeCosmeticSlug = currentUser?.user_id
     ? getActiveCosmeticSlug(currentUser.user_id)
     : null;
@@ -917,20 +921,13 @@ const ProfileSettings = () => {
   // what the profile actually shows instead of a generic gray.
   const tierAccent = streamNookUserNumber !== null ? getTierAccent(streamNookUserNumber) : null;
 
-  // Tiered unlocks: supporters ($3 one-time -> owns a paid badge cosmetic) get the
-  // 7TV paint accent unlocks at the supporter tier; the StreamNook Atmospheres at
-  // the subscriber tier. Policy: these are PERMANENT unlocks, NOT recurring-gated.
-  // Owning the subscriber badge (granted on the first paid invoice and never
-  // revoked) is the lasting proof of "ever subscribed", so it keeps the subscriber
-  // tier unlocked for good. `subscribed` (active stripe status) stays only as a
-  // fast path + the dev self-preview override.
-  const isSupporter =
-    ownedCosmeticSlugs.has('streamnook-supporter') || ownedCosmeticSlugs.has('streamnook-subscriber');
-  const everSubscribed = subscribed || ownedCosmeticSlugs.has('streamnook-subscriber');
-  const canPaint = everSubscribed || isSupporter;
-  const canAtmosphere = everSubscribed;
-  const tierMet = (t: 'free' | 'supporter' | 'subscriber') =>
-    t === 'free' ? true : t === 'supporter' ? canPaint : canAtmosphere;
+  // Tiered unlocks (paint at supporter, atmospheres at subscriber), resolved in
+  // one place. Owning the subscriber badge is the permanent proof of tier;
+  // active status is only a fast path.
+  const { canPaint, canAtmosphere, tierMet } = resolveEntitlement({
+    ownedSlugs: ownedCosmeticSlugs,
+    activeSubscription: subscribed,
+  });
 
   // Base profile-BACKGROUND options: tier (free) + the member's 7TV paint
   // (supporter). StreamNook Atmospheres are their OWN cosmetic section (subscriber,
@@ -1177,7 +1174,7 @@ const ProfileSettings = () => {
                 <button
                   type="button"
                   onClick={() => openBadgesWithPaintInMain(seventvPaint.id)}
-                  className="px-2 py-0.5 rounded-md text-[11px] font-bold inline-block relative overflow-hidden cursor-pointer hover:ring-1 hover:ring-accent/50 transition-all border border-white/10"
+                  className="px-2 py-0.5 rounded-md text-[11px] font-bold inline-block relative overflow-hidden cursor-pointer hover:ring-1 hover:ring-accent/50 transition-all border border-transparent shadow-[inset_1px_1px_0_0_rgba(255,255,255,0.10),inset_-1px_-1px_0_0_rgba(0,0,0,0.18)]"
                   style={{
                     ...computePaintStyle(seventvPaint as any, '#9146FF'),
                     WebkitBackgroundClip: 'padding-box',
@@ -1334,8 +1331,8 @@ const ProfileSettings = () => {
           Your StreamNook identity: badges, your profile background, and animated Atmospheres.
         </p>
       </div>
-      {streamNookUserNumber !== null && currentUser?.user_id && ownedCosmetics.length > 0 && (
-        <div className="glass-panel rounded-xl p-5">
+      {streamNookUserNumber !== null && currentUser?.user_id && ownedBadges.length > 0 && (
+        <div className="settings-card p-4">
           <div className="flex items-center gap-1.5 mb-4">
             <Tooltip content="Open StreamNook badges" side="top">
               <button
@@ -1356,8 +1353,8 @@ const ProfileSettings = () => {
             </h4>
           </div>
           <div className="flex flex-wrap gap-2">
-            {ownedCosmetics.map((cosmetic) => {
-              const asset = COSMETIC_ASSET_BY_SLUG[cosmetic.slug];
+            {ownedBadges.map((cosmetic) => {
+              const asset = resolveCosmeticAsset(cosmetic);
               if (!asset) return null;
               const isActive = activeCosmeticSlug === cosmetic.slug;
               // Switch only — never unequip. A StreamNook member always wears a
@@ -1365,7 +1362,18 @@ const ProfileSettings = () => {
               // clicking the already-active badge is a no-op rather than clearing
               // the selection back to none.
               return (
-                <Tooltip key={cosmetic.slug} content={cosmetic.name} side="top">
+                <Tooltip
+                  key={cosmetic.slug}
+                  content={
+                    <div className="text-center">
+                      <div className="font-semibold">{cosmetic.name}</div>
+                      {cosmetic.description && (
+                        <div className="text-[11px] text-textSecondary mt-0.5">{cosmetic.description}</div>
+                      )}
+                    </div>
+                  }
+                  side="top"
+                >
                   <div
                     onClick={() => { if (!isActive) void setActiveCosmetic(currentUser.user_id, cosmetic.slug); }}
                     className={`
@@ -1459,16 +1467,16 @@ const ProfileSettings = () => {
               {' '}
               {previewChat.text}
               {previewChat.emotes.map((e, i) => (
-                <img
-                  key={`${e.id}-${i}`}
-                  src={previewEmoteUrl(e.id)}
-                  alt={e.name}
-                  title={e.name}
-                  className="mx-0.5 inline-block h-6 w-auto align-middle object-contain"
-                  onError={(ev) => {
-                    (ev.currentTarget as HTMLImageElement).style.display = 'none';
-                  }}
-                />
+                <Tooltip key={`${e.id}-${i}`} content={e.name}>
+                  <img
+                    src={previewEmoteUrl(e.id)}
+                    alt={e.name}
+                    className="mx-0.5 inline-block h-6 w-auto align-middle object-contain"
+                    onError={(ev) => {
+                      (ev.currentTarget as HTMLImageElement).style.display = 'none';
+                    }}
+                  />
+                </Tooltip>
               ))}
             </span>
           </div>
@@ -1477,7 +1485,7 @@ const ProfileSettings = () => {
 
       {/* Profile background: the basic backdrop source (tier or your 7TV paint).
           A paint only changes the BACKGROUND, not chat. */}
-      <div className="glass-panel rounded-xl p-5">
+      <div className="settings-card p-4">
         <h4 className="text-sm font-semibold text-textPrimary">Profile background</h4>
         <p className="mt-0.5 text-[12px] leading-relaxed text-textSecondary">
           Just your profile background. The tier aura is free; using your equipped 7TV paint is a
@@ -1522,7 +1530,7 @@ const ProfileSettings = () => {
           profile background AND chat messages (the whole package, unlike a paint
           which is only a background). A subscriber perk. Click the active one to
           remove it (back to the tier aura). */}
-      <div className="glass-panel rounded-xl p-5">
+      <div className="settings-card p-4">
         <div className="mb-1.5 flex items-center gap-1.5">
           <img src={streamNookLogo} alt="" className="h-4 w-4 object-contain" draggable={false} />
           <h4 className="text-sm font-semibold uppercase tracking-wide text-textPrimary">Atmospheres</h4>
@@ -1659,7 +1667,7 @@ const ProfileSettings = () => {
 
       {/* Profile visibility: per-section hide/unhide for the PUBLIC profile (what
           other StreamNook users see in the overlay). Self view always shows all. */}
-      <div className="glass-panel rounded-xl p-5">
+      <div className="settings-card p-4">
         <h4 className="text-sm font-semibold text-textPrimary">Profile visibility</h4>
         <p className="mt-0.5 text-[12px] leading-relaxed text-textSecondary">
           Choose what shows on your public profile (what other StreamNook users see when they open
@@ -1693,7 +1701,7 @@ const ProfileSettings = () => {
         </div>
       </div>
 
-      <div className="glass-panel rounded-xl p-5">
+      <div className="settings-card p-4">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-1.5">
             <Tooltip content="Open your Twitch profile" side="top">
@@ -1757,7 +1765,7 @@ const ProfileSettings = () => {
       </div>
 
       {(allSeventvPaints.length > 0 || seventvBadges.length > 0) && (
-        <div className="glass-panel rounded-xl p-5">
+        <div className="settings-card p-4">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-1.5">
@@ -1878,7 +1886,7 @@ const ProfileSettings = () => {
       )}
 
       {allThirdParty.length > 0 && (
-        <div className="glass-panel rounded-xl p-5">
+        <div className="settings-card p-4">
           <h4 className="text-sm font-semibold text-textPrimary uppercase tracking-wide mb-4">
             Other Badges
           </h4>

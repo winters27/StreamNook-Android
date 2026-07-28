@@ -376,6 +376,7 @@ fn build_gift_message(m: &WebcastGiftMessage, channel_key: &str) -> Option<ChatM
             emote_id: None,
             emote_url: url.clone(),
             is_zero_width: Some(false),
+            modifier_flags: None,
         });
         segments.push(MessageSegment::Text {
             content: format!(" {}", phrase),

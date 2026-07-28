@@ -67,7 +67,7 @@ const BadgeHighlightsSettings = () => {
               <button
                 onClick={() => addBadge(p)}
                 disabled={already}
-                className="text-[11px] px-2 py-1 rounded-md bg-glass/40 border border-borderSubtle text-textSecondary hover:text-textPrimary hover:bg-glass/60 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                className="glass-button-secondary text-[11px] px-2 py-1 rounded-md text-textSecondary hover:text-textPrimary disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
                 <Plus size={10} className="inline mr-1 -mt-0.5" />
                 {p.label}

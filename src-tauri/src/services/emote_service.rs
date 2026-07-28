@@ -3,8 +3,8 @@ use log::{debug, error};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
 const CLIENT_ID: &str = env!("TWITCH_APP_CLIENT_ID");
@@ -29,6 +29,71 @@ fn unix_now_secs() -> u64 {
 /// prefetch reads this after scanning to know the emote counts are incomplete.
 pub fn seventv_circuit_open() -> bool {
     unix_now_secs() < SEVENTV_CIRCUIT_OPEN_UNTIL.load(Ordering::Relaxed)
+}
+
+// Channel-independent 7TV data (trending search, global set) cached
+// process-wide: every channel join and every prefetch-scan worker previously
+// re-fetched both. Serve-stale-on-error: when 7TV is down an expired copy
+// still beats an empty picker.
+const SEVENTV_SHARED_TTL: Duration = Duration::from_secs(3600);
+
+type SharedEmoteCache = RwLock<Option<(Instant, Vec<Emote>)>>;
+
+static SEVENTV_TRENDING_CACHE: OnceLock<SharedEmoteCache> = OnceLock::new();
+static SEVENTV_GLOBALS_CACHE: OnceLock<SharedEmoteCache> = OnceLock::new();
+
+fn seventv_trending_cache() -> &'static SharedEmoteCache {
+    SEVENTV_TRENDING_CACHE.get_or_init(|| RwLock::new(None))
+}
+
+fn seventv_globals_cache() -> &'static SharedEmoteCache {
+    SEVENTV_GLOBALS_CACHE.get_or_init(|| RwLock::new(None))
+}
+
+/// Fresh hit -> Some(clone). Stale/empty -> None (caller fetches, then stores).
+async fn shared_cache_fresh(cache: &'static SharedEmoteCache) -> Option<Vec<Emote>> {
+    let guard = cache.read().await;
+    match guard.as_ref() {
+        Some((at, v)) if at.elapsed() < SEVENTV_SHARED_TTL => Some(v.clone()),
+        _ => None,
+    }
+}
+
+/// Stale fallback for a failed fetch (any age beats nothing).
+async fn shared_cache_any(cache: &'static SharedEmoteCache) -> Option<Vec<Emote>> {
+    cache.read().await.as_ref().map(|(_, v)| v.clone())
+}
+
+async fn shared_cache_store(cache: &'static SharedEmoteCache, v: Vec<Emote>) {
+    *cache.write().await = Some((Instant::now(), v));
+}
+
+// Last /v3/users/twitch/{id} payload per channel. The EventAPI's id
+// resolution runs seconds after the join's emote fetch and previously
+// re-fetched the same document; 60s is ample for that window.
+const SEVENTV_USER_PAYLOAD_TTL: Duration = Duration::from_secs(60);
+
+type UserPayloadCache = RwLock<HashMap<String, (Instant, Arc<serde_json::Value>)>>;
+
+static SEVENTV_USER_PAYLOAD: OnceLock<UserPayloadCache> = OnceLock::new();
+
+fn seventv_user_payload() -> &'static UserPayloadCache {
+    SEVENTV_USER_PAYLOAD.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+pub(crate) async fn seventv_user_payload_cached(
+    channel_id: &str,
+) -> Option<Arc<serde_json::Value>> {
+    let map = seventv_user_payload().read().await;
+    map.get(channel_id)
+        .filter(|(at, _)| at.elapsed() < SEVENTV_USER_PAYLOAD_TTL)
+        .map(|(_, v)| Arc::clone(v))
+}
+
+pub(crate) async fn seventv_user_payload_store(channel_id: &str, v: Arc<serde_json::Value>) {
+    let mut map = seventv_user_payload().write().await;
+    map.retain(|_, v| v.0.elapsed() < SEVENTV_USER_PAYLOAD_TTL);
+    map.insert(channel_id.to_string(), (Instant::now(), v));
 }
 
 /// Fetch a 7TV personal emote set by id and return only the emotes a 7TV
@@ -93,6 +158,66 @@ pub async fn fetch_personal_emote_set(set_id: &str) -> Vec<Emote> {
                 owner_id: None,
                 width,
                 owner_name,
+                modifier_flags: None,
+                ffz_sub_only: None,
+            });
+        }
+    }
+    out
+}
+
+/// Active emote-set id from a `/v3/users/:platform/:id` payload. Reads the
+/// root `emote_set_id` (the field that survives 7TV's removal of the inline
+/// `emote_set` object), falling back to `/emote_set/id` for legacy payloads.
+/// Shared by every consumer of that endpoint so the detection cannot drift.
+pub(crate) fn seventv_active_set_id(json: &serde_json::Value) -> Option<String> {
+    json.get("emote_set_id")
+        .and_then(|v| v.as_str())
+        .or_else(|| json.pointer("/emote_set/id").and_then(|v| v.as_str()))
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+/// Parse 7TV "active emote" objects (name at the root, full emote under `data`)
+/// into ready-to-render Emotes. Both channel-set sources carry this shape: the
+/// inline `emote_set.emotes` array (pre-change user payloads) and the
+/// `/v3/emote-sets/{id}` endpoint (the post-change fetch).
+fn parse_seventv_active_emotes(items: &[serde_json::Value]) -> Vec<Emote> {
+    let mut out = Vec::new();
+    for active_emote in items {
+        let emote_data = active_emote.get("data").unwrap_or(active_emote);
+        let emote_id = emote_data
+            .get("id")
+            .or_else(|| active_emote.get("id"))
+            .and_then(|v| v.as_str());
+        let name = active_emote.get("name").and_then(|v| v.as_str());
+        if let (Some(id), Some(name)) = (emote_id, name) {
+            let flags = emote_data
+                .get("flags")
+                .or_else(|| active_emote.get("flags"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let width = emote_data
+                .pointer("/host/files/0/width")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32);
+            let owner_name = emote_data
+                .pointer("/owner/display_name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            out.push(Emote {
+                id: id.to_string(),
+                name: name.to_string(),
+                url: format!("https://cdn.7tv.app/emote/{}/1x.avif", id),
+                provider: EmoteProvider::SevenTV,
+                is_zero_width: Some((flags & 256) == 256),
+                local_url: None,
+                emote_type: None,
+                owner_id: None,
+                width,
+                owner_name,
+                modifier_flags: None,
+                ffz_sub_only: None,
             });
         }
     }
@@ -121,6 +246,15 @@ pub struct Emote {
     /// Emote width in pixels (for aspect ratio sorting - wide emotes > 32)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
+    /// FFZ modifier bitmask (Hidden=1, FlipX=2, FlipY=4, GrowX=8, ...).
+    /// Some(_) marks the emote as a modifier that attaches to the preceding
+    /// emote; Some(0) is a legacy overlay modifier with no effect bits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modifier_flags: Option<u32>,
+    /// FFZ effect emote that only FFZ subscribers may compose with (set not in
+    /// the API's default_sets). Rendering is never gated on this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ffz_sub_only: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -585,6 +719,8 @@ impl EmoteService {
                             owner_id,
                             width: None,
                             owner_name: None,
+                            modifier_flags: None,
+                            ffz_sub_only: None,
                         });
                     }
                 }
@@ -650,6 +786,8 @@ impl EmoteService {
                                     owner_id: None,
                                     width: None,
                                     owner_name: None,
+                                    modifier_flags: None,
+                                    ffz_sub_only: None,
                                 });
                             }
                         }
@@ -697,6 +835,8 @@ impl EmoteService {
                                         owner_id: None,
                                         width: None,
                                         owner_name: None,
+                                        modifier_flags: None,
+                                        ffz_sub_only: None,
                                     });
                                 }
                             }
@@ -725,6 +865,8 @@ impl EmoteService {
                                         owner_id: None,
                                         width: None,
                                         owner_name: None,
+                                        modifier_flags: None,
+                                        ffz_sub_only: None,
                                     });
                                 }
                             }
@@ -752,9 +894,14 @@ impl EmoteService {
         // the caller must not treat it as this channel's real set.
         let mut channel_ok = channel_id.is_none();
 
-        // Fetch trending 7TV emotes using GraphQL (v4 API)
+        // Fetch trending 7TV emotes using GraphQL (v4 API). Channel-independent,
+        // so served from the process-wide cache between refreshes.
         // Note: v4 API uses `defaultName` instead of `name`, and `flags` is now an object
-        let gql_query = r#"
+        if let Some(cached) = shared_cache_fresh(seventv_trending_cache()).await {
+            emotes.extend(cached);
+        } else {
+            let mut trending: Vec<Emote> = Vec::new();
+            let gql_query = r#"
         query EmoteSearch(
             $query: String,
             $tags: [String!],
@@ -776,12 +923,10 @@ impl EmoteService {
                         id
                         defaultName
                         flags {
-                            zeroWidth
+                            defaultZeroWidth
                         }
-                        host {
-                            files {
-                                width
-                            }
+                        images {
+                            width
                         }
                     }
                 }
@@ -789,158 +934,125 @@ impl EmoteService {
         }
         "#;
 
-        let variables = serde_json::json!({
-            // Removed "animated": true filter to include all emotes (both static and animated)
-            "page": 1,
-            "perPage": 300,
-            "query": null,
-            "sortBy": "TRENDING_MONTHLY",
-            "tags": []
-        });
+            let variables = serde_json::json!({
+                // Removed "animated": true filter to include all emotes (both static and animated)
+                "page": 1,
+                // v4 caps perPage at 250; larger values are a validation error
+                "perPage": 250,
+                "query": null,
+                "sortBy": "TRENDING_MONTHLY",
+                "tags": []
+            });
 
-        let body = serde_json::json!({
-            "operationName": "EmoteSearch",
-            "query": gql_query,
-            "variables": variables
-        });
+            let body = serde_json::json!({
+                "operationName": "EmoteSearch",
+                "query": gql_query,
+                "variables": variables
+            });
 
-        match self
-            .client
-            .post("https://api.7tv.app/v4/gql")
-            .header("Content-Type", "application/json")
-            .header(
-                "Accept",
-                "application/graphql-response+json, application/graphql+json, application/json",
-            )
-            .json(&body)
-            .send()
-            .await
-        {
-            Ok(response) if response.status().is_success() => {
-                if let Ok(json) = response.json::<serde_json::Value>().await {
-                    if let Some(items) = json
-                        .pointer("/data/emotes/search/items")
-                        .and_then(|v| v.as_array())
-                    {
-                        for item in items {
-                            if let (Some(id), Some(name)) = (
-                                item.get("id").and_then(|v| v.as_str()),
-                                item.get("defaultName").and_then(|v| v.as_str()),
-                            ) {
-                                let is_zero_width = item
-                                    .pointer("/flags/zeroWidth")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(false);
-                                let width = item
-                                    .pointer("/host/files/0/width")
-                                    .and_then(|v| v.as_u64())
-                                    .map(|v| v as u32);
-                                emotes.push(Emote {
-                                    id: id.to_string(),
-                                    name: name.to_string(),
-                                    url: format!("https://cdn.7tv.app/emote/{}/1x.avif", id),
-                                    provider: EmoteProvider::SevenTV,
-                                    is_zero_width: Some(is_zero_width),
-                                    local_url: None,
-                                    emote_type: None,
-                                    owner_id: None,
-                                    width,
-                                    owner_name: None,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-            Ok(_) => error!("[EmoteService] 7TV GraphQL: non-success status"),
-            Err(e) => error!("[EmoteService] 7TV GraphQL request failed: {}", e),
-        }
-
-        // Fetch global 7TV emotes (v3 API)
-        match self
-            .get_with_retry("https://7tv.io/v3/emote-sets/global", 3)
-            .await
-        {
-            Some(response) => {
-                if let Ok(json) = response.json::<serde_json::Value>().await {
-                    if let Some(global_emotes) = json.get("emotes").and_then(|v| v.as_array()) {
-                        for item in global_emotes {
-                            let emote_data = item.get("data").unwrap_or(item);
-                            if let (Some(id), Some(name)) = (
-                                emote_data
-                                    .get("id")
-                                    .or_else(|| item.get("id"))
-                                    .and_then(|v| v.as_str()),
-                                item.get("name").and_then(|v| v.as_str()),
-                            ) {
-                                let flags = emote_data
-                                    .get("flags")
-                                    .or_else(|| item.get("flags"))
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0);
-                                let width = emote_data
-                                    .pointer("/host/files/0/width")
-                                    .and_then(|v| v.as_u64())
-                                    .map(|v| v as u32);
-                                emotes.push(Emote {
-                                    id: id.to_string(),
-                                    name: name.to_string(),
-                                    url: format!("https://cdn.7tv.app/emote/{}/1x.avif", id),
-                                    provider: EmoteProvider::SevenTV,
-                                    is_zero_width: Some((flags & 256) == 256),
-                                    local_url: None,
-                                    emote_type: None,
-                                    owner_id: None,
-                                    width,
-                                    owner_name: None,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-            None => error!("[EmoteService] 7TV global unavailable (after retries)"),
-        }
-
-        // Fetch channel-specific 7TV emotes
-        if let Some(channel_id) = channel_id {
             match self
-                .get_with_retry(&format!("https://7tv.io/v3/users/twitch/{}", channel_id), 3)
+                .client
+                .post("https://api.7tv.app/v4/gql")
+                .header("Content-Type", "application/json")
+                .header(
+                    "Accept",
+                    "application/graphql-response+json, application/graphql+json, application/json",
+                )
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => {
+                    if let Ok(json) = response.json::<serde_json::Value>().await {
+                        // GQL failures arrive as HTTP 200 with an `errors` array;
+                        // without this they are silent (how the schema-drift
+                        // breakage went unnoticed).
+                        if let Some(errs) = json.get("errors") {
+                            error!("[EmoteService] 7TV GraphQL errors: {}", errs);
+                        }
+                        if let Some(items) = json
+                            .pointer("/data/emotes/search/items")
+                            .and_then(|v| v.as_array())
+                        {
+                            for item in items {
+                                if let (Some(id), Some(name)) = (
+                                    item.get("id").and_then(|v| v.as_str()),
+                                    item.get("defaultName").and_then(|v| v.as_str()),
+                                ) {
+                                    let is_zero_width = item
+                                        .pointer("/flags/defaultZeroWidth")
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(false);
+                                    let width = item
+                                        .pointer("/images/0/width")
+                                        .and_then(|v| v.as_u64())
+                                        .map(|v| v as u32);
+                                    trending.push(Emote {
+                                        id: id.to_string(),
+                                        name: name.to_string(),
+                                        url: format!("https://cdn.7tv.app/emote/{}/1x.avif", id),
+                                        provider: EmoteProvider::SevenTV,
+                                        is_zero_width: Some(is_zero_width),
+                                        local_url: None,
+                                        emote_type: None,
+                                        owner_id: None,
+                                        width,
+                                        owner_name: None,
+                                        modifier_flags: None,
+                                        ffz_sub_only: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(_) => error!("[EmoteService] 7TV GraphQL: non-success status"),
+                Err(e) => error!("[EmoteService] 7TV GraphQL request failed: {}", e),
+            }
+
+            // One rule for every failure shape (non-success, request error,
+            // parse failure, empty answer): fall back to any stale copy.
+            if trending.is_empty() {
+                if let Some(stale) = shared_cache_any(seventv_trending_cache()).await {
+                    emotes.extend(stale);
+                }
+            } else {
+                shared_cache_store(seventv_trending_cache(), trending.clone()).await;
+                emotes.extend(trending);
+            }
+        }
+
+        // Fetch global 7TV emotes (v3 API). Also channel-independent + cached.
+        if let Some(cached) = shared_cache_fresh(seventv_globals_cache()).await {
+            emotes.extend(cached);
+        } else {
+            let mut globals: Vec<Emote> = Vec::new();
+            match self
+                .get_with_retry("https://7tv.io/v3/emote-sets/global", 3)
                 .await
             {
                 Some(response) => {
-                    // A 200 is a definitive answer for this channel, even if the
-                    // set turns out empty. The 7TV array is now this channel's
-                    // real set, so the caller may treat it as authoritative.
-                    channel_ok = true;
                     if let Ok(json) = response.json::<serde_json::Value>().await {
-                        if let Some(emote_set_emotes) =
-                            json.pointer("/emote_set/emotes").and_then(|v| v.as_array())
-                        {
-                            for active_emote in emote_set_emotes {
-                                let emote_data = active_emote.get("data").unwrap_or(active_emote);
-                                let emote_id = emote_data
-                                    .get("id")
-                                    .or_else(|| active_emote.get("id"))
-                                    .and_then(|v| v.as_str());
-                                let name = active_emote.get("name").and_then(|v| v.as_str());
-
-                                if let (Some(id), Some(name)) = (emote_id, name) {
+                        if let Some(global_emotes) = json.get("emotes").and_then(|v| v.as_array()) {
+                            for item in global_emotes {
+                                let emote_data = item.get("data").unwrap_or(item);
+                                if let (Some(id), Some(name)) = (
+                                    emote_data
+                                        .get("id")
+                                        .or_else(|| item.get("id"))
+                                        .and_then(|v| v.as_str()),
+                                    item.get("name").and_then(|v| v.as_str()),
+                                ) {
                                     let flags = emote_data
                                         .get("flags")
-                                        .or_else(|| active_emote.get("flags"))
+                                        .or_else(|| item.get("flags"))
                                         .and_then(|v| v.as_i64())
                                         .unwrap_or(0);
                                     let width = emote_data
                                         .pointer("/host/files/0/width")
                                         .and_then(|v| v.as_u64())
                                         .map(|v| v as u32);
-                                    // Extract owner display name from emote data
-                                    let owner_name = emote_data
-                                        .pointer("/owner/display_name")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string());
-                                    emotes.push(Emote {
+                                    globals.push(Emote {
                                         id: id.to_string(),
                                         name: name.to_string(),
                                         url: format!("https://cdn.7tv.app/emote/{}/1x.avif", id),
@@ -950,11 +1062,81 @@ impl EmoteService {
                                         emote_type: None,
                                         owner_id: None,
                                         width,
-                                        owner_name,
+                                        owner_name: None,
+                                        modifier_flags: None,
+                                        ffz_sub_only: None,
                                     });
                                 }
                             }
                         }
+                    }
+                }
+                None => error!("[EmoteService] 7TV global unavailable (after retries)"),
+            }
+
+            if globals.is_empty() {
+                if let Some(stale) = shared_cache_any(seventv_globals_cache()).await {
+                    emotes.extend(stale);
+                }
+            } else {
+                shared_cache_store(seventv_globals_cache(), globals.clone()).await;
+                emotes.extend(globals);
+            }
+        }
+
+        // Fetch channel-specific 7TV emotes
+        if let Some(channel_id) = channel_id {
+            match self
+                .get_with_retry(&format!("https://7tv.io/v3/users/twitch/{}", channel_id), 3)
+                .await
+            {
+                Some(response) => {
+                    // A 200 is a definitive answer for this channel unless the set
+                    // now has to be fetched separately and that fetch fails
+                    // (handled below).
+                    channel_ok = true;
+                    if let Ok(json) = response.json::<serde_json::Value>().await {
+                        // Share the payload with the EventAPI's id resolution,
+                        // which runs on the same join moments later.
+                        let json = Arc::new(json);
+                        seventv_user_payload_store(&channel_id, Arc::clone(&json)).await;
+                        if let Some(items) =
+                            json.pointer("/emote_set/emotes").and_then(|v| v.as_array())
+                        {
+                            // Inline set (pre-change payload): authoritative, even
+                            // if empty.
+                            emotes.extend(parse_seventv_active_emotes(items));
+                        } else if let Some(set_id) = seventv_active_set_id(&json) {
+                            // Post-change payload: `emote_set` is null, fetch the
+                            // set by id.
+                            match self
+                                .get_with_retry(
+                                    &format!("https://7tv.io/v3/emote-sets/{}", set_id),
+                                    3,
+                                )
+                                .await
+                            {
+                                Some(set_resp) => {
+                                    if let Ok(set_json) =
+                                        set_resp.json::<serde_json::Value>().await
+                                    {
+                                        if let Some(items) =
+                                            set_json.get("emotes").and_then(|v| v.as_array())
+                                        {
+                                            emotes.extend(parse_seventv_active_emotes(items));
+                                        }
+                                    }
+                                }
+                                None => {
+                                    // Same discrimination as the user-fetch failure
+                                    // arm below: open circuit = real failure,
+                                    // closed = clean 404.
+                                    channel_ok = !seventv_circuit_open();
+                                }
+                            }
+                        }
+                        // else: on 7TV but no active set — globals-only is the
+                        // real answer.
                     }
                 }
                 None => {
@@ -989,6 +1171,44 @@ impl EmoteService {
             .unwrap_or_else(|| format!("https://cdn.frankerfacez.com/emote/{}/1", id))
     }
 
+    /// Parse one FFZ emoticon into an Emote. A `modifier: true` emoticon is an
+    /// FFZ modifier (attaches to the preceding emote): it rides the zero-width
+    /// grouping machinery (the same mapping BTTV's modifier bool uses) and
+    /// carries its `modifier_flags` bitmask for the renderer. `sub_only` marks
+    /// emotes from non-default global sets (FFZ subscriber effect perks).
+    fn parse_ffz_emoticon(item: &serde_json::Value, sub_only: bool) -> Option<Emote> {
+        let id = item.get("id").and_then(|v| v.as_i64())?;
+        let name = item.get("name").and_then(|v| v.as_str())?;
+        let is_modifier = item
+            .get("modifier")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let modifier_flags = if is_modifier {
+            // Some(0) is a legacy overlay modifier with no effect bits.
+            Some(
+                item.get("modifier_flags")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32,
+            )
+        } else {
+            None
+        };
+        Some(Emote {
+            id: id.to_string(),
+            name: name.to_string(),
+            url: Self::ffz_emote_url(item, id),
+            provider: EmoteProvider::FFZ,
+            is_zero_width: if is_modifier { Some(true) } else { None },
+            local_url: None,
+            emote_type: None,
+            owner_id: None,
+            width: None,
+            owner_name: None,
+            modifier_flags,
+            ffz_sub_only: if sub_only { Some(true) } else { None },
+        })
+    }
+
     async fn fetch_ffz_emotes(&self, channel_name: Option<String>) -> Result<Vec<Emote>> {
         let mut emotes = Vec::new();
 
@@ -1001,30 +1221,26 @@ impl EmoteService {
         {
             Ok(response) if response.status().is_success() => {
                 if let Ok(json) = response.json::<serde_json::Value>().await {
+                    // Sets outside `default_sets` (e.g. the Subwoofer Emote
+                    // Effects set) are FFZ-subscriber perks: rendered for
+                    // everyone, offered in the picker only to subscribers.
+                    let default_sets: Vec<i64> = json
+                        .get("default_sets")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.iter().filter_map(|v| v.as_i64()).collect())
+                        .unwrap_or_default();
                     if let Some(sets) = json.get("sets").and_then(|v| v.as_object()) {
-                        for (_set_id, set_data) in sets {
+                        for (set_id, set_data) in sets {
+                            let sub_only = set_id
+                                .parse::<i64>()
+                                .map(|id| !default_sets.contains(&id))
+                                .unwrap_or(false);
                             if let Some(emoticons) =
                                 set_data.get("emoticons").and_then(|v| v.as_array())
                             {
                                 for item in emoticons {
-                                    if let (Some(id), Some(name)) = (
-                                        item.get("id").and_then(|v| v.as_i64()),
-                                        item.get("name").and_then(|v| v.as_str()),
-                                    ) {
-                                        let url = Self::ffz_emote_url(item, id);
-
-                                        emotes.push(Emote {
-                                            id: id.to_string(),
-                                            name: name.to_string(),
-                                            url,
-                                            provider: EmoteProvider::FFZ,
-                                            is_zero_width: None,
-                                            local_url: None,
-                                            emote_type: None,
-                                            owner_id: None,
-                                            width: None,
-                                            owner_name: None,
-                                        });
+                                    if let Some(emote) = Self::parse_ffz_emoticon(item, sub_only) {
+                                        emotes.push(emote);
                                     }
                                 }
                             }
@@ -1055,24 +1271,9 @@ impl EmoteService {
                                     set_data.get("emoticons").and_then(|v| v.as_array())
                                 {
                                     for item in emoticons {
-                                        if let (Some(id), Some(name)) = (
-                                            item.get("id").and_then(|v| v.as_i64()),
-                                            item.get("name").and_then(|v| v.as_str()),
-                                        ) {
-                                            let url = Self::ffz_emote_url(item, id);
-
-                                            emotes.push(Emote {
-                                                id: id.to_string(),
-                                                name: name.to_string(),
-                                                url,
-                                                provider: EmoteProvider::FFZ,
-                                                is_zero_width: None,
-                                                local_url: None,
-                                                emote_type: None,
-                                                owner_id: None,
-                                                width: None,
-                                                owner_name: None,
-                                            });
+                                        if let Some(emote) = Self::parse_ffz_emoticon(item, false)
+                                        {
+                                            emotes.push(emote);
                                         }
                                     }
                                 }
@@ -1101,6 +1302,8 @@ impl EmoteService {
                 owner_id: None,
                 width: None,
                 owner_name: None,
+                modifier_flags: None,
+                ffz_sub_only: None,
             },
             Emote {
                 id: "354".to_string(),
@@ -1113,6 +1316,8 @@ impl EmoteService {
                 owner_id: None,
                 width: None,
                 owner_name: None,
+                modifier_flags: None,
+                ffz_sub_only: None,
             },
             Emote {
                 id: "425618".to_string(),
@@ -1126,6 +1331,8 @@ impl EmoteService {
                 owner_id: None,
                 width: None,
                 owner_name: None,
+                modifier_flags: None,
+                ffz_sub_only: None,
             },
             Emote {
                 id: "305954156".to_string(),
@@ -1139,6 +1346,8 @@ impl EmoteService {
                 owner_id: None,
                 width: None,
                 owner_name: None,
+                modifier_flags: None,
+                ffz_sub_only: None,
             },
             Emote {
                 id: "88".to_string(),
@@ -1151,6 +1360,8 @@ impl EmoteService {
                 owner_id: None,
                 width: None,
                 owner_name: None,
+                modifier_flags: None,
+                ffz_sub_only: None,
             },
             Emote {
                 id: "81273".to_string(),
@@ -1163,6 +1374,8 @@ impl EmoteService {
                 owner_id: None,
                 width: None,
                 owner_name: None,
+                modifier_flags: None,
+                ffz_sub_only: None,
             },
             Emote {
                 id: "81248".to_string(),
@@ -1175,6 +1388,8 @@ impl EmoteService {
                 owner_id: None,
                 width: None,
                 owner_name: None,
+                modifier_flags: None,
+                ffz_sub_only: None,
             },
             Emote {
                 id: "81249".to_string(),
@@ -1187,6 +1402,8 @@ impl EmoteService {
                 owner_id: None,
                 width: None,
                 owner_name: None,
+                modifier_flags: None,
+                ffz_sub_only: None,
             },
             Emote {
                 id: "81274".to_string(),
@@ -1199,6 +1416,8 @@ impl EmoteService {
                 owner_id: None,
                 width: None,
                 owner_name: None,
+                modifier_flags: None,
+                ffz_sub_only: None,
             },
             Emote {
                 id: "81997".to_string(),
@@ -1211,6 +1430,8 @@ impl EmoteService {
                 owner_id: None,
                 width: None,
                 owner_name: None,
+                modifier_flags: None,
+                ffz_sub_only: None,
             },
             Emote {
                 id: "166266".to_string(),
@@ -1224,6 +1445,8 @@ impl EmoteService {
                 owner_id: None,
                 width: None,
                 owner_name: None,
+                modifier_flags: None,
+                ffz_sub_only: None,
             },
             Emote {
                 id: "191762".to_string(),
@@ -1237,6 +1460,8 @@ impl EmoteService {
                 owner_id: None,
                 width: None,
                 owner_name: None,
+                modifier_flags: None,
+                ffz_sub_only: None,
             },
             Emote {
                 id: "196892".to_string(),
@@ -1250,6 +1475,8 @@ impl EmoteService {
                 owner_id: None,
                 width: None,
                 owner_name: None,
+                modifier_flags: None,
+                ffz_sub_only: None,
             },
             Emote {
                 id: "245".to_string(),
@@ -1262,6 +1489,8 @@ impl EmoteService {
                 owner_id: None,
                 width: None,
                 owner_name: None,
+                modifier_flags: None,
+                ffz_sub_only: None,
             },
             Emote {
                 id: "1902".to_string(),
@@ -1274,6 +1503,8 @@ impl EmoteService {
                 owner_id: None,
                 width: None,
                 owner_name: None,
+                modifier_flags: None,
+                ffz_sub_only: None,
             },
         ]
     }
@@ -1282,5 +1513,109 @@ impl EmoteService {
 impl Default for EmoteService {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_active_emotes_with_nested_data() {
+        let items = vec![serde_json::json!({
+            "id": "active-id",
+            "name": "PogChamp",
+            "data": {
+                "id": "data-id",
+                "flags": 256,
+                "host": { "files": [{ "width": 32 }] },
+                "owner": { "display_name": "someone" }
+            }
+        })];
+        let out = parse_seventv_active_emotes(&items);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "data-id");
+        assert_eq!(out[0].name, "PogChamp");
+        assert_eq!(out[0].is_zero_width, Some(true));
+        assert_eq!(out[0].width, Some(32));
+        assert_eq!(out[0].owner_name.as_deref(), Some("someone"));
+    }
+
+    #[test]
+    fn parses_active_emotes_flat_fallback() {
+        let items = vec![serde_json::json!({
+            "id": "flat-id",
+            "name": "Kappa",
+            "flags": 0
+        })];
+        let out = parse_seventv_active_emotes(&items);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "flat-id");
+        assert_eq!(out[0].is_zero_width, Some(false));
+        assert_eq!(out[0].width, None);
+        assert_eq!(out[0].owner_name, None);
+    }
+
+    #[test]
+    fn set_id_from_post_change_payload() {
+        let json = serde_json::json!({ "emote_set": null, "emote_set_id": "01ABC" });
+        assert_eq!(seventv_active_set_id(&json).as_deref(), Some("01ABC"));
+    }
+
+    #[test]
+    fn set_id_legacy_fallback() {
+        let json = serde_json::json!({ "emote_set": { "id": "01DEF", "emotes": [] } });
+        assert_eq!(seventv_active_set_id(&json).as_deref(), Some("01DEF"));
+    }
+
+    #[test]
+    fn set_id_absent_or_empty() {
+        assert_eq!(seventv_active_set_id(&serde_json::json!({})), None);
+        assert_eq!(
+            seventv_active_set_id(&serde_json::json!({ "emote_set_id": "" })),
+            None
+        );
+    }
+
+    #[test]
+    fn ffz_modifier_emoticon_parses_flags_and_rides_zero_width() {
+        let item = serde_json::json!({
+            "id": 720508,
+            "name": "ffzX",
+            "modifier": true,
+            "modifier_flags": 3,
+            "urls": { "1": "https://cdn.frankerfacez.com/emote/720508/1" }
+        });
+        let e = EmoteService::parse_ffz_emoticon(&item, false).unwrap();
+        assert_eq!(e.is_zero_width, Some(true));
+        assert_eq!(e.modifier_flags, Some(3));
+        assert_eq!(e.ffz_sub_only, None);
+    }
+
+    #[test]
+    fn ffz_sub_only_set_marks_emote() {
+        let item = serde_json::json!({
+            "id": 720510,
+            "name": "ffzRainbow",
+            "modifier": true,
+            "modifier_flags": 2049
+        });
+        let e = EmoteService::parse_ffz_emoticon(&item, true).unwrap();
+        assert_eq!(e.ffz_sub_only, Some(true));
+        assert_eq!(e.modifier_flags, Some(2049));
+    }
+
+    #[test]
+    fn ffz_plain_emoticon_has_no_modifier_fields() {
+        let item = serde_json::json!({
+            "id": 1,
+            "name": "PlainEmote",
+            "modifier": false,
+            "modifier_flags": 0
+        });
+        let e = EmoteService::parse_ffz_emoticon(&item, false).unwrap();
+        assert_eq!(e.is_zero_width, None);
+        assert_eq!(e.modifier_flags, None);
+        assert_eq!(e.ffz_sub_only, None);
     }
 }

@@ -121,11 +121,7 @@ const CommandAutocomplete: React.FC<CommandAutocompleteProps> = ({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: 6, scale: 0.98 }}
       transition={{ duration: 0.15, ease: "easeOut" }}
-      className="absolute z-[60] bottom-full left-0 right-0 mb-2 h-[520px] max-h-[calc(100vh-120px)] flex flex-col overflow-hidden rounded-xl border border-borderSubtle shadow-[0_16px_48px_rgba(0,0,0,0.8)] bg-background/[0.45] glass-panel origin-bottom"
-      style={{
-        backdropFilter: 'blur(64px) saturate(300%)',
-        WebkitBackdropFilter: 'blur(64px) saturate(300%)',
-      }}
+      className="sn-popover absolute z-[60] bottom-full left-0 right-0 mb-2 h-[520px] max-h-[calc(100vh-120px)] flex flex-col overflow-hidden origin-bottom"
       ref={listRef as any}
     >
       {/* Header */}

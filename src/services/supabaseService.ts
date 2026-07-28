@@ -2,9 +2,8 @@ import { createClient, RealtimeChannel, SupabaseClient } from '@supabase/supabas
 import type { TwitchUser } from '../types';
 
 import { Logger } from '../utils/logger';
-import { getActiveSeasonalAccoladeIds, isCakeDay, CAKE_DAY_ID } from '../utils/seasonalAccolades';
-import { fetchIVRUserData } from './ivrService';
 import type { Atmosphere } from './atmospheres';
+import type { ActiveEquipment, CosmeticSlot } from './cosmetics/types';
 // Supabase client singleton
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -782,6 +781,37 @@ export const listActiveEventRewards = async (): Promise<EventReward[]> => {
 };
 
 /**
+ * Active milestone rewards (the tenure kind, e.g. subscriber-month badges gated
+ * on total_months). Same world-readable rewards table, cached briefly. Claiming
+ * is gated server-side by claim_reward against the real stored value, so a new
+ * milestone badge is pure config (a cosmetics row + a rewards row) with no
+ * client release.
+ */
+let milestoneRewardsCache: { at: number; rows: EventReward[] } | null = null;
+export const listActiveMilestoneRewards = async (): Promise<EventReward[]> => {
+    if (!supabase) return [];
+    const now = Date.now();
+    if (milestoneRewardsCache && now - milestoneRewardsCache.at < 5 * 60_000) return milestoneRewardsCache.rows;
+    try {
+        const { data, error } = await supabase
+            .from('rewards')
+            .select('id, title, reward_kind, reward_id')
+            .eq('active', true)
+            .eq('gate_kind', 'milestone');
+        if (error) {
+            Logger.warn('[Supabase] listActiveMilestoneRewards failed:', error.message);
+            return milestoneRewardsCache?.rows ?? [];
+        }
+        const rows = (data ?? []) as EventReward[];
+        milestoneRewardsCache = { at: now, rows };
+        return rows;
+    } catch (error) {
+        Logger.warn('[Supabase] listActiveMilestoneRewards exception:', error);
+        return milestoneRewardsCache?.rows ?? [];
+    }
+};
+
+/**
  * Sync the caller's owned subscriber atmospheres. The server function
  * (grant_atmosphere_ownership, security definer) grants ownership of every
  * current subscriber atmosphere ONLY if the user is an active subscriber, so a
@@ -801,29 +831,54 @@ export const grantAtmosphereOwnership = async (userId: string): Promise<void> =>
 };
 
 /**
- * If today falls within a seasonal badge window, grant that badge. Called once
- * per session on login so holidays are captured without opening the profile.
+ * Claim today's login accolades (seasonal windows + cake day) server-side. The
+ * claim_login_accolades RPC enforces the window against the server clock and
+ * reads the verified Twitch creation date, then grants idempotently. Returns the
+ * ids freshly granted. Fire-and-forget on login / own-profile open.
  */
-export const grantActiveSeasonalAccolades = async (userId: string): Promise<void> => {
-    const ids = getActiveSeasonalAccoladeIds(new Date());
-    for (const id of ids) {
-        await grantAccolade(userId, id);
+export const claimLoginAccolades = async (userId: string): Promise<string[]> => {
+    if (!supabase || !userId) return [];
+    try {
+        const { data, error } = await supabase.rpc('claim_login_accolades', {
+            p_twitch_user_id: userId,
+        });
+        if (error) {
+            Logger.warn('[Supabase] claim_login_accolades failed:', error.message);
+            return [];
+        }
+        const granted = (data as { granted?: string[] } | null)?.granted;
+        return Array.isArray(granted) ? granted : [];
+    } catch (error) {
+        Logger.warn('[Supabase] claim_login_accolades exception:', error);
+        return [];
     }
 };
 
 /**
- * Grant the Cake Day badge if today is the user's Twitch account anniversary.
- * Reads the creation date from IVR; best-effort.
+ * Read a member's active loadout (slot -> equipped cosmetic slug) from the new
+ * user_cosmetic_equipment table. World-readable, so it resolves any member's
+ * equipped slots for rendering. Returns {} until the Stage 3 migration is applied
+ * (the table + sync triggers populate it from the existing badge/theme writes).
  */
-export const grantCakeDayAccolade = async (userId: string, login: string): Promise<void> => {
-    if (!userId || !login) return;
+export const getActiveEquipment = async (userId: string): Promise<ActiveEquipment> => {
+    if (!supabase || !userId) return {};
     try {
-        const u = await fetchIVRUserData(login);
-        if (u?.createdAt && isCakeDay(u.createdAt, new Date())) {
-            await grantAccolade(userId, CAKE_DAY_ID);
+        const { data, error } = await supabase
+            .from('user_cosmetic_equipment')
+            .select('slot, cosmetic_slug')
+            .eq('twitch_user_id', userId);
+        if (error) {
+            Logger.warn('[Supabase] equipment read failed:', error.message);
+            return {};
         }
-    } catch {
-        // best effort
+        const out: ActiveEquipment = {};
+        for (const row of (data ?? []) as { slot: string; cosmetic_slug: string | null }[]) {
+            out[row.slot as CosmeticSlot] = row.cosmetic_slug;
+        }
+        return out;
+    } catch (error) {
+        Logger.warn('[Supabase] equipment read exception:', error);
+        return {};
     }
 };
 
@@ -1332,6 +1387,9 @@ export interface CosmeticCatalogEntry {
     sort_order: number;
     is_active: boolean;
     is_default: boolean;
+    // Owner-only / staged cosmetics: kept out of the public "all badges"
+    // collection. Still ownable and equippable by whoever has been granted it.
+    hidden?: boolean;
 }
 
 let cosmeticsCatalog: Map<string, CosmeticCatalogEntry> = new Map();

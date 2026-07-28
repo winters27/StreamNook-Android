@@ -141,9 +141,9 @@ const MultiNookToolbar: React.FC<MultiNookToolbarProps> = ({
           relative flex items-center justify-between px-4 py-2 backdrop-blur-md border-b shadow-sm
           transition-all duration-300
           ${isDragging && isOver
-            ? 'bg-accent/15 border-accent/50 shadow-[0_0_25px_rgba(167,139,250,0.2),0_2px_10px_rgba(167,139,250,0.15)]'
+            ? 'bg-accent/15 border-accent/50 shadow-[0_0_25px_rgba(var(--color-accent-rgb),0.2),0_2px_10px_rgba(var(--color-accent-rgb),0.15)]'
             : isDragging
-              ? 'bg-surface/50 border-accent/30 shadow-[0_0_12px_rgba(167,139,250,0.08)]'
+              ? 'bg-surface/50 border-accent/30 shadow-[0_0_12px_rgba(var(--color-accent-rgb),0.08)]'
               : 'bg-surface/50 border-borderSubtle'
           }
         `}
@@ -169,7 +169,7 @@ const MultiNookToolbar: React.FC<MultiNookToolbarProps> = ({
           <div
             className="absolute inset-0 pointer-events-none rounded-[inherit]"
             style={{
-              boxShadow: '0 0 0 1px rgba(167,139,250,0.2)',
+              boxShadow: '0 0 0 1px rgba(var(--color-accent-rgb), 0.2)',
               animation: 'dock-pulse 1.5s ease-in-out infinite',
             }}
           />
@@ -430,10 +430,9 @@ const MultiNookToolbar: React.FC<MultiNookToolbarProps> = ({
                 aria-pressed={showModLogs}
                 className={`w-8 h-8 flex items-center justify-center transition-all duration-200 ${
                   showModLogs
-                    ? 'glass-input text-emerald-400 drop-shadow-md'
-                    : 'glass-button text-rose-400/80 hover:text-emerald-400'
+                    ? 'glass-button-active text-success drop-shadow-md'
+                    : 'glass-button text-error/80 hover:text-success'
                 }`}
-                style={{ borderRadius: '8px' }}
               >
                 <ShieldCheck size={15} />
               </button>
@@ -445,10 +444,9 @@ const MultiNookToolbar: React.FC<MultiNookToolbarProps> = ({
               onClick={toggleChatHidden}
               className={`w-8 h-8 flex items-center justify-center transition-all duration-200 ${
                 isChatHidden
-                  ? 'glass-input text-accent drop-shadow-md'
-                  : 'glass-button text-textSecondary hover:text-red-400 hover:bg-red-500/10'
+                  ? 'glass-button-active text-accent drop-shadow-md'
+                  : 'glass-button text-textSecondary hover:text-error hover:bg-error/10'
               }`}
-              style={{ borderRadius: '8px' }}
             >
               {isChatHidden ? <MessageSquareOff size={15} /> : <MessageSquare size={15} />}
             </button>
@@ -495,7 +493,7 @@ const DraggableDockPill: React.FC<{
           cursor-grab active:cursor-grabbing
           transition-all duration-300 shrink-0 touch-none
           ${isPillDragging
-            ? 'opacity-80 scale-105 shadow-[0_0_20px_rgba(167,139,250,0.3)] ring-1 ring-accent'
+            ? 'opacity-80 scale-105 shadow-[0_0_20px_rgba(var(--color-accent-rgb),0.3)] ring-1 ring-accent'
             : 'hover:text-white'
           }
         `}
@@ -561,7 +559,7 @@ const TutorialDockPill: React.FC<{
           cursor-grab active:cursor-grabbing border-emerald-400/30 bg-emerald-400/10
           transition-all duration-300 shrink-0 touch-none
           ${isDragging
-            ? 'opacity-80 scale-105 shadow-[0_0_20px_rgba(52,211,153,0.3)] ring-1 ring-emerald-400'
+            ? 'opacity-80 scale-105 shadow-[0_0_20px_color-mix(in_srgb,var(--color-success)_30%,transparent)] ring-1 ring-emerald-400'
             : 'hover:text-white'
           }
         `}

@@ -312,14 +312,14 @@ export const StreamContextMenu: React.FC = () => {
                     className="w-full text-left px-3 py-2 border-b border-borderSubtle mb-1 rounded-t-lg hover:bg-glass-hover transition-colors group flex items-center justify-between"
                 >
                     <div>
-                        <span className="text-xs font-semibold text-textPrimary group-hover:text-[#29b6f6] transition-colors truncate block">
+                        <span className="text-xs font-semibold text-textPrimary group-hover:text-accent transition-colors truncate block">
                             {stream.user_name}
                         </span>
-                        <span className="text-[10px] text-textMuted uppercase tracking-wider block mt-0.5 group-hover:text-[#29b6f6]/70 transition-colors">
+                        <span className="text-[10px] text-textMuted uppercase tracking-wider block mt-0.5 group-hover:text-accent/70 transition-colors">
                             View Profile
                         </span>
                     </div>
-                    <User size={14} className="text-textMuted group-hover:text-[#29b6f6] transition-colors" />
+                    <User size={14} className="text-textMuted group-hover:text-accent transition-colors" />
                 </button>
 
                 {/* Add to MultiNook */}
@@ -372,7 +372,7 @@ export const StreamContextMenu: React.FC = () => {
                         fill={isFavorite ? 'url(#glass-heart-fill)' : 'none'} 
                         stroke={isFavorite ? 'url(#glass-heart-stroke)' : 'currentColor'}
                         strokeWidth={isFavorite ? 1.5 : 2}
-                        className={isFavorite ? 'drop-shadow-[0_4px_8px_rgba(236,72,153,0.5)]' : ''} 
+                        className={isFavorite ? 'drop-shadow-[0_4px_8px_color-mix(in_srgb,var(--color-highlight-pink)_50%,transparent)]' : ''} 
                     />
                     <span>{isFavorite ? 'Unfavorite' : 'Favorite'}</span>
                 </button>

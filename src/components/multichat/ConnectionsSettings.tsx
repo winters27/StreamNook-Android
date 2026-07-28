@@ -132,7 +132,7 @@ export default function ConnectionsSettings() {
         integrations ship.
       </p>
 
-      <div className="divide-y divide-white/5 overflow-hidden rounded-lg border border-white/10">
+      <div className="hairline-y overflow-hidden rounded-lg border border-borderSubtle">
         {PROVIDER_IDS.map((p) => {
           const meta = PROVIDERS[p];
           const status = statusFor(p);
@@ -160,7 +160,7 @@ export default function ConnectionsSettings() {
                   <button
                     type="button"
                     onClick={disconnectKick}
-                    className="shrink-0 rounded-md border border-white/15 px-3 py-1 text-xs font-medium text-textSecondary transition-colors hover:border-red-500/50 hover:text-red-400"
+                    className="glass-button-secondary shrink-0 px-3 py-1 text-xs font-medium text-textSecondary transition-colors hover:text-red-400"
                   >
                     Disconnect
                   </button>
@@ -169,8 +169,8 @@ export default function ConnectionsSettings() {
                     type="button"
                     onClick={connectKick}
                     disabled={kickBusy}
-                    className="shrink-0 rounded-md border px-3 py-1 text-xs font-semibold transition-colors hover:bg-white/5 disabled:opacity-60"
-                    style={{ borderColor: 'rgba(83,252,24,0.45)', color: '#53fc18' }}
+                    className="glass-button-secondary shrink-0 px-3 py-1 text-xs font-semibold transition-colors disabled:opacity-60"
+                    style={{ color: '#53fc18' }}
                   >
                     {kickBusy ? 'Connecting…' : 'Connect'}
                   </button>
@@ -180,7 +180,7 @@ export default function ConnectionsSettings() {
                   <button
                     type="button"
                     onClick={disconnectYoutube}
-                    className="shrink-0 rounded-md border border-white/15 px-3 py-1 text-xs font-medium text-textSecondary transition-colors hover:border-red-500/50 hover:text-red-400"
+                    className="glass-button-secondary shrink-0 px-3 py-1 text-xs font-medium text-textSecondary transition-colors hover:text-red-400"
                   >
                     Disconnect
                   </button>
@@ -189,8 +189,8 @@ export default function ConnectionsSettings() {
                     type="button"
                     onClick={connectYoutube}
                     disabled={youtubeBusy}
-                    className="shrink-0 rounded-md border px-3 py-1 text-xs font-semibold transition-colors hover:bg-white/5 disabled:opacity-60"
-                    style={{ borderColor: 'rgba(255,0,0,0.45)', color: '#ff4d4d' }}
+                    className="glass-button-secondary shrink-0 px-3 py-1 text-xs font-semibold transition-colors disabled:opacity-60"
+                    style={{ color: '#ff4d4d' }}
                   >
                     {youtubeBusy ? 'Connecting…' : 'Connect'}
                   </button>

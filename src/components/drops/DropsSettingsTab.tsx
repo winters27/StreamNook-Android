@@ -95,7 +95,7 @@ function PriorityChannelRow({
 
     return (
         <div className="flex items-center gap-3 bg-background p-3 rounded-lg border border-borderLight group">
-            <span className="text-textSecondary font-mono text-xs w-6 h-6 flex items-center justify-center bg-blue-500/10 rounded shrink-0">
+            <span className="text-textSecondary font-mono text-xs w-6 h-6 flex items-center justify-center bg-info/10 rounded shrink-0">
                 {index + 1}
             </span>
             
@@ -117,12 +117,12 @@ function PriorityChannelRow({
                     <span className="text-xs text-textSecondary opacity-70 truncate">({channel.channel_login})</span>
                 )}
                 {isLive && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-red-500 shadow-[0_0_5px_rgba(239,68,68,0.5)] shrink-0 ml-1"></span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-live shadow-[0_0_5px_color-mix(in_srgb,var(--color-live)_50%,transparent)] shrink-0 ml-1"></span>
                 )}
             </div>
             <button
                 onClick={onRemove}
-                className="p-1.5 text-textSecondary hover:text-red-400 hover:bg-red-500/10 rounded transition-all opacity-0 group-hover:opacity-100 shrink-0"
+                className="p-1.5 text-textSecondary hover:text-error hover:bg-error/10 rounded transition-all opacity-0 group-hover:opacity-100 shrink-0"
             >
                 <X size={16} />
             </button>
@@ -288,7 +288,7 @@ export default function DropsSettingsTab({
             <div className="max-w-3xl mx-auto space-y-6">
                 {/* Automation Settings Card */}
                 <div className="glass-panel p-6">
-                    <h3 className="text-lg font-bold text-textPrimary mb-4 flex items-center gap-2">
+                    <h3 className="text-[12px] font-semibold uppercase tracking-[0.14em] text-textPrimary mb-4 flex items-center gap-2">
                         <Settings size={20} className="text-accent" />
                         Automation Settings
                     </h3>
@@ -302,7 +302,7 @@ export default function DropsSettingsTab({
                             onChange={(checked) => onUpdateSettings({ auto_claim_drops: checked })}
                         />
 
-                        <div className="h-px bg-borderLight mx-2" />
+                        <div className="h-px bg-borderSubtle mx-2" />
 
                         {/* Auto-Claim Channel Points */}
                         <ToggleSetting
@@ -312,7 +312,7 @@ export default function DropsSettingsTab({
                             onChange={(checked) => onUpdateSettings({ auto_claim_channel_points: checked })}
                         />
 
-                        <div className="h-px bg-borderLight mx-2" />
+                        <div className="h-px bg-borderSubtle mx-2" />
 
                         {/* Automation */}
                         <ToggleSetting
@@ -331,7 +331,7 @@ export default function DropsSettingsTab({
                         onClick={() => setActiveTab('drops')}
                         className={`flex-1 py-2.5 px-4 rounded-lg flex items-center justify-center gap-2 text-sm font-semibold transition-all duration-300 ${
                             activeTab === 'drops'
-                                ? 'bg-accent text-white shadow-[0_4px_20px_rgba(139,92,246,0.4)] ring-1 ring-white/10'
+                                ? 'bg-accent text-white shadow-[0_4px_20px_rgba(var(--color-accent-rgb),0.4)] ring-1 ring-white/10'
                                 : 'text-textSecondary hover:text-textPrimary hover:bg-white/5'
                         }`}
                     >
@@ -342,7 +342,7 @@ export default function DropsSettingsTab({
                         onClick={() => setActiveTab('channel_points')}
                         className={`flex-1 py-2.5 px-4 rounded-lg flex items-center justify-center gap-2 text-sm font-semibold transition-all duration-300 ${
                             activeTab === 'channel_points'
-                                ? 'bg-blue-600 text-white shadow-[0_4px_20px_rgba(37,99,235,0.4)] ring-1 ring-white/10'
+                                ? 'bg-info text-white shadow-[0_4px_20px_color-mix(in_srgb,var(--color-info)_40%,transparent)] ring-1 ring-white/10'
                                 : 'text-textSecondary hover:text-textPrimary hover:bg-white/5'
                         }`}
                     >
@@ -358,7 +358,7 @@ export default function DropsSettingsTab({
                         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
                             {/* Priority Strategy Card */}
                             <div className="glass-panel p-6">
-                                <h4 className="text-base font-semibold text-textPrimary mb-3 flex items-center gap-2">
+                                <h4 className="text-[12px] font-semibold uppercase tracking-[0.14em] text-textPrimary mb-3 flex items-center gap-2">
                                     <TrendingUp size={18} className="text-accent" />
                                     Priority Strategy
                                 </h4>
@@ -383,8 +383,8 @@ export default function DropsSettingsTab({
                             {/* Priority Games Card */}
                             <div className="glass-panel p-6">
                                 <div className="flex justify-between items-center mb-4">
-                                    <h4 className="text-base font-semibold text-textPrimary flex items-center gap-2">
-                                        <Star size={18} className="text-yellow-400" />
+                                    <h4 className="text-[12px] font-semibold uppercase tracking-[0.14em] text-textPrimary flex items-center gap-2">
+                                        <Star size={18} className="text-warning" />
                                         Priority Games
                                     </h4>
                                     <span className="text-xs text-textSecondary bg-glass px-2 py-1 rounded">
@@ -408,7 +408,7 @@ export default function DropsSettingsTab({
                                                 </span>
                                                 <button
                                                     onClick={() => removePriorityGame(index)}
-                                                    className="p-1.5 text-textSecondary hover:text-red-400 hover:bg-red-500/10 rounded transition-all opacity-0 group-hover:opacity-100"
+                                                    className="p-1.5 text-textSecondary hover:text-error hover:bg-error/10 rounded transition-all opacity-0 group-hover:opacity-100"
                                                 >
                                                     <X size={16} />
                                                 </button>
@@ -449,8 +449,8 @@ export default function DropsSettingsTab({
                             {/* Excluded Games Card */}
                             <div className="glass-panel p-6">
                                 <div className="flex justify-between items-center mb-4">
-                                    <h4 className="text-base font-semibold text-textPrimary flex items-center gap-2">
-                                        <Ban size={18} className="text-red-400" />
+                                    <h4 className="text-[12px] font-semibold uppercase tracking-[0.14em] text-textPrimary flex items-center gap-2">
+                                        <Ban size={18} className="text-error" />
                                         Excluded Games
                                     </h4>
                                     <span className="text-xs text-textSecondary bg-glass px-2 py-1 rounded">
@@ -466,13 +466,13 @@ export default function DropsSettingsTab({
                                                 key={index}
                                                 className="flex items-center gap-3 bg-background p-3 rounded-lg border border-borderLight group"
                                             >
-                                                <Ban size={14} className="text-red-400/60" />
+                                                <Ban size={14} className="text-error/60" />
                                                 <span className="text-textPrimary flex-1 font-medium truncate">
                                                     {game}
                                                 </span>
                                                 <button
                                                     onClick={() => removeExcludedGame(index)}
-                                                    className="p-1.5 text-textSecondary hover:text-red-400 hover:bg-red-500/10 rounded transition-all opacity-0 group-hover:opacity-100"
+                                                    className="p-1.5 text-textSecondary hover:text-error hover:bg-error/10 rounded transition-all opacity-0 group-hover:opacity-100"
                                                 >
                                                     <X size={16} />
                                                 </button>
@@ -502,7 +502,7 @@ export default function DropsSettingsTab({
                                     <button
                                         onClick={addExcludedGame}
                                         disabled={!excludedInput.trim()}
-                                        className="px-4 py-2.5 bg-gray-700 hover:bg-gray-600 disabled:bg-glass disabled:text-textSecondary text-white rounded-lg transition-colors text-sm font-medium flex items-center gap-1.5"
+                                        className="px-4 py-2.5 bg-surface hover:bg-surface-hover disabled:bg-glass disabled:text-textSecondary text-textPrimary rounded-lg transition-colors text-sm font-medium flex items-center gap-1.5"
                                     >
                                         <Ban size={16} />
                                         Block
@@ -513,8 +513,8 @@ export default function DropsSettingsTab({
                             {/* Recovery Settings Card */}
                             <div className="glass-panel p-6">
                                 <div className="flex justify-between items-center mb-4">
-                                    <h4 className="text-base font-semibold text-textPrimary flex items-center gap-2">
-                                        <Shield size={18} className="text-emerald-400" />
+                                    <h4 className="text-[12px] font-semibold uppercase tracking-[0.14em] text-textPrimary flex items-center gap-2">
+                                        <Shield size={18} className="text-success" />
                                         Automation Recovery
                                     </h4>
                                     <span className="text-xs text-textSecondary bg-glass px-2 py-1 rounded">
@@ -600,7 +600,7 @@ export default function DropsSettingsTab({
                                     </p>
                                 </div>
 
-                                <div className="h-px bg-borderLight my-4" />
+                                <div className="h-px bg-borderSubtle my-4" />
 
                                 {/* Detect Game Category Change */}
                                 <ToggleSetting
@@ -615,7 +615,7 @@ export default function DropsSettingsTab({
                                     })}
                                 />
 
-                                <div className="h-px bg-borderLight mx-2" />
+                                <div className="h-px bg-borderSubtle mx-2" />
 
                                 {/* Notify on Recovery Actions */}
                                 <ToggleSetting
@@ -638,7 +638,7 @@ export default function DropsSettingsTab({
                         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
                             {/* Channel Points Automation Card */}
                             <div className="glass-panel p-6 relative z-50">
-                                <h3 className="text-lg font-bold text-textPrimary mb-2 flex items-center gap-2">
+                                <h3 className="text-[12px] font-semibold uppercase tracking-[0.14em] text-textPrimary mb-2 flex items-center gap-2">
                                     <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-accent">
                                         <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
                                         <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
@@ -649,7 +649,7 @@ export default function DropsSettingsTab({
                                 {/* Slot Visualization */}
                                 <div className="mb-6 p-5 bg-background/50 rounded-xl border border-borderLight shadow-sm">
                                     <div className="flex items-center justify-between mb-4">
-                                        <span className="text-xs font-bold text-textSecondary uppercase tracking-wider">Token Allocation Map</span>
+                                        <span className="text-[12px] font-semibold uppercase tracking-[0.14em] text-textPrimary">Token Allocation Map</span>
                                         <Activity size={14} className="text-accent/70" />
                                     </div>
 
@@ -661,7 +661,7 @@ export default function DropsSettingsTab({
                                         {/* Token 1 */}
                                         <div className="relative">
                                             {/* Node Dot */}
-                                            <div className={`absolute -left-7 top-1 w-6 h-6 rounded-full flex items-center justify-center border-4 border-[#121415] z-10 ${(settings.reserve_token_for_current_stream ?? true) ? 'bg-accent shadow-[0_0_10px_rgba(139,92,246,0.3)]' : 'bg-textSecondary/50'}`}>
+                                            <div className={`absolute -left-7 top-1 w-6 h-6 rounded-full flex items-center justify-center border-2 border-background z-10 ${(settings.reserve_token_for_current_stream ?? true) ? 'bg-accent shadow-[0_0_10px_rgba(var(--color-accent-rgb),0.3)]' : 'bg-textSecondary/50'}`}>
                                                 {(settings.reserve_token_for_current_stream ?? true) ? <Lock size={10} className="text-white" /> : <Users size={10} className="text-white" />}
                                             </div>
                                             <div className="ml-1 leading-snug">
@@ -678,11 +678,11 @@ export default function DropsSettingsTab({
                                         {/* Token 2 */}
                                         <div className="relative">
                                             {/* Node Dot */}
-                                            <div className={`absolute -left-7 top-1 w-6 h-6 rounded-full flex items-center justify-center border-4 border-[#121415] z-10 ${(settings.prefer_favorites ?? false) ? 'bg-rose-500' : (settings.priority_channels ?? []).length > 0 ? 'bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.3)]' : 'bg-textSecondary/50'}`}>
+                                            <div className={`absolute -left-7 top-1 w-6 h-6 rounded-full flex items-center justify-center border-2 border-background z-10 ${(settings.prefer_favorites ?? false) ? 'bg-highlight-pink' : (settings.priority_channels ?? []).length > 0 ? 'bg-info shadow-[0_0_10px_color-mix(in_srgb,var(--color-info)_30%,transparent)]' : 'bg-textSecondary/50'}`}>
                                                 {(settings.prefer_favorites ?? false) ? <Heart size={10} className="text-white" /> : (settings.priority_channels ?? []).length > 0 ? <ListFilter size={10} className="text-white" /> : <LayoutList size={10} className="text-white" />}
                                             </div>
                                             <div className="ml-1 leading-snug">
-                                                <span className={`text-sm font-semibold ${(settings.prefer_favorites ?? false) ? 'text-rose-400' : (settings.priority_channels ?? []).length > 0 ? 'text-blue-400' : 'text-textPrimary'}`}>Token 2: Background</span>
+                                                <span className={`text-sm font-semibold ${(settings.prefer_favorites ?? false) ? 'text-highlight-pink' : (settings.priority_channels ?? []).length > 0 ? 'text-info' : 'text-textPrimary'}`}>Token 2: Background</span>
                                                 <p className="text-xs text-textSecondary mt-1">
                                                     {(settings.prefer_favorites ?? false)
                                                         ? 'Restricted to favorites. Rotates through the channels you have favorited that are currently live, and ignores everything else.'
@@ -723,7 +723,7 @@ export default function DropsSettingsTab({
                                         onChange={(checked) => onUpdateSettings({ reserve_token_for_current_stream: checked })}
                                     />
 
-                                    <div className="h-px bg-borderLight mx-2" />
+                                    <div className="h-px bg-borderSubtle mx-2" />
 
                                     <div className={`${!(settings.reserve_token_for_current_stream ?? true) ? 'opacity-50 pointer-events-none' : ''}`}>
                                         <ToggleSetting
@@ -734,7 +734,7 @@ export default function DropsSettingsTab({
                                         />
                                     </div>
 
-                                    <div className="h-px bg-borderLight mx-2" />
+                                    <div className="h-px bg-borderSubtle mx-2" />
 
                                     <ToggleSetting
                                         label="Use My Favorites"
@@ -745,16 +745,16 @@ export default function DropsSettingsTab({
                                 </div>
 
                                 {/* Priority channels — ignored while favorites mode is on */}
-                                <div className="border-t border-borderLight pt-5 relative z-50">
+                                <div className="border-t border-borderSubtle pt-5 relative z-50">
                                     <div className="flex items-center justify-between mb-2">
-                                        <h4 className="text-sm font-semibold text-textPrimary flex items-center gap-2">
-                                            <ListFilter size={14} className="text-blue-400" />
+                                        <h4 className="text-[12px] font-semibold uppercase tracking-[0.14em] text-textPrimary flex items-center gap-2">
+                                            <ListFilter size={14} className="text-info" />
                                             Priority Target List
                                         </h4>
                                     </div>
                                     {(settings.prefer_favorites ?? false) && (
                                         <div className="mb-4 flex items-start gap-2.5 rounded border border-borderLight bg-textSecondary/5 p-3">
-                                            <Heart size={14} className="mt-0.5 shrink-0 text-rose-400" />
+                                            <Heart size={14} className="mt-0.5 shrink-0 text-highlight-pink" />
                                             <p className="text-xs leading-relaxed text-textSecondary italic">
                                                 Favorites mode is on. The automation rotates your live favorited channels and this list is ignored. Turn off <strong className="text-textPrimary">Use My Favorites</strong> to use it again.
                                             </p>
@@ -884,7 +884,7 @@ export default function DropsSettingsTab({
                                                                                 {displayName}
                                                                             </span>
                                                                             {result.is_live && (
-                                                                                <span className="w-1.5 h-1.5 rounded-full bg-red-500 shadow-[0_0_5px_rgba(239,68,68,0.5)]"></span>
+                                                                                <span className="w-1.5 h-1.5 rounded-full bg-live shadow-[0_0_5px_color-mix(in_srgb,var(--color-live)_50%,transparent)]"></span>
                                                                             )}
                                                                         </div>
                                                                         <div className="text-xs text-textSecondary truncate">
@@ -943,7 +943,7 @@ function ToggleSetting({ label, description, checked, onChange, highlight }: Tog
                 <div className={`w-11 h-6 rounded-full transition-all peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-accent/50 
                     ${checked
                         ? highlight ? 'bg-accent border-accent' : 'bg-accent border-accent'
-                        : 'bg-gray-700/50 border-borderLight'
+                        : 'bg-surface border-borderLight'
                     } border-2
                     after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all
                     peer-checked:after:translate-x-full

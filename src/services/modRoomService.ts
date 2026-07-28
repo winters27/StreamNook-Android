@@ -12,7 +12,14 @@ const HTTP_BASE = 'https://modroom.streamnook.app';
 
 // Re-mint this many ms before the token expires so the handoff never gaps.
 const REFRESH_LEAD_MS = 60_000;
-const RECONNECT_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000];
+const RECONNECT_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
+// Transient mint failures (network down, Twitch/Supabase blip) retry this many
+// times with backoff before surfacing the terminal error pane.
+const MAX_MINT_RETRIES = 6;
+const PING_INTERVAL_MS = 30_000;
+// The room auto-answers `ping` with `pong`, so silence this long means a
+// half-open socket: alive locally, delivering nothing, never fires onclose.
+const LIVENESS_TIMEOUT_MS = 90_000;
 
 export type ModRoomRole = 'broadcaster' | 'moderator';
 
@@ -33,6 +40,8 @@ export interface ModRoomMember {
   userId: string;
   login: string;
   role: ModRoomRole;
+  /** Whether any of this member's connections is actively viewing the room. */
+  active?: boolean;
 }
 
 /** Why a (re)connect was refused. `needs_connect` means the scoped consent is
@@ -43,8 +52,8 @@ export interface ModRoomHandlers {
   onState?: (state: ModRoomState) => void;
   /** The per-channel room key (base64), delivered with each (re)mint. */
   onKey?: (roomKeyB64: string) => void;
-  /** The caller's own Twitch user id (for "edit own message"). */
-  onIdentity?: (userId: string) => void;
+  /** The caller's own identity (for "edit own message" + mention detection). */
+  onIdentity?: (identity: { userId: string; login: string }) => void;
   /** A message was edited (id, new ciphertext body, edited timestamp). */
   onEdit?: (id: string, body: string, editedAt: number) => void;
   onHistory?: (messages: ModRoomChat[]) => void;
@@ -64,6 +73,7 @@ interface RoomTokenResp {
   ttl: number;
   room_key: string;
   user_id: string;
+  login: string;
 }
 
 export interface ModRoomController {
@@ -71,6 +81,8 @@ export interface ModRoomController {
   /** Replace an existing message's ciphertext body (only the author's own). */
   edit: (id: string, body: string) => void;
   sendTyping: () => void;
+  /** Report whether this client is actively viewing the room (presence dot). */
+  sendFocus: (active: boolean) => void;
   /** Upload attachment bytes (encrypted or an image) and resolve to its URL. */
   upload: (body: BodyInit, contentType: string) => Promise<string>;
   close: () => void;
@@ -80,12 +92,49 @@ export function connectModRoom(channelId: string, handlers: ModRoomHandlers): Mo
   let ws: WebSocket | null = null;
   let closed = false;
   let backoffIndex = 0;
+  let mintFailures = 0;
   // Latest room token, kept so uploads can authenticate without the WS.
   let currentToken = '';
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let pingTimer: ReturnType<typeof setInterval> | null = null;
+  let lastInboundAt = 0;
+  // Every socket ever opened and not yet closed. A re-mint opens its replacement
+  // BEFORE the old socket goes away (seamless handoff), so without this registry
+  // superseded sockets linger server-side and every broadcast is delivered twice.
+  const liveSockets = new Set<WebSocket>();
 
   const setState = (s: ModRoomState) => handlers.onState?.(s);
+
+  const stopPinging = () => {
+    if (pingTimer) {
+      clearInterval(pingTimer);
+      pingTimer = null;
+    }
+  };
+
+  // Ping on a timer; if the room goes quiet, close the socket so the onclose
+  // path drives recovery.
+  const startPinging = (socket: WebSocket) => {
+    stopPinging();
+    lastInboundAt = Date.now();
+    pingTimer = setInterval(() => {
+      if (socket.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - lastInboundAt > LIVENESS_TIMEOUT_MS) {
+        try {
+          socket.close();
+        } catch {
+          // already going away
+        }
+        return;
+      }
+      try {
+        socket.send('ping');
+      } catch {
+        // send failed; the liveness check recycles on the next tick
+      }
+    }, PING_INTERVAL_MS);
+  };
 
   const clearTimers = () => {
     if (refreshTimer) {
@@ -96,6 +145,7 @@ export function connectModRoom(channelId: string, handlers: ModRoomHandlers): Mo
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
+    stopPinging();
   };
 
   const scheduleReconnect = () => {
@@ -115,19 +165,39 @@ export function connectModRoom(channelId: string, handlers: ModRoomHandlers): Mo
     try {
       resp = await invoke<RoomTokenResp>('modroom_get_room_token', { channelId });
     } catch (e) {
-      const reason = String(e) as ModRoomDenial;
-      const known: ModRoomDenial[] = ['needs_connect', 'not_moderator', 'not_entitled'];
-      handlers.onDenied?.(known.includes(reason) ? reason : 'error');
-      // A denial is terminal until the user acts (reconnect / upsell / consent).
+      const reason = String(e);
+      // Authoritative denials are terminal until the user acts.
+      if (reason === 'needs_connect' || reason === 'not_moderator' || reason === 'not_entitled') {
+        handlers.onDenied?.(reason as ModRoomDenial);
+        setState('closed');
+        return;
+      }
+      // A dead scoped credential can never succeed on retry; the consent CTA is
+      // the correct next step.
+      if (reason === 'invalid_token' || reason === 'missing_scope' || reason === 'wrong_client') {
+        handlers.onDenied?.('needs_connect');
+        setState('closed');
+        return;
+      }
+      // Transient (network down, twitch_unavailable, entitlement_unavailable...):
+      // retry with backoff before giving up on a terminal error pane.
+      if (!closed && mintFailures < MAX_MINT_RETRIES) {
+        mintFailures += 1;
+        scheduleReconnect();
+        return;
+      }
+      handlers.onDenied?.('error');
       setState('closed');
       return;
     }
     if (closed) return;
+    mintFailures = 0;
 
     currentToken = resp.token;
     if (resp.room_key) handlers.onKey?.(resp.room_key);
-    if (resp.user_id) handlers.onIdentity?.(resp.user_id);
+    if (resp.user_id) handlers.onIdentity?.({ userId: resp.user_id, login: resp.login ?? '' });
     const socket = new WebSocket(`${WS_BASE}?channel=${encodeURIComponent(channelId)}&token=${encodeURIComponent(resp.token)}`);
+    liveSockets.add(socket);
     ws = socket;
 
     socket.onopen = () => {
@@ -137,18 +207,35 @@ export function connectModRoom(channelId: string, handlers: ModRoomHandlers): Mo
       }
       backoffIndex = 0;
       setState('connected');
+      startPinging(socket);
+      // The replacement is live: close every superseded socket. Their close
+      // handlers are inert (not current), so this cannot trigger recovery.
+      for (const s of liveSockets) {
+        if (s !== socket) {
+          try {
+            s.close();
+          } catch {
+            // already gone
+          }
+        }
+      }
       // Re-mint ahead of expiry; the new socket replaces this one seamlessly.
       const lead = Math.max(5_000, resp.ttl * 1000 - REFRESH_LEAD_MS);
       refreshTimer = setTimeout(open, lead);
     };
 
     socket.onmessage = (ev) => {
+      lastInboundAt = Date.now();
+      const raw = ev.data as string;
+      // Heartbeat reply from the room's auto-response; not JSON.
+      if (raw === 'pong') return;
+
       let data: { t?: string; messages?: ModRoomChat[]; members?: ModRoomMember[] } & Partial<ModRoomChat> & {
         userId?: string;
         login?: string;
       };
       try {
-        data = JSON.parse(ev.data as string);
+        data = JSON.parse(raw);
       } catch {
         return;
       }
@@ -172,8 +259,16 @@ export function connectModRoom(channelId: string, handlers: ModRoomHandlers): Mo
     };
 
     socket.onclose = (ev) => {
-      if (ws === socket) ws = null;
-      if (closed) return;
+      liveSockets.delete(socket);
+      const isCurrent = ws === socket;
+      if (isCurrent) {
+        ws = null;
+        stopPinging();
+      }
+      // A superseded socket must never drive recovery: its expiry close (4001)
+      // would spawn a redundant connect loop beside the healthy socket, and it
+      // must not touch the current socket's ping timer either.
+      if (closed || !isCurrent) return;
       // 4001 = server closed because the room token expired. Re-mint immediately
       // (this is also where a now-demoted user gets denied instead of let back in).
       if (ev.code === 4001) {
@@ -218,13 +313,21 @@ export function connectModRoom(channelId: string, handlers: ModRoomHandlers): Mo
     sendTyping: () => {
       if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'typing' }));
     },
+    sendFocus: (active: boolean) => {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'focus', v: active }));
+    },
     close: () => {
       closed = true;
       clearTimers();
-      if (ws) {
-        ws.close();
-        ws = null;
+      for (const s of liveSockets) {
+        try {
+          s.close();
+        } catch {
+          // already gone
+        }
       }
+      liveSockets.clear();
+      ws = null;
       setState('closed');
     },
   };
@@ -243,6 +346,14 @@ function loadModSet(): Record<string, true> {
 }
 export function isCachedModerator(channelId?: string | null): boolean {
   return !!channelId && loadModSet()[channelId] === true;
+}
+/** Forget every cached "moderates here" flag (used on disconnect). */
+export function clearModeratedCache(): void {
+  try {
+    localStorage.removeItem(MOD_CACHE_KEY);
+  } catch {
+    // storage unavailable; nothing to clear
+  }
 }
 export function setCachedModerator(channelId: string | null | undefined, isMod: boolean): void {
   if (!channelId) return;

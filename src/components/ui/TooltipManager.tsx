@@ -152,11 +152,21 @@ export const TooltipManager = () => {
               left: `${x}px`,
               top: `${y}px`,
             }}
-            // Frosted glass styling by default; callers can override via the
-            // containerClassName prop on <Tooltip> for a different shape/skin.
-            className={containerClassName ?? DEFAULT_TOOLTIP_CONTAINER_CLASS}
+            className="pointer-events-none"
           >
-            {content}
+            {/* The chrome (including backdrop-blur) sits on a STATIC child, not
+                on the animated node above. A backdrop-filter on the element that
+                is being transformed keeps the animation off the compositor and
+                forces a per-frame re-raster — and this fires on every hover over
+                any emote, badge or username in the scrolling chat list. Same
+                split as MajorCologneChrome.css. */}
+            <div
+              // Frosted glass styling by default; callers can override via the
+              // containerClassName prop on <Tooltip> for a different shape/skin.
+              className={containerClassName ?? DEFAULT_TOOLTIP_CONTAINER_CLASS}
+            >
+              {content}
+            </div>
           </motion.div>
         )}
       </AnimatePresence>

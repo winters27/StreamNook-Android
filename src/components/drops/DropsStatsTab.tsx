@@ -71,23 +71,23 @@ export default function DropsStatsTab({
 
                 {/* Active Automation Status Card */}
                 {dropProgress?.active && dropProgress.current_channel && (
-                    <div className="glass-panel p-6 border border-green-500/30 bg-green-500/5 relative overflow-hidden group">
+                    <div className="glass-panel p-6 border border-success/30 bg-success/5 relative overflow-hidden group">
                         {/* Background decoration */}
                         <div className="absolute top-0 right-0 p-4 opacity-5 group-hover:opacity-10 transition-opacity">
                             <Pickaxe size={80} />
                         </div>
 
-                        <h4 className="text-lg font-bold text-green-400 mb-4 flex items-center gap-2">
+                        <h4 className="text-[12px] font-semibold uppercase tracking-[0.14em] text-success mb-4 flex items-center gap-2">
                             <span className="relative flex h-3 w-3">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                                <span className="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-3 w-3 bg-success"></span>
                             </span>
                             Currently Collecting
                         </h4>
 
                         <div className="space-y-3 text-sm relative z-10">
                             {/* Channel */}
-                            <div className="flex justify-between items-center border-b border-green-500/10 pb-3">
+                            <div className="flex justify-between items-center border-b border-success/10 pb-3">
                                 <span className="text-textSecondary">Channel</span>
                                 <span className="text-textPrimary font-medium font-mono">
                                     {dropProgress.current_channel.display_name || dropProgress.current_channel.name}
@@ -96,7 +96,7 @@ export default function DropsStatsTab({
 
                             {/* Campaign */}
                             {dropProgress.current_campaign && (
-                                <div className="flex justify-between items-center border-b border-green-500/10 pb-3">
+                                <div className="flex justify-between items-center border-b border-success/10 pb-3">
                                     <span className="text-textSecondary">Campaign</span>
                                     <span className="text-textPrimary font-medium font-mono truncate max-w-[200px]">
                                         {dropProgress.current_campaign}
@@ -107,7 +107,7 @@ export default function DropsStatsTab({
                             {/* Current Drop */}
                             {dropProgress.current_drop && (
                                 <>
-                                    <div className="flex justify-between items-center border-b border-green-500/10 pb-3">
+                                    <div className="flex justify-between items-center border-b border-success/10 pb-3">
                                         <span className="text-textSecondary">Current Drop</span>
                                         <span className="text-textPrimary font-medium font-mono truncate max-w-[200px]">
                                             {dropProgress.current_drop.drop_name}
@@ -118,7 +118,7 @@ export default function DropsStatsTab({
                                     <div className="pt-2">
                                         <div className="flex justify-between text-xs text-textSecondary mb-2">
                                             <span>Progress</span>
-                                            <span className="font-mono text-green-400">
+                                            <span className="font-mono text-success">
                                                 {dropProgress.current_drop.current_minutes}/{dropProgress.current_drop.required_minutes}m
                                             </span>
                                         </div>
@@ -143,7 +143,7 @@ export default function DropsStatsTab({
                         <div className="mt-4 flex justify-end">
                             <button
                                 onClick={onStopAutomation}
-                                className="glass-button px-4 py-2 text-xs font-semibold text-red-300 flex items-center gap-2"
+                                className="glass-button px-4 py-2 text-xs font-semibold text-error flex items-center gap-2"
                             >
                                 <Pause size={14} />
                                 Stop
@@ -186,9 +186,9 @@ interface StatCardProps {
 function StatCard({ icon, value, label, color }: StatCardProps) {
     const colorClasses = {
         accent: 'text-accent border-accent/20 hover:border-accent/40',
-        purple: 'text-purple-400 border-purple-400/20 hover:border-purple-400/40',
-        green: 'text-green-400 border-green-400/20 hover:border-green-400/40',
-        blue: 'text-blue-400 border-blue-400/20 hover:border-blue-400/40',
+        purple: 'text-highlight-purple border-highlight-purple/20 hover:border-highlight-purple/40',
+        green: 'text-success border-success/20 hover:border-success/40',
+        blue: 'text-info border-info/20 hover:border-info/40',
     };
 
     return (

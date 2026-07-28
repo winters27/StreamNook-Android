@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { Trophy, Users, ChevronDown, ChevronUp, Hourglass, PartyPopper, Frown, RefreshCw, CheckCircle2, XCircle } from 'lucide-react';
@@ -12,6 +12,8 @@ const ChannelPointsIcon = ({ className = "", size = 14 }: { className?: string; 
   </svg>
 );
 import { useAppStore } from '../stores/AppStore';
+import { useChannelEmotes } from '../stores/chatConnectionStore';
+import { buildEmoteNameMap, EmoteText } from '../utils/emoteText';
 
 import { Logger } from '../utils/logger';
 interface PredictionOutcome {
@@ -73,6 +75,11 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
   // Get current channel ID from props or from currentStream
   const currentChannelId = channelId || currentStream?.user_id;
   const currentChannelLogin = channelLogin || currentStream?.user_login;
+
+  // Outcome titles are plain GQL/PubSub text with no emote ranges, so match
+  // emote names against the channel's set the same way pinned messages do.
+  const channelEmotes = useChannelEmotes(currentChannelLogin, currentChannelId, 'twitch');
+  const emoteMap = useMemo(() => buildEmoteNameMap(channelEmotes), [channelEmotes]);
 
   // Debug log on mount and when channel changes
   useEffect(() => {
@@ -477,10 +484,10 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
   // Get color class for outcome
   const getOutcomeColor = (color: string, isSelected: boolean) => {
     const baseColors: Record<string, string> = {
-      'BLUE': isSelected ? 'bg-blue-500 border-blue-400' : 'bg-blue-500/20 border-blue-500/50 hover:bg-blue-500/30',
-      'PINK': isSelected ? 'bg-pink-500 border-pink-400' : 'bg-pink-500/20 border-pink-500/50 hover:bg-pink-500/30',
+      'BLUE': isSelected ? 'bg-highlight-blue border-white/25' : 'bg-highlight-blue/20 border-highlight-blue/50 hover:bg-highlight-blue/30',
+      'PINK': isSelected ? 'bg-highlight-pink border-white/25' : 'bg-highlight-pink/20 border-highlight-pink/50 hover:bg-highlight-pink/30',
     };
-    return baseColors[color] || (isSelected ? 'bg-purple-500 border-purple-400' : 'bg-purple-500/20 border-purple-500/50 hover:bg-purple-500/30');
+    return baseColors[color] || (isSelected ? 'bg-highlight-purple border-white/25' : 'bg-highlight-purple/20 border-highlight-purple/50 hover:bg-highlight-purple/30');
   };
 
   // Calculate percentage for outcome
@@ -508,12 +515,12 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
         {/* Header - Always visible with channel points */}
         <button
           onClick={() => setIsExpanded(!isExpanded)}
-          className={`w-full p-3 bg-backgroundSecondary hover:bg-backgroundSecondary/80 transition-colors ${isExpanded ? 'border-b border-border' : ''}`}
+          className={`w-full p-3 bg-backgroundSecondary hover:bg-backgroundSecondary/80 transition-colors ${isExpanded ? 'border-b border-borderSubtle' : ''}`}
         >
           <div className={`flex gap-2 ${isExpanded ? 'items-start' : 'items-center'}`}>
             {/* Trophy icon */}
-            <div className="p-1.5 bg-purple-500/30 rounded-md flex-shrink-0">
-              <Trophy className="w-4 h-4 text-purple-400" />
+            <div className="p-1.5 bg-accent/30 rounded-md flex-shrink-0">
+              <Trophy className="w-4 h-4 text-accent" />
             </div>
             
             {/* Title - grows to fill space, wraps naturally when expanded, truncates when collapsed */}
@@ -529,24 +536,24 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
             <div className="flex items-center gap-1.5 flex-shrink-0">
               {/* Channel Points Badge */}
               {channelPoints !== null && (
-                <div className="flex items-center gap-1 px-1.5 py-1 bg-orange-500/20 border border-orange-500/40 rounded-md">
+                <div className="flex items-center gap-1 px-1.5 py-1 bg-accent/20 border border-accent/40 rounded-md">
                   {customPointsIconUrl ? (
                     <img src={customPointsIconUrl} alt="points" className="w-3 h-3" />
                   ) : (
-                    <ChannelPointsIcon className="text-orange-400" size={12} />
+                    <ChannelPointsIcon className="text-accent" size={12} />
                   )}
-                  <span className="text-xs font-bold text-orange-400">
+                  <span className="text-xs font-bold text-accent">
                     {channelPoints.toLocaleString()}
                   </span>
                 </div>
               )}
               {/* Timer or Locked Badge */}
               {!isLocked ? (
-                <span className="text-xs font-mono font-bold text-yellow-400 bg-yellow-500/20 border border-yellow-500/40 px-1.5 py-1 rounded-md">
+                <span className="text-xs font-mono font-bold text-warning bg-warning/20 border border-warning/40 px-1.5 py-1 rounded-md">
                   {formatTime(timeRemaining)}
                 </span>
               ) : (
-                <span className="text-xs font-medium text-red-400 bg-red-500/20 border border-red-500/40 px-1.5 py-1 rounded-md">
+                <span className="text-xs font-medium text-error bg-error/20 border border-error/40 px-1.5 py-1 rounded-md">
                   Locked
                 </span>
               )}
@@ -573,14 +580,14 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
                     key={outcome.id}
                     onClick={() => !isLocked && !hasPlacedBet && setSelectedOutcome(outcome.id)}
                     disabled={isLocked || hasPlacedBet}
-                    className={`w-full relative p-2.5 rounded-lg border-2 transition-all ${
+                    className={`w-full relative p-2.5 rounded-lg border transition-all ${
                       getOutcomeColor(outcome.color, isSelected)
                     } ${(isLocked || hasPlacedBet) ? 'cursor-not-allowed opacity-70' : 'cursor-pointer'}`}
                   >
                     {/* Background progress bar */}
                     <div 
                       className={`absolute inset-0 rounded-md opacity-30 ${
-                        outcome.color === 'BLUE' ? 'bg-blue-500' : outcome.color === 'PINK' ? 'bg-pink-500' : 'bg-purple-500'
+                        outcome.color === 'BLUE' ? 'bg-highlight-blue' : outcome.color === 'PINK' ? 'bg-highlight-pink' : 'bg-highlight-purple'
                       }`}
                       style={{ width: `${percentage}%` }}
                     />
@@ -592,7 +599,9 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
                             <div className="w-2.5 h-2.5 rounded-full bg-white" />
                           </div>
                         )}
-                        <span className="font-semibold text-white text-sm">{outcome.title}</span>
+                        <span className="font-semibold text-white text-sm">
+                          <EmoteText text={outcome.title} emoteMap={emoteMap} keyPrefix={`pred-${outcome.id}`} />
+                        </span>
                       </div>
                       <div className="flex items-center gap-3 text-xs text-white/90">
                         <span className="flex items-center gap-1">
@@ -658,7 +667,7 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
                         }}
                         className={`px-2 py-1.5 text-xs font-medium rounded transition-colors border ${
                           betAmount === amount 
-                            ? 'bg-purple-500/30 border-purple-500/60 text-purple-300'
+                            ? 'bg-accent/30 border-accent/60 text-accent'
                             : 'bg-background border-border text-textSecondary hover:bg-backgroundSecondary'
                         }`}
                       >
@@ -671,7 +680,7 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
                           setBetAmount(channelPoints);
                           setBetAmountInput(channelPoints.toString());
                         }}
-                        className="px-2 py-1.5 text-xs font-bold bg-purple-500/30 hover:bg-purple-500/40 border border-purple-500/60 rounded transition-colors text-purple-300"
+                        className="px-2 py-1.5 text-xs font-bold bg-accent/30 hover:bg-accent/40 border border-accent/60 rounded transition-colors text-accent"
                       >
                         ALL
                       </button>
@@ -684,7 +693,7 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
                     disabled={!selectedOutcome || isSubmitting}
                     className={`px-3 py-1.5 rounded text-xs font-bold transition-all whitespace-nowrap ${
                       selectedOutcome && !isSubmitting
-                        ? 'bg-purple-500 hover:bg-purple-600 text-white'
+                        ? 'bg-accent hover:bg-accent-hover text-white'
                         : 'bg-background border border-border text-textSecondary cursor-not-allowed'
                     }`}
                   >
@@ -697,9 +706,9 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
             {/* Status indicators */}
             {hasPlacedBet && !isLocked && resolutionState === 'none' && (
               <div className="px-3 pb-3">
-                <div className="py-2 px-3 bg-green-500/20 border border-green-500/50 rounded-lg flex items-center justify-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-green-400" />
-                  <span className="text-green-400 text-sm font-semibold">Bet Placed!</span>
+                <div className="py-2 px-3 bg-success/20 border border-success/50 rounded-lg flex items-center justify-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-success" />
+                  <span className="text-success text-sm font-semibold">Bet Placed!</span>
                 </div>
               </div>
             )}
@@ -707,9 +716,9 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
             {/* Resolution States - Win/Loss/Refund/Pending */}
             {resolutionState === 'pending' && (
               <div className="px-3 pb-3">
-                <div className="py-3 px-4 bg-purple-500/20 border border-purple-500/50 rounded-lg flex items-center justify-center gap-2 animate-pulse">
+                <div className="py-3 px-4 bg-accent/20 border border-accent/50 rounded-lg flex items-center justify-center gap-2 animate-pulse">
                   <div className="w-5 h-5 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" />
-                  <span className="text-purple-400 text-sm font-semibold">
+                  <span className="text-accent text-sm font-semibold">
                     Resolving Prediction...
                   </span>
                 </div>
@@ -718,14 +727,14 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
             
             {resolutionState === 'win' && (
               <div className="px-3 pb-3">
-                <div className="py-4 px-4 bg-gradient-to-r from-green-500/30 to-emerald-500/30 border-2 border-green-400 rounded-lg text-center animate-pulse">
+                <div className="py-4 px-4 bg-gradient-to-r from-success/30 to-highlight-green/30 border border-success rounded-lg text-center animate-pulse">
                   <div className="flex justify-center mb-2">
-                    <PartyPopper className="w-8 h-8 text-green-400" />
+                    <PartyPopper className="w-8 h-8 text-success" />
                   </div>
-                  <span className="text-green-400 text-lg font-bold">YOU WON!</span>
+                  <span className="text-success text-lg font-bold">YOU WON!</span>
                   {winningOutcomeId && (
-                    <p className="text-green-300/80 text-sm mt-1">
-                      {activePrediction.outcomes.find(o => o.id === winningOutcomeId)?.title}
+                    <p className="text-success/80 text-sm mt-1">
+                      <EmoteText text={activePrediction.outcomes.find(o => o.id === winningOutcomeId)?.title ?? ''} emoteMap={emoteMap} keyPrefix="pred-win" />
                     </p>
                   )}
                 </div>
@@ -734,14 +743,14 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
             
             {resolutionState === 'loss' && (
               <div className="px-3 pb-3">
-                <div className="py-4 px-4 bg-gradient-to-r from-red-500/30 to-rose-500/30 border-2 border-red-400 rounded-lg text-center">
+                <div className="py-4 px-4 bg-gradient-to-r from-error/30 to-highlight-red/30 border border-error rounded-lg text-center">
                   <div className="flex justify-center mb-2">
-                    <XCircle className="w-8 h-8 text-red-400" />
+                    <XCircle className="w-8 h-8 text-error" />
                   </div>
-                  <span className="text-red-400 text-lg font-bold">Better Luck Next Time</span>
+                  <span className="text-error text-lg font-bold">Better Luck Next Time</span>
                   {winningOutcomeId && (
-                    <p className="text-red-300/80 text-sm mt-1">
-                      Winner: {activePrediction.outcomes.find(o => o.id === winningOutcomeId)?.title}
+                    <p className="text-error/80 text-sm mt-1">
+                      Winner: <EmoteText text={activePrediction.outcomes.find(o => o.id === winningOutcomeId)?.title ?? ''} emoteMap={emoteMap} keyPrefix="pred-loss" />
                     </p>
                   )}
                 </div>
@@ -750,26 +759,26 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
             
             {resolutionState === 'refund' && (
               <div className="px-3 pb-3">
-                <div className="py-4 px-4 bg-gradient-to-r from-blue-500/30 to-cyan-500/30 border-2 border-blue-400 rounded-lg text-center">
+                <div className="py-4 px-4 bg-gradient-to-r from-info/30 to-highlight-cyan/30 border border-info rounded-lg text-center">
                   <div className="flex justify-center mb-2">
-                    <RefreshCw className="w-8 h-8 text-blue-400" />
+                    <RefreshCw className="w-8 h-8 text-info" />
                   </div>
-                  <span className="text-blue-400 text-lg font-bold">Points Refunded</span>
-                  <p className="text-blue-300/80 text-sm mt-1">Prediction was cancelled</p>
+                  <span className="text-info text-lg font-bold">Points Refunded</span>
+                  <p className="text-info/80 text-sm mt-1">Prediction was cancelled</p>
                 </div>
               </div>
             )}
             
             {resolutionState === 'announced' && (
               <div className="px-3 pb-3">
-                <div className="py-4 px-4 bg-gradient-to-r from-purple-500/30 to-indigo-500/30 border-2 border-purple-400 rounded-lg text-center">
+                <div className="py-4 px-4 bg-gradient-to-r from-accent/30 to-highlight-purple/30 border border-accent rounded-lg text-center">
                   <div className="flex justify-center mb-2">
-                    <Trophy className="w-8 h-8 text-purple-400" />
+                    <Trophy className="w-8 h-8 text-accent" />
                   </div>
-                  <span className="text-purple-400 text-lg font-bold">Prediction Ended</span>
+                  <span className="text-accent text-lg font-bold">Prediction Ended</span>
                   {winningOutcomeId && (
-                    <p className="text-purple-300/80 text-sm mt-1">
-                      Winner: {activePrediction.outcomes.find(o => o.id === winningOutcomeId)?.title}
+                    <p className="text-accent/80 text-sm mt-1">
+                      Winner: <EmoteText text={activePrediction.outcomes.find(o => o.id === winningOutcomeId)?.title ?? ''} emoteMap={emoteMap} keyPrefix="pred-announced" />
                     </p>
                   )}
                 </div>
@@ -779,9 +788,9 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
             {/* Normal Locked State (waiting for results) */}
             {isLocked && resolutionState === 'none' && (
               <div className="px-3 pb-3">
-                <div className="py-2 px-3 bg-amber-500/20 border border-amber-500/50 rounded-lg flex items-center justify-center gap-2">
-                  <Hourglass className="w-4 h-4 text-amber-400 animate-pulse" />
-                  <span className="text-amber-400 text-sm font-semibold">
+                <div className="py-2 px-3 bg-warning/20 border border-warning/50 rounded-lg flex items-center justify-center gap-2">
+                  <Hourglass className="w-4 h-4 text-warning animate-pulse" />
+                  <span className="text-warning text-sm font-semibold">
                     Awaiting Results{hasPlacedBet && ' • Your bet is in!'}
                   </span>
                 </div>

@@ -8,7 +8,7 @@ import { Logger, setDiagnosticsEnabled } from '../utils/logger';
 import { getPlayerControls } from '../keybindings/playerControls';
 import { qualitiesEquivalent } from '../utils/quality';
 import { reportCodecPreference } from '../utils/codecPreference';
-import { upsertUser, grantActiveSeasonalAccolades, grantCakeDayAccolade, grantAtmosphereOwnership } from '../services/supabaseService';
+import { upsertUser, claimLoginAccolades, grantAtmosphereOwnership } from '../services/supabaseService';
 import { emitSettingsUpdated } from '../utils/settingsBroadcast';
 
 type StreamStartResult = {
@@ -70,6 +70,9 @@ export interface MediaInfo {
   id?: string;
   broadcaster_id?: string;
   user_id?: string;
+  /** VOD owner login (lowercase). Present on TwitchVideo-sourced plays; used to
+   *  bind the channel for VOD chat replay + the replay/live toggle. */
+  user_login?: string;
   broadcaster_name?: string;
   user_name?: string;
   title?: string;
@@ -275,6 +278,9 @@ interface AppState {
   // flashes before stored credentials have been verified.
   isBooting: boolean;
   currentUser: TwitchUser | null;
+  /** Local user's FFZ subscriber status; gates which FFZ effect emotes the
+   *  picker/tab-complete offer (rendering is never gated). */
+  ffzIsSubwoofer: boolean;
   dropProgressActive: boolean;
   setDropProgressActive: (active: boolean) => void;
   // True when every watch-time reward for the game currently being watched is
@@ -523,6 +529,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   isAuthenticated: false,
   isBooting: true,
   currentUser: null,
+  ffzIsSubwoofer: false,
   dropProgressActive: false,
   setDropProgressActive: (active: boolean) => set({ dropProgressActive: active }),
   dropProgressComplete: false,
@@ -1318,11 +1325,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       const result = await invoke<StreamStartResult>('start_stream', { url: url, quality: settings.quality });
       logQualityFallback(settings.quality, result.quality);
+      // VODs carry their owner login (TwitchVideo.user_login). Binding it lets
+      // the chat panel offer replay + a live-chat toggle. The live IRC connect
+      // stays gated behind the replay/live toggle in ChatWidget, so setting a
+      // login here does NOT auto-join live chat. Clips leave it blank.
+      const vodOwnerLogin = type === 'video' ? (info.user_login || '').toLowerCase() : '';
       const parsedInfo: TwitchStream = {
         id: info.id || '',
         user_id: info.broadcaster_id || info.user_id || '',
         user_name: info.broadcaster_name || info.user_name || 'StreamNook Media',
-        user_login: '',
+        user_login: vodOwnerLogin,
         title: info.title || `Twitch ${type}`,
         viewer_count: info.view_count || 0,
         game_name: type === 'clip' ? 'Twitch Clip' : 'Twitch Video',
@@ -1343,7 +1355,20 @@ export const useAppStore = create<AppState>((set, get) => ({
         // stopStream() clears this, so we re-set it here from the current navigation context.
         streamOriginCategory: get().homeSelectedCategory || null,
       });
-      
+
+      // Start synced chat replay for VODs. The vod id comes from the url
+      // (/videos/<id>); the owner login keys the channel's emote set. Replay is
+      // read-only and drives the chat panel until the user toggles to live.
+      if (type === 'video') {
+        const vodId = url.match(/\/videos\/(\d+)/)?.[1] ?? null;
+        if (vodId) {
+          const login = vodOwnerLogin;
+          import('./vodReplayStore')
+            .then((m) => m.beginVodReplay(vodId, login))
+            .catch((e) => Logger.warn('[playMedia] could not start VOD replay:', e));
+        }
+      }
+
     } catch (e: unknown) {
       Logger.error(`Failed to start ${type}:`, e);
       get().addToast(`Failed to load ${type}: ${String(e)}`, 'error');
@@ -1355,6 +1380,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   stopStream: async (options) => {
     const preserveBackend = options?.preserveBackend ?? false;
     trackActivity('Stopped stream');
+    // Tear down any VOD chat replay session (no-op if none is active).
+    import('./vodReplayStore')
+      .then((m) => m.stopVodReplay())
+      .catch(() => {});
     try {
       // Unmount the player (VideoPlayer is keyed on streamUrl) BEFORE the backend
       // kills the relay. The reverse order leaves hls.js live-polling the dead
@@ -2119,6 +2148,19 @@ export const useAppStore = create<AppState>((set, get) => ({
         isHomeActive: false
       });
 
+      // When a VOD actually resolved and is playing, default this view to the
+      // VOD's own chat (synced replay), with a toggle back to the channel's live
+      // chat. Skipped when no VOD played (streamUrl 'offline'), since there's no
+      // playhead to sync against.
+      if (resolvedStreamUrl) {
+        const replayVodId = latestVideoUrl?.match(/\/videos\/(\d+)/)?.[1];
+        if (replayVodId) {
+          import('./vodReplayStore')
+            .then((m) => m.beginVodReplay(replayVodId, channel.toLowerCase()))
+            .catch((e) => Logger.warn('[Offline Chat] could not start VOD replay:', e));
+        }
+      }
+
       // Warm up the chat bridge. claim:false for the same reason as the live
       // path: ChatWidget's acquireChannel registers the real consumer, and an
       // unreleased claim here would keep the room joined forever.
@@ -2543,6 +2585,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       set({ isAuthenticated: true, currentUser: user });
 
+      // FFZ subscriber status for effect-emote composition gating (cached
+      // backend-side, so periodic auth checks re-invoking this are cheap).
+      invoke<{ is_subwoofer: boolean }>('ffz_local_user_status')
+        .then((s) => set({ ffzIsSubwoofer: !!s?.is_subwoofer }))
+        .catch(() => set({ ffzIsSubwoofer: false }));
+
       // Track user in Supabase for analytics (only on initial login, not periodic checks)
       if (!wasAuthenticated) {
         try {
@@ -2557,13 +2605,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           });
         }
 
-        // Collect today's season/holiday badges + cake day if applicable.
-        // Idempotent server-side; fire and forget.
-        grantActiveSeasonalAccolades(user.user_id).catch((e) => {
-          Logger.warn('[Auth] Failed to grant seasonal badge:', e);
-        });
-        grantCakeDayAccolade(user.user_id, user.login || '').catch((e) => {
-          Logger.warn('[Auth] Failed to grant cake day badge:', e);
+        // Collect today's season/holiday + cake-day accolades server-side (the
+        // RPC enforces the window against the server clock and reads the verified
+        // creation date; idempotent). Fire and forget.
+        claimLoginAccolades(user.user_id).catch((e) => {
+          Logger.warn('[Auth] Failed to claim login accolades:', e);
         });
 
         // Claim login-window event rewards (server enforces the window). Lazy
@@ -2572,6 +2618,15 @@ export const useAppStore = create<AppState>((set, get) => ({
           .then((m) => m.maybeClaimLoginRewards(user.user_id))
           .catch((e) => {
             Logger.warn('[Auth] Failed to claim login rewards:', e);
+          });
+
+        // Claim subscriber-tenure milestone badges (server gates on the real
+        // total_months; below-threshold members simply aren't granted). Lazy
+        // import for the same store-cycle reason as above.
+        import('../services/watchRewards')
+          .then((m) => m.maybeClaimMilestoneRewards(user.user_id))
+          .catch((e) => {
+            Logger.warn('[Auth] Failed to claim milestone rewards:', e);
           });
 
         // Keep an active subscriber's owned atmospheres current (server gates on

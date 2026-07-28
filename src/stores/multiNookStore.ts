@@ -608,7 +608,19 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
 
   updateSlot: (id: string, updates: Partial<MultiNookSlot>) => {
     const { slots, saveSlots } = get();
-    const newSlots = slots.map(s => s.id === id ? { ...s, ...updates } : s);
+    // Only the targeted slot gets a new object, and only when a value really
+    // changed. Every tile is memoized on its slot's identity, so spreading
+    // unconditionally re-rendered the whole grid — worst case being the Plyr
+    // volumechange handler, which calls this continuously during a slider drag.
+    let changed = false;
+    const newSlots = slots.map(s => {
+      if (s.id !== id) return s;
+      const keys = Object.keys(updates) as (keyof MultiNookSlot)[];
+      if (keys.every(k => s[k] === updates[k])) return s;
+      changed = true;
+      return { ...s, ...updates };
+    });
+    if (!changed) return;
     set({ slots: newSlots });
     
     // Only save to settings if it's a persistent config change (not streamUrl)
@@ -652,22 +664,15 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
     
     const isCurrentlyFocused = slot.isFocused;
     
+    // Slots whose focus/mute state is already correct keep their identity, so
+    // the memoized tiles that didn't actually change don't re-render.
     const newSlots = slots.map(s => {
-      if (isCurrentlyFocused) {
-        // We are toggling focus off. Clear focus from all, unmute all non-docked
-        return {
-          ...s,
-          isFocused: false,
-          muted: s.isMinimized ? true : false,
-        };
-      } else {
-        // We are focusing THIS slot. Make it focused and unmuted. Mute all others.
-        return {
-          ...s,
-          isFocused: s.id === id,
-          muted: s.id !== id,
-        };
-      }
+      // Toggling focus off clears focus from all and unmutes all non-docked;
+      // focusing THIS slot focuses + unmutes it and mutes everyone else.
+      const isFocused = isCurrentlyFocused ? false : s.id === id;
+      const muted = isCurrentlyFocused ? (s.isMinimized ? true : false) : s.id !== id;
+      if (s.isFocused === isFocused && s.muted === muted) return s;
+      return { ...s, isFocused, muted };
     });
     
     set({ slots: newSlots });
@@ -693,11 +698,12 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
 
     // Maximize this tile AND focus it: unmute it, mute everyone else, so it acts
     // exactly like the solo player. Mirrors toggleFocusSlot's "focus this" branch.
-    const newSlots = slots.map(s => ({
-      ...s,
-      isFocused: s.id === id,
-      muted: s.id !== id,
-    }));
+    const newSlots = slots.map(s => {
+      const isFocused = s.id === id;
+      const muted = s.id !== id;
+      if (s.isFocused === isFocused && s.muted === muted) return s;
+      return { ...s, isFocused, muted };
+    });
     set({ maximizedSlotId: id, slots: newSlots });
     saveSlots();
 

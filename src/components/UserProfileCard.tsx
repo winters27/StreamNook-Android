@@ -27,6 +27,8 @@ import {
   getIdentityVersion,
 } from '../services/identityService';
 import streamNookLogo from '../assets/streamnook-logo.png';
+import { EmoteText, buildEmoteNameMap } from '../utils/emoteText';
+import { useChannelEmotes } from '../stores/chatConnectionStore';
 
 // messageHistory arrives from two sources:
 //   1. The frontend's in-session userMessageHistory Map (full ParsedMessage shape
@@ -336,7 +338,7 @@ const NicknameEditor: React.FC<NicknameEditorProps> = ({ userId, username, displ
               </button>
               <button
                 onClick={clearNickname}
-                className="p-1 hover:text-red-400 transition-colors"
+                className="p-1 hover:text-error transition-colors"
                 aria-label="Clear nickname"
               >
                 <X size={12} />
@@ -393,7 +395,7 @@ const NicknameEditor: React.FC<NicknameEditorProps> = ({ userId, username, displ
             <span className="font-mono text-textPrimary">{savedColor}</span>
             <button
               onClick={resetColor}
-              className="ml-auto p-1 hover:text-red-400 transition-colors"
+              className="ml-auto p-1 hover:text-error transition-colors"
               aria-label="Reset color"
             >
               <X size={12} />
@@ -431,7 +433,20 @@ const UserProfileCard = ({
   // off the critical path lets the card render immediately and the badge pop in
   // when/if it resolves. See bttv_pro_service.rs.
   const [bttvProBadge, setBttvProBadge] = useState<{ url: string; started_at: string | null; glow: boolean } | null>(null);
-  const [showMessages, setShowMessages] = useState(false);
+  // Which half opens first, per the Chat setting. On (the default) lands on the
+  // chat history in one click, since clicking a user is usually the intent to
+  // read their messages; off keeps the profile body first for people who open
+  // cards to look at badges and stats. Either way the header switches between
+  // the two. The history fetch is keyed on this, so opening on messages also
+  // starts fetching on mount instead of waiting for a second click.
+  const [showMessages, setShowMessages] = useState(
+    () => useAppStore.getState().settings.chat_design?.user_card_opens_messages !== false,
+  );
+  // In-session messages that arrive WHILE the card is open, polled from the Rust
+  // history service so the timeline stays live (works across the popout-window
+  // boundary — the service is a shared backend singleton). Same shape as the
+  // messageHistory prop; deduped against it by id in the render.
+  const [liveMessages, setLiveMessages] = useState<ParsedMessage[]>([]);
   // Historical chat logs pulled from the merged Twitch GQL + Justlog + Robotty
   // pipeline in Rust. Each entry carries the Twitch IRC message UUID in `id`
   // (when available) which the frontend uses to dedupe against in-session
@@ -505,6 +520,10 @@ const UserProfileCard = ({
   // the original layout so nothing changes until you actually scroll, and
   // prefers-reduced-motion keeps everything in the expanded state.
   const scrollBodyRef = useRef<HTMLDivElement>(null);
+  // Whether the message timeline is pinned to the newest entry. True while the
+  // user is at/near the bottom so live messages keep it scrolled to the latest;
+  // set false once they scroll up to read older history, so we don't yank them.
+  const stickBottomRef = useRef(true);
   const prefersReducedMotion = useReducedMotion();
   const { scrollY } = useScroll({ container: scrollBodyRef });
   const HEADER_COLLAPSE_PX = 90; // body scroll distance to fully collapse
@@ -557,6 +576,15 @@ const UserProfileCard = ({
       channelName: currentStream?.user_login || username
     };
   }, [propChannelId, propChannelName, userId, username]);
+
+  // Channel emote set (Twitch native + FFZ/BTTV/7TV), reused from the shared
+  // cache the chat renderer fills. In the popout window that cache starts empty,
+  // so the hook lazily fetches and re-renders when it lands — emotes pop in.
+  // buildEmoteNameMap gives the name -> emote lookup EmoteText needs to swap
+  // emote words for images in the message timeline.
+  const { channelId: emoteChannelId, channelName: emoteChannelName } = getChannelContext();
+  const channelEmotes = useChannelEmotes(emoteChannelName, emoteChannelId);
+  const emoteNameMap = useMemo(() => buildEmoteNameMap(channelEmotes), [channelEmotes]);
 
   // Load cached cosmetics INSTANTLY (synchronous), then fetch fresh data
   useEffect(() => {
@@ -700,6 +728,49 @@ const UserProfileCard = ({
       clearTimeout(failsafe);
     };
   }, [showMessages, getChannelContext, username, userId]);
+
+  // Keep the timeline live: poll the Rust history service (fed by every incoming
+  // chat message, shared across windows) while the messages view is open and
+  // accumulate anything new. Accumulate rather than replace so a message that
+  // scrolls out of the service's small ring buffer doesn't vanish mid-session.
+  useEffect(() => {
+    if (!showMessages || !userId) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const msgs = await invoke<ParsedMessage[]>('get_user_message_history', { userId });
+        if (cancelled || !msgs?.length) return;
+        setLiveMessages((prev) => {
+          const seen = new Set(prev.map((m) => m.id).filter(Boolean));
+          const add = msgs.filter((m) => m.id && !seen.has(m.id));
+          return add.length ? prev.concat(add) : prev;
+        });
+      } catch (e) {
+        Logger.debug('[UserProfileCard] live history poll failed:', e);
+      }
+    };
+    const interval = setInterval(poll, 2500);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [showMessages, userId]);
+
+  // Land on the newest message (chat reads newest-at-bottom) and stay pinned
+  // there as live messages arrive — unless the reader scrolled up into older
+  // history, tracked by stickBottomRef. Opening the messages view re-pins.
+  useEffect(() => {
+    if (!showMessages) return;
+    stickBottomRef.current = true;
+    const el = scrollBodyRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [showMessages]);
+
+  useEffect(() => {
+    if (!showMessages || !stickBottomRef.current) return;
+    const el = scrollBodyRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [showMessages, historicalMessages, messageHistory, liveMessages]);
 
   // Compute selected paint from cached cosmetics (for instant display)
   const selectedPaint = useMemo(() => {
@@ -972,7 +1043,7 @@ const UserProfileCard = ({
     }
     const accent = color || '#9146FF';
     return {
-      backgroundImage: `linear-gradient(135deg, ${accent}40 0%, ${accent}10 50%, #9146FF20 100%)`,
+      backgroundImage: `linear-gradient(135deg, ${accent}40 0%, ${accent}10 50%, color-mix(in srgb, var(--color-accent) 13%, transparent) 100%)`,
     } as const;
   }, [twitchProfile?.banner_image_url, twitchProfile?.offline_image_url, color]);
 
@@ -1039,7 +1110,7 @@ const UserProfileCard = ({
         <Tooltip content={`Paint: ${selectedPaint.name}`} side="top">
           <button
             onClick={() => openBadgesWithPaintInMain(selectedPaint.id)}
-            className="px-2 py-0.5 rounded-md text-[11px] font-bold inline-block relative overflow-hidden cursor-pointer hover:ring-1 hover:ring-accent/50 transition-all border border-white/10"
+            className="px-2 py-0.5 rounded-md text-[11px] font-bold inline-block relative overflow-hidden cursor-pointer hover:ring-1 hover:ring-accent/50 transition-all border border-transparent shadow-[inset_1px_1px_0_0_rgba(255,255,255,0.10),inset_-1px_-1px_0_0_rgba(0,0,0,0.18)]"
             style={{
               ...computePaintStyle(selectedPaint as any, color),
               WebkitBackgroundClip: 'padding-box',
@@ -1071,7 +1142,7 @@ const UserProfileCard = ({
               e.stopPropagation();
               if (userId) openProfileViewerInMain(userId);
             }}
-            className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-white/5 border border-white/10 cursor-pointer hover:ring-1 hover:ring-accent/50 transition-all"
+            className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-white/5 border border-transparent shadow-[inset_1px_1px_0_0_rgba(255,255,255,0.10),inset_-1px_-1px_0_0_rgba(0,0,0,0.18)] cursor-pointer hover:ring-1 hover:ring-accent/50 transition-all"
           >
             <img src={streamNookLogo} alt="StreamNook" className="w-3.5 h-3.5 object-contain" draggable={false} />
             <span className="text-[11px] font-semibold text-textPrimary tabular-nums">#{streamNookUserNumber}</span>
@@ -1106,7 +1177,7 @@ const UserProfileCard = ({
             )}
           </motion.div>
           <motion.div
-            className="absolute -bottom-10 left-4 w-20 h-20 rounded-full border-4 border-secondary bg-secondary overflow-hidden shadow-lg"
+            className="absolute -bottom-10 left-4 w-20 h-20 rounded-full border-2 border-secondary bg-secondary overflow-hidden shadow-lg"
             style={prefersReducedMotion ? undefined : { scale: avatarScale, y: avatarLift, transformOrigin: 'left bottom' }}
           >
             {avatarUrl ? (
@@ -1142,7 +1213,16 @@ const UserProfileCard = ({
         </div>
 
         {/* Single scroll body. One padded container, vertical rhythm via space-y, no section dividers. */}
-        <div ref={scrollBodyRef} className="flex-1 overflow-y-auto min-h-0 scrollbar-thin">
+        <div
+          ref={scrollBodyRef}
+          className="flex-1 overflow-y-auto min-h-0 scrollbar-thin"
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            // Re-pin only when parked within a line or two of the bottom, so
+            // scrolling up to read older history stops the live auto-scroll.
+            stickBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+          }}
+        >
           <motion.div className="px-4 pb-4 space-y-4" style={{ paddingTop: prefersReducedMotion ? 48 : bodyPadTop }}>
             {/* Takeover animation. When showMessages flips true, the profile
                 body (identity + stats + badges + actions) slides UP and out and
@@ -1162,7 +1242,9 @@ const UserProfileCard = ({
                     transition={{ type: 'tween', duration: 0.22, ease: 'easeOut' }}
                     className="-mx-2"
                   >
-                    <div className="flex items-center justify-between px-2 mb-2">
+                    {/* Sticky so "Back to profile" stays reachable once the
+                        timeline auto-scrolls to the newest message. */}
+                    <div className="sticky top-0 z-20 flex items-center justify-between px-2 py-2 -mt-2 bg-secondary/95 backdrop-blur-sm">
                       <button
                         type="button"
                         onClick={() => setShowMessages(false)}
@@ -1218,6 +1300,14 @@ const UserProfileCard = ({
                         // back to the tags map (ParsedMessage path). Same id
                         // each historical source carries, so it's the right
                         // cross-layer dedupe key.
+                        const id = (m as any).id ?? readTag(m, 'id');
+                        rawEntries.push({ ts, content: m.content, id });
+                      }
+                      // Live messages polled while the card is open. Same
+                      // unix-ms shape as messageHistory; the id dedupe below
+                      // collapses overlap with the initial snapshot.
+                      for (const m of liveMessages) {
+                        const ts = sessionTimestamp(m) ?? Date.now();
                         const id = (m as any).id ?? readTag(m, 'id');
                         rawEntries.push({ ts, content: m.content, id });
                       }
@@ -1314,7 +1404,12 @@ const UserProfileCard = ({
                                       {displayName}:
                                     </span>
                                     <span className="text-[13px] text-textPrimary break-words leading-snug min-w-0">
-                                      {e.content}
+                                      <EmoteText
+                                        text={e.content}
+                                        emoteMap={emoteNameMap}
+                                        keyPrefix={`hist-${g.key}-${idx}`}
+                                        imgClassName="inline-block align-middle object-contain h-[18px] max-h-[18px]"
+                                      />
                                     </span>
                                   </div>
                                 ))}
@@ -1433,26 +1528,26 @@ const UserProfileCard = ({
                     {(ivrData?.is_subscribed || ivrData?.is_mod || ivrData?.is_vip) && (
                       <div className="flex flex-wrap gap-1.5">
                         {ivrData?.is_subscribed && (
-                          <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-purple-500/10 border border-purple-500/20 text-[11px] text-purple-300">
+                          <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-accent/10 border border-accent/20 text-[11px] text-accent">
                             <span className="font-semibold">
                               {ivrData.sub_tier === 'Prime' ? 'Prime' : ivrData.sub_tier ? `Tier ${ivrData.sub_tier}` : ''}
                               {ivrData.sub_tier ? ' ' : ''}Subscriber
                             </span>
-                            <span className="text-purple-300/70">{formatSubTenure(ivrData.sub_streak, ivrData.sub_cumulative)}</span>
+                            <span className="text-accent/70">{formatSubTenure(ivrData.sub_streak, ivrData.sub_cumulative)}</span>
                             {ivrData.sub_type === 'gift' && ivrData.sub_gifter_display_name && (
-                              <span className="text-purple-300/70">gift from {ivrData.sub_gifter_display_name}</span>
+                              <span className="text-accent/70">gift from {ivrData.sub_gifter_display_name}</span>
                             )}
-                            {ivrData.is_founder && <span className="px-1 py-px rounded bg-purple-500/20 text-[9px] font-bold tracking-wider">FOUNDER</span>}
+                            {ivrData.is_founder && <span className="px-1 py-px rounded bg-accent/20 text-[9px] font-bold tracking-wider">FOUNDER</span>}
                           </span>
                         )}
                         {ivrData?.is_mod && (
-                          <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-green-500/10 border border-green-500/20 text-[11px] text-green-300">
+                          <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-success/10 border border-success/20 text-[11px] text-success">
                             <span className="font-semibold">Moderator</span>
-                            {ivrData.mod_since && <span className="text-green-300/70">since {formatIVRDate(ivrData.mod_since)}</span>}
+                            {ivrData.mod_since && <span className="text-success/70">since {formatIVRDate(ivrData.mod_since)}</span>}
                           </span>
                         )}
                         {ivrData?.is_vip && (
-                          <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-pink-500/10 border border-pink-500/20 text-[11px] text-pink-300">
+                          <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-highlight-pink/10 border border-highlight-pink/20 text-[11px] text-highlight-pink">
                             <span className="font-semibold">VIP</span>
                             {ivrData.vip_since && <span className="text-pink-300/70">since {formatIVRDate(ivrData.vip_since)}</span>}
                           </span>
@@ -1599,23 +1694,23 @@ const UserProfileCard = ({
                   className={`glass-button text-white text-xs py-2.5 px-3 rounded-md text-center transition-colors flex items-center justify-center gap-1.5 w-full ${followLoading
                     ? 'opacity-50 cursor-wait'
                     : isFollowing
-                      ? 'hover:bg-red-500/20 border-red-500/30'
-                      : 'hover:bg-green-500/20 border-green-500/30'
+                      ? 'hover:bg-error/20 border-red-500/30'
+                      : 'hover:bg-success/20 border-green-500/30'
                     }`}
                 >
                   {followLoading ? (
                     <>
-                      <Loader2 size={14} className="animate-spin text-purple-400" />
+                      <Loader2 size={14} className="animate-spin text-accent" />
                       <span>Working...</span>
                     </>
                   ) : isFollowing ? (
                     <>
-                      <UserMinus size={14} className="text-red-400" />
+                      <UserMinus size={14} className="text-error" />
                       <span>Unfollow</span>
                     </>
                   ) : (
                     <>
-                      <UserPlus size={14} className="text-green-400" />
+                      <UserPlus size={14} className="text-success" />
                       <span>Follow</span>
                     </>
                   )}
@@ -1623,9 +1718,9 @@ const UserProfileCard = ({
               </Tooltip>
               <button
                 onClick={handleWhisper}
-                className="glass-button text-white text-xs py-2.5 px-3 rounded-md text-center hover:bg-purple-500/20 transition-colors flex items-center justify-center gap-1.5 w-full"
+                className="glass-button text-white text-xs py-2.5 px-3 rounded-md text-center hover:bg-accent/20 transition-colors flex items-center justify-center gap-1.5 w-full"
               >
-                <MessageCircle size={14} className="text-purple-400" />
+                <MessageCircle size={14} className="text-accent" />
                 Whisper
               </button>
               <button
@@ -1657,10 +1752,10 @@ const UserProfileCard = ({
                     Logger.error('[UserProfileCard] Failed to copy share link:', err);
                   }
                 }}
-                className={`col-span-2 glass-button text-xs py-2.5 px-3 rounded-md text-center transition-colors flex items-center justify-center gap-1.5 w-full ${shareCopied ? 'text-green-400' : 'text-white hover:bg-accent/20'}`}
+                className={`col-span-2 glass-button text-xs py-2.5 px-3 rounded-md text-center transition-colors flex items-center justify-center gap-1.5 w-full ${shareCopied ? 'text-success' : 'text-white hover:bg-accent/20'}`}
               >
                 <span key={shareCopied ? 'copied' : 'share'} className="inline-flex animate-in zoom-in-50 duration-200">
-                  {shareCopied ? <Check size={14} className="text-green-400" /> : <Share2 size={14} className="text-accent" />}
+                  {shareCopied ? <Check size={14} className="text-success" /> : <Share2 size={14} className="text-accent" />}
                 </span>
                 {shareCopied ? 'Link copied!' : 'Share'}
               </button>
@@ -1683,10 +1778,10 @@ const UserProfileCard = ({
 
             {/* Mod zone. Kept inside body container; red top border is the only divider we keep, as a semantic danger-zone signal */}
             {isModerator && broadcasterId && (
-              <div className="pt-3 border-t border-red-500/20">
+              <div className="pt-3 border-t border-error/20">
                 <div className="flex items-center gap-1.5 mb-2.5">
-                  <svg className="w-3.5 h-3.5 text-red-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
-                  <span className="text-[10px] uppercase font-bold text-red-400 tracking-wider">Moderator Actions</span>
+                  <svg className="w-3.5 h-3.5 text-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                  <span className="text-[10px] uppercase font-bold text-error tracking-wider">Moderator Actions</span>
                 </div>
                 <div className="grid grid-cols-4 gap-2">
                   <Tooltip content="Purge recent messages" side="top">
@@ -1702,7 +1797,7 @@ const UserProfileCard = ({
                           useAppStore.getState().addToast('Failed to purge user', 'error');
                         }
                       }}
-                      className="py-1.5 glass-button text-xs font-semibold text-white/70 hover:text-white hover:bg-orange-500/20 border hover:border-orange-500/30 rounded flex items-center justify-center transition-colors"
+                      className="py-1.5 glass-button text-xs font-semibold text-white/70 hover:text-white hover:bg-warning/20 border hover:border-warning/30 rounded flex items-center justify-center transition-colors"
                     >
                       Purge
                     </button>
@@ -1720,7 +1815,7 @@ const UserProfileCard = ({
                           useAppStore.getState().addToast('Failed to timeout user', 'error');
                         }
                       }}
-                      className="py-1.5 glass-button text-xs font-semibold text-white/70 hover:text-white hover:bg-yellow-500/20 border hover:border-yellow-500/30 rounded flex items-center justify-center transition-colors"
+                      className="py-1.5 glass-button text-xs font-semibold text-white/70 hover:text-white hover:bg-warning/20 border hover:border-yellow-500/30 rounded flex items-center justify-center transition-colors"
                     >
                       10m
                     </button>
@@ -1738,7 +1833,7 @@ const UserProfileCard = ({
                           useAppStore.getState().addToast('Failed to timeout user', 'error');
                         }
                       }}
-                      className="py-1.5 glass-button text-xs font-semibold text-white/70 hover:text-white hover:bg-orange-600/20 border hover:border-orange-600/30 rounded flex items-center justify-center transition-colors"
+                      className="py-1.5 glass-button text-xs font-semibold text-white/70 hover:text-white hover:bg-warning/25 border hover:border-warning/35 rounded flex items-center justify-center transition-colors"
                     >
                       24h
                     </button>

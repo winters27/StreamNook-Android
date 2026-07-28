@@ -36,6 +36,9 @@ import ViewersPanel from './ViewersPanel';
 import ModRoomPane from './modroom/ModRoomPane';
 import { EmotePickerPanel, useSwappingSmiley } from './chat/EmotePickerPanel';
 import { isCachedModerator, setCachedModerator, loadModeratedChannelIds, subscribeModeratedChannels } from '../services/modRoomService';
+import type { ModRoomMember } from '../services/modRoomService';
+import { ensureRoom, releaseRoom } from '../services/modRoomManager';
+import { useModRoomStore } from '../stores/modRoomStore';
 import ChannelPointsMenu from './ChannelPointsMenu';
 import ModeratorMenu from './chat/ModeratorMenu';
 import ResubNotificationBanner, { ResubNotification } from './ResubNotificationBanner';
@@ -91,6 +94,8 @@ interface ParsedMessage {
 import { EMOJI_CATEGORIES, EMOJI_KEYWORDS } from '../services/emojiCategories';
 import { usemultiNookStore } from '../stores/multiNookStore';
 import { usePinStore } from '../stores/pinStore';
+import { useVodReplayStore, useVodReplaySnapshot, nudgeVodReplay } from '../stores/vodReplayStore';
+import { SegmentedSelect } from './settings/_primitives';
 import type { TwitchStream, HypeTrainData } from '../types';
 
 import { Logger } from '../utils/logger';
@@ -248,42 +253,98 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   const providerKey =
     !isTwitch && channelOverride ? makeKey(provider, channelOverride.user_login.toLowerCase()) : null;
   const providerSnapshot = useChannelChat(providerKey);
+  // Hoisted out of the memo below so their identities survive a flush. The memo
+  // now recomputes on every renderToken bump, so functions declared inline in it
+  // would churn per frame and destabilize everything downstream (setChatPaused
+  // depends on setPaused, and the message list's handlers depend on that).
+  const providerConnectChat = useCallback(async () => {}, []);
+  const providerSendMessage = useCallback(
+    async (
+      messageText: string,
+      _userInfo?: unknown,
+      replyParentMsgId?: string,
+      _senderAccount?: unknown,
+    ) => {
+      if (!channelOverride) return;
+      await invoke('provider_send_message', {
+        provider,
+        channel: channelOverride.user_login.toLowerCase(),
+        text: messageText,
+        replyTo: replyParentMsgId ?? null,
+      });
+    },
+    [provider, channelOverride],
+  );
+  const providerSetPaused = useCallback(
+    (paused: boolean) => {
+      if (providerKey) setChannelPaused(providerKey, paused);
+    },
+    [providerKey],
+  );
   const providerChat = useMemo(
     () => ({
-      // Fresh array ref each new message so the memo'd ChatMessageList re-renders
-      // (the store appends in place; liveMessageCount bumps drive this memo).
-      messages: providerSnapshot.messages.slice(),
-      connectChat: async () => {},
-      sendMessage: async (
-        messageText: string,
-        _userInfo?: unknown,
-        replyParentMsgId?: string,
-        _senderAccount?: unknown,
-      ) => {
-        if (!channelOverride) return;
-        await invoke('provider_send_message', {
-          provider,
-          channel: channelOverride.user_login.toLowerCase(),
-          text: messageText,
-          replyTo: replyParentMsgId ?? null,
-        });
-      },
+      // Passed through by reference. The list's re-render is driven by
+      // `renderToken`, not by array identity, so the defensive copy this used to
+      // make (up to ~1150 elements, rebuilt on every ChatWidget render because
+      // `providerSnapshot` is a fresh object each time) is no longer needed.
+      messages: providerSnapshot.messages,
+      connectChat: providerConnectChat,
+      sendMessage: providerSendMessage,
       isConnected: providerSnapshot.isConnected,
       error: providerSnapshot.error,
-      setPaused: (paused: boolean) => {
-        if (providerKey) setChannelPaused(providerKey, paused);
-      },
+      setPaused: providerSetPaused,
       deletedMessageIds: providerSnapshot.deletedMessageIds,
       clearedUserContexts: providerSnapshot.clearedUserContexts,
       roomState: providerSnapshot.roomState,
       userBadges: providerSnapshot.userBadges,
       liveMessageCount: providerSnapshot.liveMessageCount,
+      renderToken: providerSnapshot.renderToken,
     }),
+    // Depend on the individual fields, NOT on `providerSnapshot` itself:
+    // useChannelChat returns a fresh object every render, so a dep on the
+    // snapshot meant this memo never held and re-ran on every keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [providerSnapshot, providerSnapshot.liveMessageCount, providerKey, provider, channelOverride],
+    [
+      providerSnapshot.messages,
+      providerSnapshot.isConnected,
+      providerSnapshot.error,
+      providerSnapshot.deletedMessageIds,
+      providerSnapshot.clearedUserContexts,
+      providerSnapshot.roomState,
+      providerSnapshot.userBadges,
+      providerSnapshot.liveMessageCount,
+      providerSnapshot.renderToken,
+      providerConnectChat,
+      providerSendMessage,
+      providerSetPaused,
+    ],
   );
-  const chat = isTwitch ? twitchChat : providerChat;
-  const { messages, connectChat, sendMessage, isConnected, error, setPaused: setBufferPaused, deletedMessageIds, clearedUserContexts, roomState, userBadges, liveMessageCount } = chat;
+  // VOD chat replay seam. In the main widget (never a popout) while a VOD is
+  // playing, the panel defaults to synced historical chat and can toggle to the
+  // channel's live chat. The replay hook always runs (rules of hooks); we just
+  // select it as the message source when in replay mode. Replay is read-only.
+  const replayChat = useVodReplaySnapshot();
+  const replaySessionId = useVodReplayStore((s) => s.sessionId);
+  const replayActive = useVodReplayStore((s) => s.active);
+  // The toggle is available whenever a VOD replay session exists — started for a
+  // VOD opened from the Videos list OR via the offline-channel button. Never in
+  // popouts (they always show their own live channel).
+  const isVodReplay = !channelOverride && replayActive;
+  const [chatMode, setChatMode] = useState<'replay' | 'live'>('replay');
+  const chat = isVodReplay && chatMode === 'replay' ? replayChat : isTwitch ? twitchChat : providerChat;
+  const { messages, connectChat, sendMessage, isConnected, error, setPaused: setBufferPaused, deletedMessageIds, clearedUserContexts, roomState, userBadges, liveMessageCount, renderToken } = chat;
+
+  // A new VOD always starts in replay (beginVodReplay bumps sessionId).
+  useEffect(() => {
+    setChatMode('replay');
+  }, [replaySessionId]);
+
+  // Returning to replay from live: catch up to the current playhead instantly.
+  // The engine keeps running across the toggle, so this never resets position —
+  // it just avoids waiting up to one poll interval to resync.
+  useEffect(() => {
+    if (isVodReplay && chatMode === 'replay') nudgeVodReplay();
+  }, [isVodReplay, chatMode]);
 
   // Kick sending requires a connected Kick account (OAuth). Poll the state so the
   // composer enables right after the user connects.
@@ -465,10 +526,16 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   const [messageInput, setMessageInput] = useState('');
   const [activeView, setActiveView] = useState<'chat' | 'viewers' | 'modroom'>('chat');
   // Mod-room status reported up by ModRoomPane so the header can show it.
-  const [modRoomStatus, setModRoomStatus] = useState<{ memberCount: number; encrypted: boolean; connected: boolean }>({
+  const [modRoomStatus, setModRoomStatus] = useState<{
+    memberCount: number;
+    encrypted: boolean;
+    connected: boolean;
+    members: ModRoomMember[];
+  }>({
     memberCount: 0,
     encrypted: false,
     connected: false,
+    members: [],
   });
 
   // Optimistic mod-room eligibility: show the toggle instantly on revisit from a
@@ -479,12 +546,36 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
     setCachedMod(isCachedModerator(currentStream?.user_id));
   }, [currentStream?.user_id]);
   useEffect(() => {
+    // Twitch only: a Kick/YouTube provider snapshot must never write its channel
+    // id into the Twitch mod-room cache (the id namespaces collide).
+    if (!isTwitch) return;
     const id = currentStream?.user_id;
     if (!id || !userBadges) return; // persist only once USERSTATE has resolved
     setCachedModerator(id, isModerator);
     setCachedMod(isModerator);
-  }, [isModerator, userBadges, currentStream?.user_id]);
-  const modRoomEligible = isModerator || cachedMod;
+  }, [isTwitch, isModerator, userBadges, currentStream?.user_id]);
+  // Mod rooms are Twitch-only: without the isTwitch gate, a Kick/YouTube
+  // moderator in an override pane would get a Mods toggle whose channel id
+  // belongs to the wrong platform.
+  const modRoomEligible = isTwitch && (isModerator || cachedMod);
+
+  // Keep the room connected while watching a moderated channel, independent of
+  // which view is showing, so unread/mention badges work from the Chat view.
+  useEffect(() => {
+    const id = currentStream?.user_id;
+    if (!id || !modRoomEligible) return;
+    ensureRoom(id);
+    return () => releaseRoom(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modRoomEligible, currentStream?.user_id]);
+
+  // Unread/mention counts for the badge on the Mods toggle.
+  const modRoomUnread = useModRoomStore((s) =>
+    currentStream ? s.sessions[currentStream.user_id]?.unread ?? 0 : 0,
+  );
+  const modRoomMentions = useModRoomStore((s) =>
+    currentStream ? s.sessions[currentStream.user_id]?.mentions ?? 0 : 0,
+  );
 
   // Seed the moderated-channel cache once (if the scoped token exists) so the
   // toggle shows on first visit too, not only on revisit.
@@ -655,6 +746,10 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   // points feed). Message-style and text-input rewards already surface in chat
   // on their own, so we inject only the ones that otherwise wouldn't show, as a
   // native-looking redemption row. Gated by a setting (defaults on).
+  // The channel's points icon loads asynchronously and this listener only
+  // re-subscribes on channel change, so read the latest value from a ref at
+  // redemption time (synced just below the customPointsIconUrl state).
+  const customPointsIconRef = useRef<string | null>(null);
   useEffect(() => {
     if (!isTwitch) return;
     const channelId = currentStream?.user_id;
@@ -682,6 +777,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
         rewardTitle: p.reward_title,
         cost: p.reward_cost,
         redemptionId: p.redemption_id,
+        pointsIconUrl: customPointsIconRef.current,
       });
     });
     return () => {
@@ -703,6 +799,9 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   // so the first connect can happen with an empty user_id; badges fail to
   // load until we re-trigger acquireChannel with the real id).
   const connectedRoomIdRef = useRef<string | null>(null);
+  // Tracks the channel whose LIVE chat we joined for a VOD's live-toggle, so a
+  // replay↔live flip doesn't re-join on every effect run.
+  const liveJoinedRef = useRef<string | null>(null);
 
   // Warm up badge cache on mount (non-blocking, runs before messages render)
   useEffect(() => {
@@ -867,6 +966,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   const [isLoadingChannelPoints, setIsLoadingChannelPoints] = useState(false);
   const [customPointsName, setCustomPointsName] = useState<string | null>(null);
   const [customPointsIconUrl, setCustomPointsIconUrl] = useState<string | null>(null);
+  customPointsIconRef.current = customPointsIconUrl;
 
   // Pinned chat state
   interface PinnedMessage {
@@ -934,10 +1034,16 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   // Twitch always sends; Kick sends once a Kick account is connected (OAuth);
   // other providers stay read-only. Disable + label the composer accordingly
   // rather than letting a no-op send swallow input.
+  // VOD chat replay is historical — you can't post into the past, so the
+  // composer is read-only until the viewer toggles to live chat.
+  const isReplayReadOnly = isVodReplay && chatMode === 'replay';
   const canSendHere =
-    isTwitch || (provider === 'kick' && kickConnected) || (provider === 'youtube' && youtubeConnected);
+    !isReplayReadOnly &&
+    (isTwitch || (provider === 'kick' && kickConnected) || (provider === 'youtube' && youtubeConnected));
   const isInputDisabled = !canSendHere || !isConnected || (isSubOnly && !canBypassSubOnly);
-  const chatPlaceholder = !canSendHere
+  const chatPlaceholder = isReplayReadOnly
+    ? 'Viewing chat replay (read-only)'
+    : !canSendHere
     ? provider === 'kick'
       ? 'Connect your Kick account to send'
       : provider === 'youtube'
@@ -1191,7 +1297,9 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
       !connectedRoomIdRef.current
     ) {
       connectedRoomIdRef.current = currentStream.user_id;
-      connectChat(currentStream.user_login, currentStream.user_id);
+      // Replay mode never opens the live IRC join (read-only historical chat);
+      // still load emotes so replay renders third-party emotes.
+      if (!isReplayReadOnly) connectChat(currentStream.user_login, currentStream.user_id);
       loadEmotes(currentStream.user_login, currentStream.user_id);
     }
 
@@ -1202,8 +1310,10 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
       setChatPaused(false, { force: true });
       setNewSincePause(0);
       mountTimeRef.current = Date.now(); // Reset grace period on channel switch
-      // Pass roomId (user_id) to enable fetching recent messages from IVR API
-      connectChat(currentStream.user_login, currentStream.user_id);
+      // Pass roomId (user_id) to enable fetching recent messages from IVR API.
+      // Skipped for a VOD in replay mode: chat is read-only historical, so we
+      // bind the channel (for header/emotes) without joining live IRC.
+      if (!isReplayReadOnly) connectChat(currentStream.user_login, currentStream.user_id);
       // Defer emote loading until user_id is known. MultiChat pops in with an
       // empty user_id (async stream-info poll), so without this guard we'd
       // fetch globals-only first (Rust caches them under "global"), THEN
@@ -1283,11 +1393,41 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
       }
     }
     
+    // VOD live-chat toggle. The channel is already "bound" (branches above set
+    // connectedChannelRef but skipped the IRC join in replay), so a mode flip
+    // never re-enters them — join live chat here when the viewer asks for it.
+    if (
+      isVodReplay &&
+      chatMode === 'live' &&
+      currentStream?.user_login &&
+      liveJoinedRef.current !== currentStream.user_login
+    ) {
+      liveJoinedRef.current = currentStream.user_login;
+      connectChat(currentStream.user_login, currentStream.user_id);
+      if (currentStream.user_id) loadEmotes(currentStream.user_login, currentStream.user_id);
+    } else if (!(isVodReplay && chatMode === 'live')) {
+      liveJoinedRef.current = null;
+    }
+
     return () => {
       if (currentStream?.user_login !== connectedChannelRef.current) connectedChannelRef.current = null;
       if (timeoutId) clearTimeout(timeoutId);
     };
-  }, [currentStream?.user_login, currentStream?.user_id, isMultiNookActive, channelOverride, setChatPaused]);
+  }, [currentStream?.user_login, currentStream?.user_id, isMultiNookActive, channelOverride, setChatPaused, isVodReplay, chatMode]);
+
+  // Pre-warm the channel's live chat while a VOD is playing, so the FIRST switch
+  // to Live shows messages instantly instead of a blank "waiting" screen. The
+  // display stays on replay (read-only) until the viewer toggles; this only
+  // populates the live slice in the background. Uses `twitchChat.connectChat` —
+  // the REAL connect — because the display-selected `connectChat` is the replay
+  // no-op while in replay mode. Idempotent per channel; released on unmount.
+  useEffect(() => {
+    if (!isVodReplay) return;
+    const login = currentStream?.user_login;
+    if (!login) return;
+    void twitchChat.connectChat(login, currentStream?.user_id ?? undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isVodReplay, currentStream?.user_login, currentStream?.user_id]);
 
   // Force unpause chat when returning from About view
   useEffect(() => {
@@ -2934,6 +3074,9 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
           const key = e.name.toLowerCase();
           if (seen.has(key)) continue;
           if (!test(e.name)) continue;
+          // Subscriber-only FFZ effects are not offered to non-subscribers
+          // (they still render in incoming messages).
+          if (e.ffzSubOnly && !useAppStore.getState().ffzIsSubwoofer) continue;
           seen.add(key);
           ranked.push({
             providerTier: tierOf(provider),
@@ -2948,6 +3091,8 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                 localUrl: e.localUrl,
                 provider: e.provider,
                 isZeroWidth: e.isZeroWidth,
+                modifierFlags: e.modifierFlags,
+                ffzSubOnly: e.ffzSubOnly,
               },
             },
           });
@@ -3059,46 +3204,31 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
     return true;
   }, [emoteTabState, messageInput, getMatchingEmoteTokens, settings.chat_input]);
 
-  const handleEmoteRightClick = (emoteName: string) => {
+  // The handlers passed down to ChatMessageList are all useCallback'd. They feed
+  // a memoized list of up to ~1150 rows, so an unstable identity here re-renders
+  // every visible message on every ChatWidget render — including every keystroke
+  // in the input below.
+  const handleEmoteRightClick = useCallback((emoteName: string) => {
     setMessageInput(prev => {
       if (prev.trim()) return prev + (prev.endsWith(' ') ? '' : ' ') + emoteName + ' ';
       return emoteName + ' ';
     });
     inputRef.current?.focus({ preventScroll: true });
-  };
+  }, []);
 
-  const handleUsernameRightClick = (messageId: string, username: string) => {
+  const handleUsernameRightClick = useCallback((messageId: string, username: string) => {
     setReplyingTo({ messageId, username });
     inputRef.current?.focus({ preventScroll: true });
-  };
+  }, []);
 
   const handleMessageCopy = useCallback((content: string) => {
     setMessageInput(content + ' ');
     inputRef.current?.focus({ preventScroll: true });
   }, []);
 
-  const emojiCategories = EMOJI_CATEGORIES;
-
-
-
-  if (!currentStream) {
-    return (
-      <div className="h-full bg-secondary backdrop-blur-md flex items-center justify-center p-4">
-        <p className="text-textSecondary">No stream selected</p>
-      </div>
-    );
-  }
-
-  const showLoadingScreen = !isConnected && messages.length === 0;
-  if (showLoadingScreen) {
-    return (
-      <div className="h-full bg-secondary backdrop-blur-md flex items-center justify-center p-4">
-        <p className="text-textSecondary">Connecting to chat...</p>
-      </div>
-    );
-  }
-
-  const handleUsernameClick = async (userId: string, username: string, displayName: string, color: string, badges: Array<{ key: string; info: any }>, event: React.MouseEvent) => {
+  // Declared here, above the early returns below, so it can be a useCallback
+  // (hooks can't live after a conditional return).
+  const handleUsernameClick = useCallback(async (userId: string, username: string, displayName: string, color: string, badges: Array<{ key: string; info: any }>, event: React.MouseEvent) => {
     try {
       const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
       const { getCurrentWindow } = await import('@tauri-apps/api/window');
@@ -3126,7 +3256,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
       if (x < 0) x = cursorScreenX + gap;
       if (y < 0) y = 0;
       const windowLabel = `profile-${userId}-${Date.now()}`;
-      
+
       // PHASE 3: Fetch message history from Rust LRU cache instead of frontend Map
       // This eliminates frontend memory overhead and provides more reliable history
       let messageHistory: any[] = [];
@@ -3136,7 +3266,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
         Logger.warn('[ChatWidget] Failed to fetch user history from Rust, using frontend cache:', err);
         messageHistory = userMessageHistory.current.get(userId) || [];
       }
-      
+
       const params = new URLSearchParams({
         userId, username, displayName, color,
         badges: JSON.stringify(badges),
@@ -3155,10 +3285,71 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
       Logger.error('Failed to open profile window:', err);
       setSelectedUser({ userId, username, displayName, color, badges, position: { x: event.clientX, y: event.clientY } });
     }
-  };
+  }, [currentStream?.user_id, currentStream?.user_login]);
   // Refresh the latest-handler ref each render so window-event callers (e.g. the
   // /usercard and /user commands) invoke the current closure.
   handleUsernameClickRef.current = handleUsernameClick;
+
+  const handlePauseIntent = useCallback(() => {
+    // Fired the instant the user scrolls up by any amount. This
+    // is the primary pause path — no distance threshold, just
+    // like Twitch: scroll up at all and chat pauses. It is safe
+    // from layout jolts because only a real wheel/touch gesture
+    // reaches here (a tall message moving the scrollbar does not).
+    const now = Date.now();
+    if (now - mountTimeRef.current < 2000) return;       // initial layout settle
+    if (now - lastResumeTimeRef.current < 1000) return;  // post-resume inertia
+    if (now - lastNavigationTimeRef.current < 1000) return; // scrollToMessage animation
+    setChatPaused(true);
+  }, [setChatPaused]);
+
+  const handleListScroll = useCallback((distanceToBottom: number, isUserScroll: boolean) => {
+    // Debug logging - to be removed after verification
+    if (isUserScroll && distanceToBottom > 150) {
+      Logger.debug('[ChatWidget] Potential Pause Trigger:', { distanceToBottom, isUserScroll, isPaused });
+    }
+
+    // Grace Periods:
+    // 1. Initial Load: Ignore first 2s to allow layout stabilization
+    // 2. Resume: Ignore first 1s after clicking resume
+    const now = Date.now();
+    if (now - mountTimeRef.current < 2000) return;
+    if (now - lastResumeTimeRef.current < 1000) return;
+    if (now - lastNavigationTimeRef.current < 1000) return; // Skip during scrollToMessage animation
+
+    // User scrolled up (away from bottom) - pause chat
+    // STRICT: Only pause if Child component confirms it was a USER interaction (isUserScroll)
+    if (isUserScroll && distanceToBottom > 150 && !isPaused) {
+      setChatPaused(true);
+    }
+    // User scrolled back to bottom while paused - auto-resume.
+    // Guarded (no force): the settle window absorbs the rapid
+    // toggles a fast chat would otherwise produce here.
+    else if (isPaused && distanceToBottom < 30) {
+      setChatPaused(false, { scrollToBottom: true });
+    }
+  }, [isPaused, setChatPaused]);
+
+  const emojiCategories = EMOJI_CATEGORIES;
+
+
+
+  if (!currentStream) {
+    return (
+      <div className="h-full bg-secondary backdrop-blur-md flex items-center justify-center p-4">
+        <p className="text-textSecondary">No stream selected</p>
+      </div>
+    );
+  }
+
+  const showLoadingScreen = !isConnected && messages.length === 0;
+  if (showLoadingScreen) {
+    return (
+      <div className="h-full bg-secondary backdrop-blur-md flex items-center justify-center p-4">
+        <p className="text-textSecondary">Connecting to chat...</p>
+      </div>
+    );
+  }
 
   return (
     <>
@@ -3186,7 +3377,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
             (declared first below) renders underneath it */}
         <div className={`absolute top-0 left-0 right-0 px-3 py-2 border-b backdrop-blur-ultra z-10 pointer-events-none shadow-lg overflow-hidden flex flex-col-reverse ${
           isSharedChat && !currentHypeTrain ? 'iridescent-border' : 'border-borderSubtle'
-        }`} style={{ backgroundColor: 'rgba(12, 12, 13, 0.9)' }}>
+        }`} style={{ backgroundColor: 'color-mix(in srgb, var(--color-background) 90%, transparent)' }}>
           {currentHypeTrain && (
             <HypeTrainBanner
               train={currentHypeTrain}
@@ -3229,18 +3420,40 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                       className="flex min-w-0 items-center gap-2 whitespace-nowrap"
                     >
                       {modRoomStatus.connected ? (
-                        <span className="flex items-center whitespace-nowrap text-xs text-textSecondary">
-                          <motion.span
-                            key={modRoomStatus.memberCount}
-                            initial={{ opacity: 0, y: -3, scale: 0.7 }}
-                            animate={{ opacity: 1, y: 0, scale: 1 }}
-                            transition={{ type: 'spring', stiffness: 520, damping: 26 }}
-                            className="mr-1 inline-block font-semibold text-textPrimary"
-                          >
-                            {modRoomStatus.memberCount || 1}
-                          </motion.span>
-                          in the room
-                        </span>
+                        <Tooltip
+                          side="bottom"
+                          content={
+                            modRoomStatus.members.length > 0 ? (
+                              <div className="flex flex-col gap-1 py-0.5">
+                                {modRoomStatus.members.map((mm) => (
+                                  <span key={mm.userId} className="flex items-center gap-1.5 text-xs">
+                                    <span
+                                      className={`h-1.5 w-1.5 shrink-0 rounded-full ${mm.active !== false ? 'bg-accent' : 'bg-white/25'}`}
+                                    />
+                                    <span className={mm.role === 'broadcaster' ? 'text-[#f0c674]' : 'text-textPrimary'}>
+                                      {mm.login}
+                                    </span>
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              'Just you'
+                            )
+                          }
+                        >
+                          <span className="flex cursor-default items-center whitespace-nowrap text-xs text-textSecondary">
+                            <motion.span
+                              key={modRoomStatus.memberCount}
+                              initial={{ opacity: 0, y: -3, scale: 0.7 }}
+                              animate={{ opacity: 1, y: 0, scale: 1 }}
+                              transition={{ type: 'spring', stiffness: 520, damping: 26 }}
+                              className="mr-1 inline-block font-semibold text-textPrimary"
+                            >
+                              {modRoomStatus.memberCount || 1}
+                            </motion.span>
+                            in the room
+                          </span>
+                        </Tooltip>
                       ) : (
                         <span className="text-xs text-textSecondary">Connecting...</span>
                       )}
@@ -3269,13 +3482,12 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                 {/* MultiChat panes have no player, so surface the live title/game
                     here (the main app shows them around the player instead). */}
                 {channelOverride && currentStream?.title && activeView !== 'modroom' && (
-                  <p
-                    className="min-w-0 flex-1 truncate text-[10px] font-normal leading-4 text-textMuted"
-                    title={currentStream.title}
-                  >
-                    {currentStream.game_name ? `${currentStream.game_name} · ` : ''}
-                    {currentStream.title}
-                  </p>
+                  <Tooltip content={currentStream.title} side="bottom">
+                    <p className="min-w-0 flex-1 truncate text-[10px] font-normal leading-4 text-textMuted">
+                      {currentStream.game_name ? `${currentStream.game_name} · ` : ''}
+                      {currentStream.title}
+                    </p>
+                  </Tooltip>
                 )}
                 <div className="flex items-center gap-3 ml-auto">
                   {/* Compact Chat / Mod Room toggle: the active pill slides between
@@ -3310,6 +3522,17 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                             />
                           )}
                           <span className="relative z-10">{seg.label}</span>
+                          {/* Unread chip: mentions turn it red so a ping is
+                              visible from the Chat view without opening the room. */}
+                          {seg.key === 'modroom' && !seg.active && modRoomUnread > 0 && (
+                            <span
+                              className={`relative z-10 ml-1 inline-flex min-w-[15px] items-center justify-center rounded-full px-1 text-[9px] font-bold leading-[15px] ${
+                                modRoomMentions > 0 ? 'bg-red-500/85 text-white' : 'bg-accent/25 text-accent'
+                              }`}
+                            >
+                              {modRoomUnread > 9 ? '9+' : modRoomUnread}
+                            </span>
+                          )}
                         </button>
                       ))}
                     </div>
@@ -3470,8 +3693,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                   animate={{ opacity: 1, y: 0, scale: 1, height: 'auto' }}
                   exit={{ opacity: 0, y: -10, scale: 0.96, height: 0 }}
                   transition={{ duration: 0.3, ease: [0.175, 0.885, 0.32, 1.2] }}
-                  className="w-full max-w-sm glass-panel bg-background/[0.45] shadow-2xl mt-2 pointer-events-auto overflow-hidden origin-top"
-                  style={{ backdropFilter: 'blur(64px) saturate(300%)', WebkitBackdropFilter: 'blur(64px) saturate(300%)' }}
+                  className="sn-popover w-full max-w-sm mt-2 pointer-events-auto overflow-hidden origin-top"
                 >
                 {pinnedMessages.map((pin, i) => {
                   // Same link-preview pipeline the main chat uses, applied to the
@@ -3655,8 +3877,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                       setIsPinnedExpanded(true);
                       seenPinIdRef.current = pin.id;
                     }}
-                    className="group w-full max-w-sm glass-panel bg-background/[0.45] hover:bg-background/[0.6] shadow-lg mt-2 pointer-events-auto overflow-hidden flex items-center gap-2.5 px-3.5 py-2.5 text-left transition-colors"
-                    style={{ backdropFilter: 'blur(64px) saturate(300%)', WebkitBackdropFilter: 'blur(64px) saturate(300%)' }}
+                    className="sn-popover group w-full max-w-sm hover:bg-background/[0.6] mt-2 pointer-events-auto overflow-hidden flex items-center gap-2.5 px-3.5 py-2.5 text-left transition-colors"
                   >
                     <svg className="w-3.5 h-3.5 text-accent flex-shrink-0" fill="currentColor" viewBox="0 0 16 16">
                       <path d="M4.146.146A.5.5 0 0 1 4.5 0h7a.5.5 0 0 1 .5.5c0 .68-.342 1.174-.646 1.479-.126.125-.25.224-.354.298v4.431l.078.048c.203.127.476.314.751.555C12.36 7.775 13 8.527 13 9.5a.5.5 0 0 1-.5.5h-4v4.5a.5.5 0 0 1-1 0V10h-4A.5.5 0 0 1 3 9.5c0-.973.64-1.725 1.17-2.189A5.921 5.921 0 0 1 5 6.708V2.277a2.77 2.77 0 0 1-.354-.298C4.342 1.674 4 1.179 4 .5a.5.5 0 0 1 .146-.354z"/>
@@ -3736,45 +3957,10 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
             <ErrorBoundary componentName="ChatWidgetList" reportToLogService={true}>
               <ChatMessageList
                 messages={visibleMessages}
+                renderToken={renderToken}
                 isPaused={isPaused}
-                onPauseIntent={() => {
-                  // Fired the instant the user scrolls up by any amount. This
-                  // is the primary pause path — no distance threshold, just
-                  // like Twitch: scroll up at all and chat pauses. It is safe
-                  // from layout jolts because only a real wheel/touch gesture
-                  // reaches here (a tall message moving the scrollbar does not).
-                  const now = Date.now();
-                  if (now - mountTimeRef.current < 2000) return;       // initial layout settle
-                  if (now - lastResumeTimeRef.current < 1000) return;  // post-resume inertia
-                  if (now - lastNavigationTimeRef.current < 1000) return; // scrollToMessage animation
-                  setChatPaused(true);
-                }}
-                onScroll={(distanceToBottom, isUserScroll) => {
-                  // Debug logging - to be removed after verification
-                  if (isUserScroll && distanceToBottom > 150) {
-                     Logger.debug('[ChatWidget] Potential Pause Trigger:', { distanceToBottom, isUserScroll, isPaused });
-                  }
-                  
-                  // Grace Periods:
-                  // 1. Initial Load: Ignore first 2s to allow layout stabilization
-                  // 2. Resume: Ignore first 1s after clicking resume
-                  const now = Date.now();
-                  if (now - mountTimeRef.current < 2000) return;
-                  if (now - lastResumeTimeRef.current < 1000) return;
-                  if (now - lastNavigationTimeRef.current < 1000) return; // Skip during scrollToMessage animation
-                  
-                  // User scrolled up (away from bottom) - pause chat
-                  // STRICT: Only pause if Child component confirms it was a USER interaction (isUserScroll)
-                  if (isUserScroll && distanceToBottom > 150 && !isPaused) {
-                    setChatPaused(true);
-                  }
-                  // User scrolled back to bottom while paused - auto-resume.
-                  // Guarded (no force): the settle window absorbs the rapid
-                  // toggles a fast chat would otherwise produce here.
-                  else if (isPaused && distanceToBottom < 30) {
-                    setChatPaused(false, { scrollToBottom: true });
-                  }
-                }}
+                onPauseIntent={handlePauseIntent}
+                onScroll={handleListScroll}
                 onUsernameClick={handleUsernameClick}
                 onReplyClick={handleReplyClick}
                 onMessageCopy={handleMessageCopy}
@@ -3798,7 +3984,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
         {/* Chat Paused indicator - positioned above input */}
         {activeView === 'chat' && isPaused && (
           <div className="absolute bottom-[60px] left-1/2 transform -translate-x-1/2 z-50 pointer-events-auto">
-            <button onClick={handleResume} className="flex items-center gap-2 px-4 py-2 glass-button text-white text-sm font-medium rounded-full shadow-lg bg-black/95">
+            <button onClick={handleResume} className="flex items-center gap-2 px-4 py-2 glass-button text-white text-sm font-medium rounded-full shadow-lg">
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
               <span>Chat Paused{newSincePause > 0 ? ` (${newSincePause} new)` : ''}</span>
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
@@ -3808,7 +3994,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
 
         {/* Input container - static flex item at bottom (hidden when About view active) */}
         {activeView === 'chat' &&
-        <div className="flex-shrink-0 border-t border-borderSubtle" style={{ backgroundColor: 'rgba(12, 12, 13, 0.9)' }}>
+        <div className="flex-shrink-0 border-t border-borderSubtle" style={{ backgroundColor: 'color-mix(in srgb, var(--color-background) 94%, transparent)' }}>
           <div className="p-2">
             <div className="relative">
               <EmotePickerPanel
@@ -3908,6 +4094,23 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                 </div>
               )}
 
+              {/* VOD chat source toggle. Uses the app's standard segmented control
+                  (recessed track + sliding thumb) so it matches Settings and the
+                  rest of the app instead of a one-off style. */}
+              {isVodReplay && (
+                <div className="mb-2">
+                  <SegmentedSelect
+                    fullWidth
+                    value={chatMode}
+                    onChange={(v) => setChatMode(v)}
+                    options={[
+                      { value: 'replay', label: 'VOD Chat' },
+                      { value: 'live', label: 'Live Chat' },
+                    ]}
+                  />
+                </div>
+              )}
+
               <div className="flex items-center gap-2 min-w-0">
                 {/* Channel Points button. Opens the rewards menu, balance on
                     hover. While the watched channel has a bonus chest ready
@@ -3940,10 +4143,10 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                         <img
                           src={customPointsIconUrl}
                           alt={customPointsName || "Channel Points"}
-                          className="w-[18px] h-[18px] transition-all duration-200 group-hover:drop-shadow-[0_0_6px_rgba(200,224,232,0.85)]"
+                          className="w-[18px] h-[18px] transition-all duration-200 group-hover:drop-shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent-neon)_85%,transparent)]"
                         />
                       ) : (
-                        <ChannelPointsIcon size={18} className="transition-all duration-200 group-hover:drop-shadow-[0_0_6px_rgba(200,224,232,0.85)]" />
+                        <ChannelPointsIcon size={18} className="transition-all duration-200 group-hover:drop-shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent-neon)_85%,transparent)]" />
                       )}
                     </button>
                   )}
@@ -3985,7 +4188,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                       : 'text-textSecondary hover:text-accent'
                       }`}
                   >
-                    <Pickaxe size={18} className={`transition-all duration-200 group-hover:drop-shadow-[0_0_6px_rgba(200,224,232,0.85)] ${isDropProgressing ? 'animate-pulse' : ''}`} />
+                    <Pickaxe size={18} className={`transition-all duration-200 group-hover:drop-shadow-[0_0_6px_color-mix(in_srgb,var(--color-accent-neon)_85%,transparent)] ${isDropProgressing ? 'animate-pulse' : ''}`} />
                   </button>
                   </Tooltip>
                 )}
@@ -4013,13 +4216,13 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                     className="group absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-7 h-7 text-textSecondary hover:text-textPrimary transition-colors duration-200"
                   >
                     {showEmotePicker ? (
-                      <svg className="w-4 h-4 transition-all duration-200 text-accent group-hover:drop-shadow-[0_0_5px_rgba(200,224,232,0.8)]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
+                      <svg className="w-4 h-4 transition-all duration-200 text-accent group-hover:drop-shadow-[0_0_5px_color-mix(in_srgb,var(--color-accent-neon)_80%,transparent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
                     ) : (
                       <img
                         src={getAppleEmojiUrl(smiley.currentSmiley)}
                         alt={smiley.currentSmiley}
                         draggable={false}
-                        className={`w-4 h-4 object-contain transition-all ease-in-out group-hover:drop-shadow-[0_0_5px_rgba(200,224,232,0.8)] ${
+                        className={`w-4 h-4 object-contain transition-all ease-in-out group-hover:drop-shadow-[0_0_5px_color-mix(in_srgb,var(--color-accent-neon)_80%,transparent)] ${
                           smiley.isSmileyTransitioning
                             ? 'opacity-0 scale-50 duration-100'
                             : 'opacity-100 scale-100 duration-150'
@@ -4091,7 +4294,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                     placeholder={chatPlaceholder}
                     className={`relative w-full text-sm placeholder-textSecondary resize-none overflow-hidden scrollbar-thin leading-[1.4] self-center transition-all duration-300 ${remindOverlayActive ? '' : 'glass-input'} ${
                       isWatchStreakMode 
-                        ? 'ring-2 ring-amber-500/50 bg-amber-500/5 shadow-[0_0_15px_rgba(245,158,11,0.15)] placeholder-amber-500/60 text-textPrimary' 
+                        ? 'ring-2 ring-amber-500/50 bg-amber-500/5 shadow-[0_0_15px_color-mix(in_srgb,var(--color-warning)_15%,transparent)] placeholder-amber-500/60 text-textPrimary'
                         : (commandState.isValid && !remindOverlayActive)
                         ? 'font-bold tracking-wide'
                         : ''
@@ -4124,7 +4327,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                       } : commandState.isValid && !isWatchStreakMode ? {
                         backgroundColor: 'rgba(200, 224, 232, 0.1)',
                         borderColor: 'var(--color-accent)',
-                        boxShadow: '0 0 16px rgba(200, 224, 232, 0.25), inset 4px 4px 10px -3px rgba(0, 0, 0, 0.6)',
+                        boxShadow: '0 0 16px color-mix(in srgb, var(--color-accent-neon) 25%, transparent), inset 4px 4px 10px -3px rgba(0, 0, 0, 0.6)',
                         color: 'var(--color-accent)'
                       } : commandState.isCommand && !isWatchStreakMode ? {
                         backgroundColor: 'rgba(255, 255, 255, 0.04)',
@@ -4150,7 +4353,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                   disabled={(!messageInput.trim() && !isWatchStreakMode && !isResubMode) || isInputDisabled} 
                   className={`flex-shrink-0 flex items-center justify-center self-center w-9 h-9 text-white rounded transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed ${
                     isWatchStreakMode 
-                      ? 'bg-amber-500 hover:bg-amber-400 shadow-[0_0_12px_rgba(245,158,11,0.3)]' 
+                      ? 'bg-amber-500 hover:bg-amber-400 shadow-[0_0_12px_color-mix(in_srgb,var(--color-warning)_30%,transparent)]'
                       : 'glass-button'
                   }`}
                 >

@@ -1,13 +1,16 @@
 //! 7TV emotes for Kick channels.
 //!
 //! 7TV supports Kick natively: `https://7tv.io/v3/users/kick/{kick_user_id}`
-//! returns the channel's active emote set (the same shape as the Twitch path),
-//! and `https://7tv.io/v3/emote-sets/global` is the shared global set. We fetch
-//! both, build a per-slug `name -> emote` map, and the Kick chat parser bakes
-//! matching words into emote segments — parity with the Twitch 7TV path.
+//! identifies the channel's active emote set (older payloads inlined the full
+//! set; newer ones only carry `emote_set_id`, so the set is fetched from
+//! `https://7tv.io/v3/emote-sets/{id}`), and `https://7tv.io/v3/emote-sets/global`
+//! is the shared global set. We fetch both, build a per-slug `name -> emote`
+//! map, and the Kick chat parser bakes matching words into emote segments —
+//! parity with the Twitch 7TV path.
 //!
 //! (BTTV/FFZ don't support Kick, so this is 7TV-only by design.)
 
+use crate::services::emote_service;
 use crate::services::emote_service::{Emote, EmoteProvider, EmoteSet};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -112,6 +115,8 @@ pub async fn channel_emote_set(slug: &str) -> EmoteSet {
                     emote_type: None,
                     owner_id: None,
                     owner_name: None,
+                    modifier_flags: None,
+                    ffz_sub_only: None,
                     width: None,
                 })
                 .collect();
@@ -133,6 +138,8 @@ pub async fn channel_emote_set(slug: &str) -> EmoteSet {
                     emote_type: Some(kick_set_label(&e.set, slug, display.as_deref())),
                     owner_id: None,
                     owner_name: None,
+                    modifier_flags: None,
+                    ffz_sub_only: None,
                     width: None,
                 })
                 .collect();
@@ -211,7 +218,20 @@ pub async fn refresh(slug: &str, user_id: u64) {
     // Globals first so the channel set overrides on name collisions.
     fetch_into(&client, "https://7tv.io/v3/emote-sets/global", "/emotes", &mut map).await;
     let chan_url = format!("https://7tv.io/v3/users/kick/{user_id}");
-    fetch_into(&client, &chan_url, "/emote_set/emotes", &mut map).await;
+    if let Some(user) = fetch_json(&client, &chan_url).await {
+        if user
+            .pointer("/emote_set/emotes")
+            .and_then(|e| e.as_array())
+            .is_some()
+        {
+            // Inline set (pre-change payload).
+            collect_emotes(&user, "/emote_set/emotes", &mut map);
+        } else if let Some(set_id) = emote_service::seventv_active_set_id(&user) {
+            // Post-change payload: fetch the active set by id.
+            let set_url = format!("https://7tv.io/v3/emote-sets/{set_id}");
+            fetch_into(&client, &set_url, "/emotes", &mut map).await;
+        }
+    }
 
     let count = map.len();
     if let Ok(mut s) = store().lock() {
@@ -226,20 +246,20 @@ pub async fn refresh(slug: &str, user_id: u64) {
     log::info!("[Kick] 7TV emotes for {slug} (user {user_id}): {count} loaded");
 }
 
-async fn fetch_into(
-    client: &reqwest::Client,
-    url: &str,
-    pointer: &str,
-    map: &mut HashMap<String, KickEmote>,
-) {
-    let resp = match client.get(url).timeout(Duration::from_secs(6)).send().await {
-        Ok(r) if r.status().is_success() => r,
-        _ => return,
-    };
-    let v: Value = match resp.json().await {
-        Ok(v) => v,
-        Err(_) => return,
-    };
+async fn fetch_json(client: &reqwest::Client, url: &str) -> Option<Value> {
+    let resp = client
+        .get(url)
+        .timeout(Duration::from_secs(6))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.json().await.ok()
+}
+
+fn collect_emotes(v: &Value, pointer: &str, map: &mut HashMap<String, KickEmote>) {
     let Some(emotes) = v.pointer(pointer).and_then(|e| e.as_array()) else {
         return;
     };
@@ -265,5 +285,16 @@ async fn fetch_into(
                 zero_width: (flags & 256) == 256,
             },
         );
+    }
+}
+
+async fn fetch_into(
+    client: &reqwest::Client,
+    url: &str,
+    pointer: &str,
+    map: &mut HashMap<String, KickEmote>,
+) {
+    if let Some(v) = fetch_json(client, url).await {
+        collect_emotes(&v, pointer, map);
     }
 }

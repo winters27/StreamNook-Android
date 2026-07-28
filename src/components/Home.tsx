@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useAppStore, HomeTab } from '../stores/AppStore';
 import { createPortal } from 'react-dom';
-import { Search, ArrowLeft, Heart, Maximize2, X, Gift, Pickaxe, LayoutGrid, Flame, ArrowUpRight, Undo2, Users, User, Loader2, MessageSquare, Clock } from 'lucide-react';
+import { Search, ArrowLeft, Heart, Maximize2, X, Gift, Pickaxe, LayoutGrid, Flame, ArrowUpRight, Undo2, Users, User, Loader2, Clock, Play } from 'lucide-react';
 import { motion, LayoutGroup, AnimatePresence } from 'framer-motion';
 import { usemultiNookStore } from '../stores/multiNookStore';
 
@@ -43,7 +43,7 @@ const FlyingDot = ({ startX, startY, targetX, targetY }: { startX: number, start
 
     return (
         <div 
-            className="fixed z-[9999] pointer-events-none flex h-5 w-5 items-center justify-center rounded-full bg-red-500 shadow-[0_0_15px_rgba(239,68,68,0.8)]"
+            className="fixed z-[9999] pointer-events-none flex h-5 w-5 items-center justify-center rounded-full bg-red-500 shadow-[0_0_15px_color-mix(in_srgb,var(--color-live)_80%,transparent)]"
             style={{
                 left: isFlying ? targetX : startX,
                 top: isFlying ? targetY : startY,
@@ -155,8 +155,8 @@ const MultiNookToggle = () => {
                     {isMultiNookActive ? 'Return' : 'MultiNook'}
                     {!isMultiNookActive && slots.length > 0 && (
                         <span 
-                            className={`absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full glass-button !bg-red-500/30 text-[9px] font-extrabold text-white !shadow-[0_2px_10px_rgba(239,68,68,0.4),inset_0_1px_rgba(255,255,255,0.2)] z-50 ${
-                                animateBadge ? 'scale-150 ring-2 ring-red-500 transition-transform duration-200' : 'scale-100 transition-transform duration-500'
+                            className={`absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full glass-button !bg-error/30 text-[9px] font-extrabold text-white !shadow-[0_2px_10px_color-mix(in_srgb,var(--color-error)_40%,transparent),inset_0_1px_rgba(255,255,255,0.2)] z-50 ${
+                                animateBadge ? 'scale-150 ring-2 ring-error transition-transform duration-200' : 'scale-100 transition-transform duration-500'
                             }`}
                         >
                             {slots.length}
@@ -1624,7 +1624,7 @@ const Home = () => {
                         <button
                             onClick={(e) => handleToggleAutomation(e, dropsCampaign)}
                             className={`absolute bottom-2 right-2 left-2 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-xs font-semibold transition-all duration-300 glass-button ${activeAutomationIds.has(dropsCampaign.id)
-                                ? '!bg-green-500/20 text-green-400 border-green-500/30 !shadow-[0_2px_10px_rgba(34,197,94,0.3),inset_0_1px_rgba(255,255,255,0.2)] ring-1 ring-green-500/20 hover:!bg-red-500/30 hover:text-red-400 hover:border-red-500/30 hover:ring-red-500/30 hover:!shadow-[0_2px_10px_rgba(239,68,68,0.3),inset_0_1px_rgba(255,255,255,0.2)]'
+                                ? '!bg-success/20 text-success border-success/30 !shadow-[0_2px_10px_color-mix(in_srgb,var(--color-success)_30%,transparent),inset_0_1px_rgba(255,255,255,0.2)] ring-1 ring-success/20 hover:!bg-error/30 hover:text-error hover:border-error/30 hover:ring-error/30 hover:!shadow-[0_2px_10px_color-mix(in_srgb,var(--color-error)_30%,transparent),inset_0_1px_rgba(255,255,255,0.2)]'
                                 : '!bg-accent/30 text-white border-accent/40 !shadow-[0_2px_10px_rgba(var(--color-accent-rgb),0.4),inset_0_1px_rgba(255,255,255,0.2)] ring-1 ring-accent/20 hover:!bg-accent/50 hover:scale-[1.02]'
                                 }`}
                         >
@@ -2019,10 +2019,10 @@ const Home = () => {
 
                             {/* Tiny Category Pill - Dropping in playfully */}
                             <div
-                                style={{ 
-                                    opacity: isScrolledPastHero ? 1 : 0, 
+                                style={{
+                                    opacity: isScrolledPastHero ? 1 : 0,
                                     transform: `translateY(${isScrolledPastHero ? 0 : 10}px)`,
-                                    transition: 'opacity 0.2s ease, transform 0.2s ease'
+                                    transition: 'opacity 0.2s ease, transform 0.2s ease',
                                 }}
                                 className="h-[44px] glass-panel rounded-xl px-4 flex items-center shadow-lg pointer-events-auto bg-background/80 backdrop-blur-md border border-white/5"
                             >
@@ -2037,7 +2037,7 @@ const Home = () => {
                             <Tooltip content="Return to Stream" side="left">
                                 <button
                                     onClick={toggleHome}
-                                    className="flex items-center gap-1.5 px-3 h-[44px] glass-button text-accent shadow-[0_0_15px_rgba(var(--color-accent-rgb),0.2)] text-sm font-medium rounded-xl transition-all hover:text-textPrimary pointer-events-auto backdrop-blur-md"
+                                    className="flex items-center gap-1.5 px-3 h-[44px] glass-button text-accent shadow-[0_0_15px_rgba(var(--color-accent-rgb),0.2)] text-sm font-medium rounded-xl transition-colors hover:text-textPrimary pointer-events-auto backdrop-blur-md"
                                 >
                                     <Maximize2 size={14} />
                                     <span className="hidden sm:inline">Return</span>
@@ -2462,7 +2462,7 @@ const Home = () => {
                                                                     {watchStreaks[stream.user_id] > 0 && (
                                                                         <div className="absolute bottom-1.5 right-1.5">
                                                                             <Tooltip content={`${watchStreaks[stream.user_id]} Stream Watch Streak`} side="top">
-                                                                            <div className="flex items-center gap-1 font-bold text-[10px] leading-tight px-1.5 py-0.5 rounded shadow-[0_0_10px_rgba(245,158,11,0.25)] bg-amber-500/10 text-amber-400 border border-amber-500/30 backdrop-blur-md">
+                                                                            <div className="flex items-center gap-1 font-bold text-[10px] leading-tight px-1.5 py-0.5 rounded shadow-[0_0_10px_color-mix(in_srgb,var(--color-warning)_25%,transparent)] bg-amber-500/10 text-amber-400 border border-amber-500/30 backdrop-blur-md">
                                                                                 <Flame size={10} className="stroke-[2.5]" />
                                                                                 <span>{watchStreaks[stream.user_id]}</span>
                                                                             </div>
@@ -2657,7 +2657,7 @@ const Home = () => {
                                     <button
                                         onClick={loginToTwitch}
                                         disabled={isLoading}
-                                        className="flex items-center justify-center gap-2 px-4 py-2 bg-[#9146FF] hover:bg-[#7c3aed] text-white text-sm font-medium rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed mx-auto"
+                                        className="flex items-center justify-center gap-2 px-4 py-2 bg-[#9146FF] hover:bg-[#772CE8] text-white text-sm font-medium rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed mx-auto"
                                     >
                                         <svg fill="currentColor" viewBox="0 0 512 512" className="w-4 h-4">
                                             <path d="M80,32,48,112V416h96v64h64l64-64h80L464,304V32ZM416,288l-64,64H256l-64,64V352H112V80H416Z" />
@@ -2807,7 +2807,7 @@ const Home = () => {
                                                                 {watchStreaks[stream.user_id] > 0 && (
                                                                     <div className="absolute bottom-1.5 right-1.5">
                                                                         <Tooltip content={`${watchStreaks[stream.user_id]} Stream Watch Streak`} side="top">
-                                                                        <div className="flex items-center gap-1 font-bold text-[10px] leading-tight px-1.5 py-0.5 rounded shadow-[0_0_10px_rgba(245,158,11,0.25)] bg-amber-500/10 text-amber-400 border border-amber-500/30 backdrop-blur-md">
+                                                                        <div className="flex items-center gap-1 font-bold text-[10px] leading-tight px-1.5 py-0.5 rounded shadow-[0_0_10px_color-mix(in_srgb,var(--color-warning)_25%,transparent)] bg-amber-500/10 text-amber-400 border border-amber-500/30 backdrop-blur-md">
                                                                             <Flame size={10} className="stroke-[2.5]" />
                                                                             <span>{watchStreaks[stream.user_id]}</span>
                                                                         </div>
@@ -2869,7 +2869,7 @@ const Home = () => {
                                                                             fill={isFavorite ? "url(#glass-heart-fill)" : "none"}
                                                                             stroke={isFavorite ? "url(#glass-heart-stroke)" : "currentColor"}
                                                                             strokeWidth={isFavorite ? 1.5 : 2}
-                                                                            className={`transition-all duration-300 ${isFavorite ? 'drop-shadow-[0_4px_8px_rgba(236,72,153,0.5)]' : 'text-textSecondary hover:text-textPrimary opacity-0 group-hover:opacity-100'} ${animatingHearts.has(stream.user_id) ? 'animate-heart-break' : ''}`}
+                                                                            className={`transition-all duration-300 ${isFavorite ? 'drop-shadow-[0_4px_8px_color-mix(in_srgb,var(--color-highlight-pink)_50%,transparent)]' : 'text-textSecondary hover:text-textPrimary opacity-0 group-hover:opacity-100'} ${animatingHearts.has(stream.user_id) ? 'animate-heart-break' : ''}`}
                                                                         />
                                                                     </button>
                                                                     </Tooltip>
@@ -2950,10 +2950,10 @@ const Home = () => {
                                                                     if (store.isHomeActive) store.toggleHome();
                                                                     store.startOfflineChat(user.user_login, user);
                                                                 }}
-                                                                className="px-3 py-1.5 rounded-lg glass-button text-[12px] font-bold text-white hover:bg-white/20 transition-all border border-white/10 hover:border-white/30 shadow-lg flex items-center gap-1.5"
+                                                                className="px-3 py-1.5 rounded-lg glass-button text-[12px] font-bold text-white hover:bg-white/20 transition-all border border-transparent shadow-lg flex items-center gap-1.5"
                                                             >
-                                                                <MessageSquare size={14} strokeWidth={2.5} />
-                                                                <span>Offline Chat</span>
+                                                                <Play size={14} strokeWidth={2.5} />
+                                                                <span>Watch VOD</span>
                                                             </button>
                                                             
                                                             <Tooltip content="Profile" side="top">
@@ -2962,7 +2962,7 @@ const Home = () => {
                                                                         e.stopPropagation();
                                                                         setProfileModalUser(user);
                                                                     }}
-                                                                    className="p-[7px] rounded-lg glass-button text-textSecondary hover:text-textPrimary hover:bg-white/20 transition-all border border-white/10 hover:border-white/30 shadow-lg"
+                                                                    className="p-[7px] rounded-lg glass-button text-textSecondary hover:text-textPrimary hover:bg-white/20 transition-all border border-transparent shadow-lg"
                                                                 >
                                                                     <User size={14} strokeWidth={2.5} />
                                                                 </button>

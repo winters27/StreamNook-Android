@@ -189,6 +189,13 @@ export interface ChatDesignSettings {
   // Use compact emote tooltips (just the name) instead of the upscaled
   // emote preview. Default false (preview tooltip is the current behavior).
   compact_emote_tooltips?: boolean;
+  // Apply FrankerFaceZ modifier effects (ffzW wide, ffzX/Y flips, ffzRainbow,
+  // ...) to the preceding emote, like FFZ's own client. Default true. Off
+  // renders modifier emotes as plain overlay emotes instead.
+  ffz_emote_effects?: boolean;
+  // Which half of the user card opens first: their recent messages (default) or
+  // the profile body. The card switches between the two either way.
+  user_card_opens_messages?: boolean;
   // Show an in-chat notice when a channel's 7TV emote set changes live (a mod
   // adds, removes, or renames an emote). Default true.
   seventv_emote_notices?: boolean;
@@ -679,6 +686,7 @@ export interface Settings {
   auto_switch?: AutoSwitchSettings;
   theme?: string; // Theme ID (e.g., 'winters-glass', 'dracula', 'nord')
   font?: string; // Interface font id (see FONT_OPTIONS in themes). Default 'satoshi'.
+  font_custom?: string; // Typed family name used when font === 'custom'. Ignored otherwise.
   error_reporting_enabled?: boolean; // Local diagnostic log verbosity; nothing is sent off-device (default: true)
   setup_complete?: boolean; // Whether the first-time setup wizard has been completed
   auto_claim_points_watching?: boolean; // Auto-claim the bonus chest on the channel you're actively watching. On by default; when off, a clickable chest appears on the points button. Scoped to the watched channel only (background automation is a separate opt-in plugin).
@@ -694,6 +702,7 @@ export interface Settings {
   show_polls?: boolean; // Show the live poll overlay card at the top of chat (default on)
   show_predictions?: boolean; // Show the live prediction overlay card at the top of chat (default on)
   show_channel_point_redemptions?: boolean; // Show no-input channel-point redemptions as chat rows (default on)
+  collapse_gift_subs?: boolean; // Collapse mass gift-sub bombs into one announcement row with recipients (default on)
   chat_logging?: ChatLoggingSettings; // Save chat to plain text files as you watch
   moderation?: ModerationSettings;
   keybindings?: KeybindingOverrides; // Customizable keyboard shortcut overrides (id -> chords)
@@ -1146,6 +1155,9 @@ export interface BadgeNotificationData {
   badge_description?: string;
   status: 'new' | 'available' | 'coming_soon';
   date_info?: string; // e.g., "Dec 1-12" or "Available now"
+  // Relay campaign facts, kept so the stored row can re-derive its status at
+  // render time instead of freezing the one that was true when it arrived.
+  enrichment?: Record<string, unknown>;
 }
 
 // Whisper Types

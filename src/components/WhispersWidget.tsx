@@ -1384,7 +1384,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                                                     <button
                                                         key={category}
                                                         onClick={() => { setSelectedEmojiCategory(category); setEmojiSearchQuery(''); }}
-                                                        className={`px-3 py-1.5 text-xs font-medium rounded-md whitespace-nowrap transition-colors ${selectedEmojiCategory === category ? 'bg-accent/20 text-accent border border-accent/30' : 'bg-transparent text-textSecondary hover:bg-surface-hover border border-transparent'}`}
+                                                        className={`px-3 py-1.5 text-xs font-medium rounded-md whitespace-nowrap transition-colors ${selectedEmojiCategory === category ? 'bg-accent/20 text-accent border border-transparent shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-accent)_35%,transparent)]' : 'bg-transparent text-textSecondary hover:bg-surface-hover border border-transparent'}`}
                                                     >
                                                         {category}
                                                     </button>
@@ -1409,7 +1409,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                                 )}
 
                                 <div className="flex items-end gap-2">
-                                    <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} className={`p-2.5 rounded-xl transition-colors flex-shrink-0 ${showEmojiPicker ? 'text-accent bg-accent/10 border border-accent/20' : 'text-textSecondary hover:text-accent hover:bg-surface-hover border border-transparent'}`}>
+                                    <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} className={`p-2.5 rounded-xl transition-colors flex-shrink-0 ${showEmojiPicker ? 'text-accent bg-accent/10 border border-transparent shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-accent)_35%,transparent)]' : 'text-textSecondary hover:text-accent hover:bg-surface-hover border border-transparent'}`}>
                                         <Smile size={20} />
                                     </button>
                                     <textarea
@@ -1430,7 +1430,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                                         }}
                                     />
                                     <button onClick={handleSend} disabled={!message.trim() || isSending} className="p-2.5 glass-button hover:text-accent disabled:opacity-40 disabled:hover:text-textPrimary disabled:cursor-not-allowed text-textPrimary rounded-xl transition-colors flex-shrink-0">
-                                        {isSending ? <Loader2 size={20} className="animate-spin text-accent" /> : <Send size={20} className={`${message.trim() ? 'text-accent drop-shadow-[0_0_8px_rgba(151,177,185,0.4)]' : ''} transition-all`} />}
+                                        {isSending ? <Loader2 size={20} className="animate-spin text-accent" /> : <Send size={20} className={`${message.trim() ? 'text-accent drop-shadow-[0_0_8px_rgba(var(--color-accent-rgb),0.4)]' : ''} transition-all`} />}
                                     </button>
                                 </div>
                                 <div className="flex justify-between mt-2 px-2">

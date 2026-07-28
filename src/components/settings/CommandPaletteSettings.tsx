@@ -167,7 +167,7 @@ function SnippetManager() {
     <section id="settings-section-snippets">
       <div className="flex items-center justify-between gap-3 mb-3">
         <div>
-          <h3 className="text-lg font-semibold text-textPrimary">Snippet Manager</h3>
+          <h3 className="text-[12px] font-semibold uppercase tracking-[0.14em] text-textPrimary">Snippet Manager</h3>
           <p className="text-xs text-textSecondary mt-0.5">
             Star the snippets you use most, bind aliases for instant matching, and add your own.
           </p>
@@ -175,7 +175,7 @@ function SnippetManager() {
         <button
           type="button"
           onClick={() => setShowAddForm((v) => !v)}
-          className="inline-flex items-center gap-2 rounded-lg bg-accent/15 hover:bg-accent/25 border border-accent/30 px-3 py-2 text-sm font-semibold text-accent transition-colors"
+          className="inline-flex items-center gap-2 rounded-lg bg-accent/15 hover:bg-accent/25 border border-transparent px-3 py-2 text-sm font-semibold text-accent transition-colors"
         >
           <Plus size={14} /> {showAddForm ? 'Hide form' : 'Add custom'}
         </button>
@@ -202,7 +202,7 @@ function SnippetManager() {
         {filtered.length} of {allSnippets.length} · {favoriteIds.size} favorited · {aliases.size} aliased · {customSnippets.length} custom
       </div>
 
-      <div className="rounded-lg border border-white/5 divide-y divide-white/5 max-h-[420px] overflow-y-auto scrollbar-thin">
+      <div className="rounded-lg border border-white/5 hairline-y max-h-[420px] overflow-y-auto scrollbar-thin">
         {filtered.length === 0 ? (
           <div className="px-4 py-10 text-center text-sm text-textMuted">No snippets match your filters.</div>
         ) : (
@@ -234,8 +234,8 @@ function CategoryPill({ label, active, onClick }: { label: string; active: boole
       onClick={onClick}
       className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
         active
-          ? 'bg-accent/20 text-accent border border-accent/40'
-          : 'bg-white/[0.03] text-textSecondary border border-white/5 hover:bg-white/[0.06] hover:text-textPrimary'
+          ? 'bg-accent/20 text-accent border border-transparent shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-accent)_35%,transparent)]'
+          : 'bg-white/[0.03] text-textSecondary border border-transparent hover:bg-white/[0.06] hover:text-textPrimary'
       }`}
     >
       {label}

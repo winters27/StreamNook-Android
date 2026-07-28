@@ -1645,6 +1645,24 @@ impl IrcService {
         }
     }
 
+    /// Ensure the channel's third-party emote set is in the parse cache for a
+    /// channel we never JOIN over IRC (VOD chat replay). No-ops once a 7TV-bearing
+    /// set is cached, so it fetches at most once per channel per session. Awaited
+    /// so a following `parse_privmsg` resolves 7TV/BTTV/FFZ emotes.
+    pub async fn ensure_channel_emotes_for_parse(
+        channel_name: &str,
+        emote_service: Arc<tokio::sync::RwLock<EmoteService>>,
+    ) {
+        let key = channel_name.to_lowercase();
+        {
+            let map = get_channel_emotes().lock().await;
+            if map.get(&key).map(|s| s.seven_tv.len()).unwrap_or(0) > 0 {
+                return;
+            }
+        }
+        let _ = Self::fetch_and_store_emotes(channel_name, emote_service).await;
+    }
+
     /// Parse message content into segments (text, emotes, emojis, links)
     /// This is the "endgame" - all parsing done in Rust, zero regex on main thread
     ///
@@ -1796,6 +1814,7 @@ impl IrcService {
                     emote_id: Some(seventv_emote.id.clone()),
                     emote_url: seventv_emote.url.clone(),
                     is_zero_width: seventv_emote.is_zero_width,
+                    modifier_flags: None,
                 });
             } else {
                 // Use Twitch emote
@@ -1804,6 +1823,7 @@ impl IrcService {
                     emote_id: Some(emote.id.clone()),
                     emote_url: emote.url.clone(),
                     is_zero_width: None,
+                    modifier_flags: None,
                 });
             }
 
@@ -1887,6 +1907,19 @@ impl IrcService {
         let words: Vec<&str> = text.split(' ').collect();
 
         for (i, word) in words.iter().enumerate() {
+            // Empty words come from doubled/leading spaces in split(' ').
+            // Pushing Text("") for them breaks the frontend's zero-width /
+            // modifier look-back, which expects the segment before a spacer
+            // to be the target emote. Emit only the spacer and move on.
+            if word.is_empty() {
+                if i < words.len() - 1 {
+                    segments.push(MessageSegment::Text {
+                        content: " ".to_string(),
+                    });
+                }
+                continue;
+            }
+
             // Check if word is a URL
             if url_regex.is_match(word) {
                 let url = if word.starts_with("http") {
@@ -1918,6 +1951,7 @@ impl IrcService {
                     emote_id: Some(emote.id.clone()),
                     emote_url: emote.url.clone(),
                     is_zero_width: emote.is_zero_width,
+                    modifier_flags: emote.modifier_flags,
                 });
             } else {
                 // Convert emoji shortcodes first
@@ -2742,5 +2776,34 @@ impl IrcService {
     /// to reach the frontend over the same socket the Twitch path uses.
     pub async fn broadcaster() -> Option<Arc<broadcast::Sender<String>>> {
         get_message_broadcaster().lock().await.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Doubled/leading spaces must never emit empty Text segments: the
+    // frontend's zero-width/modifier grouping looks back past exactly one
+    // whitespace segment to find the target emote, and a Text("") in that
+    // position orphans the modifier.
+    #[test]
+    fn no_empty_text_segments_from_extra_spaces() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let segs = rt.block_on(IrcService::parse_text_segment(
+            "a  b",
+            "no_such_channel_for_test",
+            "",
+        ));
+        for s in &segs {
+            if let MessageSegment::Text { content } = s {
+                assert!(!content.is_empty(), "empty Text segment emitted");
+            }
+        }
+        // "a  b" -> a, space, space, b
+        assert_eq!(segs.len(), 4);
     }
 }

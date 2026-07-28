@@ -270,8 +270,16 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   {
     tab: 'Theme',
     section: 'Font',
+    sectionId: 'settings-section-font',
     title: 'Font',
-    description: 'Interface font, independent of the theme. Choose any font with any theme. Satoshi, Twitch (Inter), Geist, Manrope, Outfit, Space Grotesk, Serif, and System.'
+    description: 'Interface font, independent of the theme. Choose any font with any theme. Satoshi, Twitch (Inter), Geist, Manrope, Outfit, Space Grotesk, Serif, System, or a custom font of your own.'
+  },
+  {
+    tab: 'Theme',
+    section: 'Font',
+    sectionId: 'settings-section-font',
+    title: 'Custom font',
+    description: 'Use any font you want for the app. Type a name like Poppins, Bebas Neue, or Rubik and it loads automatically, or type the name of a font already installed on this PC.'
   },
 
   // === Chat ===
@@ -326,6 +334,13 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     sectionId: 'settings-section-chat-events',
     title: 'Channel point redemptions',
     description: 'Drop a chat row when someone redeems a reward that does not post its own message, such as a no-input reward.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Chat Events',
+    sectionId: 'settings-section-chat-events',
+    title: 'Collapse gift-sub floods',
+    description: 'When someone gifts a batch of subs, show one row with the recipients attached instead of a separate row per gift.'
   },
   {
     tab: 'Chat',
@@ -580,6 +595,19 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   {
     tab: 'Chat',
     section: 'Render Style',
+    title: 'FFZ emote effects',
+    description: 'Apply FrankerFaceZ modifiers (wide, flips, rainbow, shake) to the emote before them.'
+  },
+  {
+    tab: 'Chat',
+    section: 'User Cards',
+    sectionId: 'settings-section-user-cards',
+    title: 'Open on their messages',
+    description: 'Whether clicking someone in chat opens their recent messages first or their profile first. The card switches between the two either way.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Render Style',
     title: '7TV emote update notices',
     description: "Show a chat notice when a channel's 7TV emote set changes live (a mod adds, removes, or renames an emote)."
   },
@@ -733,6 +761,18 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   },
   {
     tab: 'Moderation',
+    section: 'Mod Rooms',
+    title: 'Mod Rooms',
+    description: 'Private, encrypted chat rooms for the mod teams of channels you moderate. Manage the one-time Twitch consent: see which account is connected, connect, or disconnect.'
+  },
+  {
+    tab: 'Moderation',
+    section: 'Mod Rooms',
+    title: 'Connection',
+    description: 'Which account mod rooms are connected as. Connect the one-time consent or disconnect to switch accounts or revoke access.'
+  },
+  {
+    tab: 'Moderation',
     section: 'Mod Logs',
     title: 'Mod Logs',
     description: 'Control moderation action visibility.'
@@ -840,6 +880,12 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     section: 'Messages',
     title: 'Reply context',
     description: 'Show or hide the small "Replying to" line above reply messages on the overlay. Reply thread, reply preview.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Messages',
+    title: 'Restore chat on reload',
+    description: 'Bring back the last on-screen messages after an OBS browser source reload instead of clearing. Off by default: clear on reload, OBS refresh, restart, stream start, keep buffer, persistence, blank overlay.'
   },
   {
     tab: 'Overlay',

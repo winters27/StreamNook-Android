@@ -15,6 +15,9 @@ import type { ThirdPartyBadge as ThirdPartyBadgeType } from '../services/thirdPa
 import { useAppStore } from '../stores/AppStore';
 import { openBadgesWithBadgeInMain } from '../utils/openBadgesInMain';
 import { useChatUserStore } from '../stores/chatUserStore';
+import { useGiftBombRecipients } from '../stores/giftBombStore';
+import { ChannelPointsIcon } from './ChannelPointsIcon';
+import { useUserColor } from '../services/userColorCache';
 import { queueBadgeForCaching, getCachedBadgeUrl } from '../services/badgeImageCacheService';
 import { isStreamNookUser, getStreamNookUserNumber, subscribeStreamNookRegistryVersion, getStreamNookRegistryVersion } from '../services/supabaseService';
 import { StreamNookBadge } from './StreamNookBadge';
@@ -51,7 +54,174 @@ interface EmoteSegment {
   tier?: string;
   color?: string;
   isZeroWidth?: boolean;
+  /** FFZ modifier bitmask; present only on FFZ modifier emotes */
+  modifierFlags?: number;
 }
+
+// FFZ modifier flag bits (bit order is FFZ's authoritative declaration order).
+const FFZ_HIDDEN = 1;
+const FFZ_FLIP_X = 2;
+const FFZ_FLIP_Y = 4;
+const FFZ_GROW_X = 8;
+const FFZ_SLIDE = 16;
+const FFZ_APPEAR = 32;
+const FFZ_LEAVE = 64;
+const FFZ_ROTATE = 128;
+const FFZ_ROTATE_90 = 256;
+const FFZ_GREYSCALE = 512;
+const FFZ_SEPIA = 1024;
+const FFZ_RAINBOW = 2048;
+const FFZ_HYPER_RED = 4096;
+const FFZ_SHAKE = 8192;
+const FFZ_CURSED = 16384;
+const FFZ_JAM = 32768;
+const FFZ_BOUNCE = 65536;
+
+// Animated FFZ effects -> CSS class (keyframes in globals.css). Each gets its
+// OWN wrapper element: two animations on one element that animate the same
+// property cancel each other (ffzHyper alone needs a static filter plus the
+// shake animation to coexist).
+const FFZ_ANIMATED: Array<[number, string]> = [
+  [FFZ_RAINBOW, 'sn-ffz-anim-rainbow'],
+  [FFZ_SHAKE, 'sn-ffz-anim-shake'],
+  [FFZ_JAM, 'sn-ffz-anim-jam'],
+  [FFZ_BOUNCE, 'sn-ffz-anim-bounce'],
+  [FFZ_ROTATE, 'sn-ffz-anim-spin'],
+  [FFZ_SLIDE, 'sn-ffz-anim-slide'],
+  [FFZ_APPEAR, 'sn-ffz-anim-appear'],
+  [FFZ_LEAVE, 'sn-ffz-anim-leave'],
+];
+
+// Wrap a rendered emote group in the effect layers its aggregated FFZ flags
+// demand. Every wrapper is inline-block: CSS transforms are a no-op on plain
+// inline elements. The outermost wrapper takes over the group's alignment and
+// margin (the grid span drops them when wrapped).
+const wrapWithFfzEffects = (
+  node: React.ReactNode,
+  flags: number,
+  key: string,
+): React.ReactNode => {
+  let out = node;
+  const transforms: string[] = [];
+  if (flags & FFZ_FLIP_X) transforms.push('scaleX(-1)');
+  if (flags & FFZ_FLIP_Y) transforms.push('scaleY(-1)');
+  if (flags & FFZ_ROTATE_90) transforms.push('rotate(90deg)');
+  if (transforms.length) {
+    out = (
+      <span className="inline-block" style={{ transform: transforms.join(' ') }}>
+        {out}
+      </span>
+    );
+  }
+  const filters: string[] = [];
+  if (flags & FFZ_GREYSCALE) filters.push('grayscale(1)');
+  if (flags & FFZ_SEPIA) filters.push('sepia(1)');
+  if (flags & FFZ_CURSED) filters.push('grayscale(1) brightness(0.7) contrast(2.5)');
+  if (flags & FFZ_HYPER_RED) {
+    filters.push('brightness(0.2) sepia(1) brightness(2.2) contrast(3) saturate(8)');
+  }
+  if (filters.length) {
+    out = (
+      <span className="inline-block" style={{ filter: filters.join(' ') }}>
+        {out}
+      </span>
+    );
+  }
+  for (const [bit, cls] of FFZ_ANIMATED) {
+    if (flags & bit) {
+      out = <span className={`inline-block ${cls}`}>{out}</span>;
+    }
+  }
+  if (flags & FFZ_SLIDE) {
+    // Slide is a marquee: the animated layer translates inside a clipped frame.
+    out = <span className="inline-block overflow-hidden">{out}</span>;
+  }
+  return (
+    <span key={key} className="inline-block align-middle mx-0.5">
+      {out}
+    </span>
+  );
+};
+
+// FFZ GrowX (ffzW) stretches the target emote to double width. The natural
+// aspect ratio is unknowable in CSS (transform: scaleX(2) would not widen the
+// grid cell, overlapping neighbors), so measure on load and set an explicit
+// stretched width. Module-level so re-renders don't remount every image.
+const GrowXEmoteImg = (
+  props: React.ImgHTMLAttributes<HTMLImageElement> & { baseHeight: string },
+) => {
+  const { baseHeight, style, ...rest } = props;
+  const [ratio, setRatio] = useState<number | null>(null);
+  const measure = (el: HTMLImageElement | null) => {
+    // The ref path covers cache-complete images where onLoad may never fire.
+    if (el && el.complete && el.naturalHeight > 0) {
+      setRatio(el.naturalWidth / el.naturalHeight);
+    }
+  };
+  return (
+    <img
+      {...rest}
+      ref={measure}
+      onLoad={(e) => measure(e.currentTarget)}
+      style={{
+        ...style,
+        height: baseHeight,
+        width: ratio ? `calc(${baseHeight} * ${(2 * ratio).toFixed(4)})` : 'auto',
+        maxWidth: 'calc(256px * var(--sn-emote-scale, 1))',
+      }}
+    />
+  );
+};
+
+// Parse plain text into emote/emoji/text segments by name lookup against the
+// loaded emote sets. Serves the local-echo fallback (no Rust segments yet) and
+// the reply preview, which only ever has the parent message as raw text.
+const parseTextWithEmoteSets = (text: string, emotes?: EmoteSet | null): EmoteSegment[] => {
+  const words = text.split(' ');
+  const segments: EmoteSegment[] = [];
+
+  words.forEach((word, i) => {
+    if (i > 0) segments.push({ type: 'text', content: ' ' });
+
+    const emote = emotes
+      ? emotes['7tv'].find((e: Emote) => e.name === word) ||
+        emotes.bttv.find((e: Emote) => e.name === word) ||
+        emotes.ffz.find((e: Emote) => e.name === word) ||
+        emotes.twitch.find((e: Emote) => e.name === word)
+      : undefined;
+
+    if (emote) {
+      segments.push({
+        type: 'emote',
+        content: emote.name,
+        emoteId: emote.id,
+        emoteUrl: emote.url,
+        isZeroWidth: emote.isZeroWidth || (emote as any).is_zero_width,
+        modifierFlags: emote.modifierFlags ?? (emote as any).modifier_flags,
+      });
+    } else {
+      // Parse the word for emojis for iOS-style emoji rendering
+      parseEmojisSync(word).forEach((seg) => {
+        if (seg.type === 'emoji' && seg.emojiUrl) {
+          segments.push({ type: 'emoji', content: seg.content, emojiUrl: seg.emojiUrl });
+        } else {
+          segments.push({ type: 'text', content: seg.content });
+        }
+      });
+    }
+  });
+
+  // Coalesce adjacent text segments
+  const coalesced: EmoteSegment[] = [];
+  segments.forEach((seg) => {
+    if (coalesced.length > 0 && coalesced[coalesced.length - 1].type === 'text' && seg.type === 'text') {
+      coalesced[coalesced.length - 1].content += seg.content;
+    } else {
+      coalesced.push(seg);
+    }
+  });
+  return coalesced;
+};
 
 // Global cache for channel names and profile images to prevent re-fetching and flashing
 const channelNameCache = new Map<string, string>();
@@ -220,10 +390,13 @@ const MentionSpan: React.FC<{
     }
   };
   
+  // No pill fill here: normal-chat mentions are plain colored names. A latent
+  // bg-accent/15 never compiled until the 2026-07-26 token-alpha fix, then
+  // surfaced as an accidental pill and was removed.
   return (
     <Tooltip content={`View ${username}'s profile`} side="top">
       <span
-        className="inline-flex items-center px-1.5 py-0.5 rounded bg-accent/15 font-medium cursor-pointer hover:bg-accent/25 transition-colors"
+        className="inline-block px-1.5 py-0.5 rounded font-medium cursor-pointer transition-colors"
         style={nameStyle}
         onClick={handleClick}
       >
@@ -253,6 +426,12 @@ const chatMessageAreEqual = (prevProps: ChatMessageProps, nextProps: ChatMessage
   if (prevProps.isHighlighted !== nextProps.isHighlighted) return false;
   if (prevProps.moderationContext?.type !== nextProps.moderationContext?.type ||
       prevProps.moderationContext?.duration !== nextProps.moderationContext?.duration) return false;
+  // The emote set DOES affect output: a row rendered before the channel's set
+  // resolved shows emote codes as plain text and would otherwise never repaint.
+  // Safe to compare by identity and cheap to include — useChannelEmotes returns
+  // a stable reference from the module-level emoteCache, so this only trips when
+  // the set is genuinely replaced (first load, /refresh, 7TV EventAPI update).
+  if (prevProps.emotes !== nextProps.emotes) return false;
 
   // All other props (callbacks) can be ignored for re-render decisions
   // since they don't affect the visual output of the message
@@ -309,6 +488,15 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
 
   const isAction = parsed.isAction || false;
 
+  // Gift-bomb recipients: when the collapse setting funnels a submysterygift's
+  // subgift children into giftBombStore, this announcement card lists them.
+  // Called unconditionally (rules of hooks); returns a stable empty result for
+  // normal messages, where giftOriginId is undefined.
+  const giftOriginId =
+    parsed.tags.get('msg-param-origin-id') || parsed.tags.get('msg-param-community-gift-id') || undefined;
+  const { expected: giftExpected, recipients: giftRecipients } = useGiftBombRecipients(giftOriginId);
+  const [giftRecipientsExpanded, setGiftRecipientsExpanded] = useState(false);
+
   // PHASE 3.1 - THE ENDGAME: Use pre-formatted timestamps from Rust
   // Zero Date parsing on main thread!
   // IMPORTANT: This useMemo MUST be at the top before any conditional returns
@@ -364,6 +552,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
             emoteId: seg.emote_id,
             emoteUrl: seg.emote_url,
             isZeroWidth: seg.is_zero_width,
+            modifierFlags: seg.modifier_flags,
           }];
         } else if (seg.type === 'emoji') {
           return [{
@@ -403,70 +592,18 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
       });
     }
 
-    // Fallback for local messages (no segments from Rust yet): parse text
-    // using the provided emotes prop.
-    if (emotes) {
-      const words = parsed.content.split(' ');
-      const newSegments: EmoteSegment[] = [];
+    // Fallback for local messages (no segments from Rust yet): parse text by
+    // name lookup against the loaded sets (emojis parsed either way).
+    return parseTextWithEmoteSets(parsed.content, emotes);
+  }, [parsed.segments, parsed.content, parsed.provider, emotes]);
 
-      words.forEach((word, i) => {
-        const emote = emotes['7tv'].find((e: Emote) => e.name === word) ||
-                      emotes.bttv.find((e: Emote) => e.name === word) ||
-                      emotes.ffz.find((e: Emote) => e.name === word) ||
-                      emotes.twitch.find((e: Emote) => e.name === word);
-
-        if (i > 0) newSegments.push({ type: 'text', content: ' ' });
-
-        if (emote) {
-          newSegments.push({
-            type: 'emote',
-            content: emote.name,
-            emoteId: emote.id,
-            emoteUrl: emote.url,
-            isZeroWidth: emote.isZeroWidth || (emote as any).is_zero_width,
-          });
-        } else {
-          // Parse the word for emojis for iOS-style emoji on optimistic msgs
-          const emojiParsed = parseEmojisSync(word);
-          emojiParsed.forEach(seg => {
-            if (seg.type === 'emoji' && seg.emojiUrl) {
-              newSegments.push({
-                type: 'emoji' as const,
-                content: seg.content,
-                emojiUrl: seg.emojiUrl,
-              });
-            } else {
-              newSegments.push({ type: 'text', content: seg.content });
-            }
-          });
-        }
-      });
-
-      // Coalesce adjacent text segments
-      const coalesced: EmoteSegment[] = [];
-      newSegments.forEach(seg => {
-        if (coalesced.length > 0 && coalesced[coalesced.length - 1].type === 'text' && seg.type === 'text') {
-          coalesced[coalesced.length - 1].content += seg.content;
-        } else {
-          coalesced.push(seg);
-        }
-      });
-      return coalesced;
-    }
-
-    // No segments and no emotes loaded - parse for emojis at minimum
-    const emojiParsed = parseEmojisSync(parsed.content);
-    return emojiParsed.map((seg): EmoteSegment => {
-      if (seg.type === 'emoji' && seg.emojiUrl) {
-        return {
-          type: 'emoji' as const,
-          content: seg.content,
-          emojiUrl: seg.emojiUrl,
-        };
-      }
-      return { type: 'text' as const, content: seg.content };
-    });
-  }, [parsed.segments, parsed.content, emotes]);
+  // Reply preview: the parent message only exists as raw tag text, so emotes
+  // in it are resolved by name against the same loaded sets.
+  const replyPreviewSegments = useMemo<EmoteSegment[] | null>(() => {
+    const body = parsed.replyInfo?.parentMsgBody;
+    if (!body) return null;
+    return parseTextWithEmoteSets(body, emotes);
+  }, [parsed.replyInfo?.parentMsgBody, emotes]);
 
   // Extract userId once to prevent re-renders
   const userId = useMemo(() => parsed.tags.get('user-id'), [parsed.tags]);
@@ -869,7 +1006,17 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     pickupTeardownRef.current = teardown;
   };
 
-  const renderSegment = (segment: EmoteSegment, key: string, inGrid: boolean, isOverlay: boolean = false) => {
+  const renderSegment = (
+    segment: EmoteSegment,
+    key: string,
+    inGrid: boolean,
+    isOverlay: boolean = false,
+    // FFZ modifier extras for a group's base member: growX stretches this
+    // emote to double width; modifierNames lists the applied modifiers for
+    // the tooltip (hidden modifiers render no img, so this is the only place
+    // their presence is explained).
+    ffz?: { growX?: boolean; modifierNames?: string[] },
+  ) => {
     const gridStyle = inGrid ? { gridArea: '1/1' } : {};
     const marginClass = inGrid ? '' : 'mx-0.5';
     
@@ -925,56 +1072,65 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
 
       const displaySrc = cachedEmoteUrl || emoteUrl;
 
-      const imgElement = (
-        <img
-          src={displaySrc}
-          srcSet={srcSet}
-          alt={segment.content}
-          loading="lazy"
-          className={`inline-block w-auto cursor-pointer ${inGrid ? '' : 'align-middle'} hover:scale-110 transition-transform ${isOverlay ? 'z-10 drop-shadow-[0_0_2px_rgba(0,0,0,0.5)] hover:drop-shadow-[0_0_4px_rgba(234,179,8,0.8)]' : ''}`}
-          style={{
-            ...gridStyle,
-            // In chat, size emotes in `em` so they scale with the message font;
-            // the picker grid keeps its fixed rem size.
-            height: inGrid
-              ? 'calc(1.75rem * var(--sn-emote-scale, 1))'
-              : 'calc(2em * var(--sn-emote-scale, 1))',
-            maxWidth: inGrid
-              ? 'calc(128px * var(--sn-emote-scale, 1))'
-              : 'calc(9em * var(--sn-emote-scale, 1))',
-            ...(inGrid ? {} : { marginLeft: 'var(--sn-emote-margin, 0.125rem)', marginRight: 'var(--sn-emote-margin, 0.125rem)' }),
-          }}
-          referrerPolicy="no-referrer"
-          onClick={() => {
-            // Left-click a 7TV emote to open the quick spotlight modal, where it
-            // can be added to any channel you edit (or escalated into the full
-            // manager). Non-7TV emotes have no 7TV id, so they do nothing here.
+      const imgProps: React.ImgHTMLAttributes<HTMLImageElement> = {
+        src: displaySrc,
+        srcSet,
+        alt: segment.content,
+        loading: 'lazy',
+        // Off-thread decode. Without this every emote in a busy chat decodes
+        // synchronously at paint, on the same main thread hls.js appends from.
+        decoding: 'async',
+        className: `inline-block w-auto cursor-pointer ${inGrid ? '' : 'align-middle'} hover:scale-110 transition-transform ${isOverlay ? 'z-10 drop-shadow-[0_0_2px_rgba(0,0,0,0.5)] hover:drop-shadow-[0_0_4px_color-mix(in_srgb,var(--color-warning)_80%,transparent)]' : ''}`,
+        style: {
+          ...gridStyle,
+          // In chat, size emotes in `em` so they scale with the message font;
+          // the picker grid keeps its fixed rem size.
+          height: inGrid
+            ? 'calc(1.75rem * var(--sn-emote-scale, 1))'
+            : 'calc(2em * var(--sn-emote-scale, 1))',
+          maxWidth: inGrid
+            ? 'calc(128px * var(--sn-emote-scale, 1))'
+            : 'calc(9em * var(--sn-emote-scale, 1))',
+          ...(inGrid ? {} : { marginLeft: 'var(--sn-emote-margin, 0.125rem)', marginRight: 'var(--sn-emote-margin, 0.125rem)' }),
+        },
+        referrerPolicy: 'no-referrer',
+        onClick: () => {
+          // Left-click a 7TV emote to open the quick spotlight modal, where it
+          // can be added to any channel you edit (or escalated into the full
+          // manager). Non-7TV emotes have no 7TV id, so they do nothing here.
+          if (is7TVEmote && segment.emoteId) {
+            useAppStore.getState().openEmoteSpotlight(segment.emoteId, segment.content);
+          }
+        },
+        onContextMenu: (e) => {
+          e.preventDefault();
+          if (onEmoteRightClick) onEmoteRightClick(segment.content);
+        },
+        onError: (e) => {
+          const t = e.currentTarget;
+          // A stale/missing disk file falls back to the CDN once (tier for
+          // 7TV, base otherwise) before we give up and show the text code.
+          if (cachedEmoteUrl && !t.dataset.cdnFallback) {
+            t.dataset.cdnFallback = '1';
             if (is7TVEmote && segment.emoteId) {
-              useAppStore.getState().openEmoteSpotlight(segment.emoteId, segment.content);
+              t.srcset = `https://cdn.7tv.app/emote/${segment.emoteId}/1x.avif 1x, https://cdn.7tv.app/emote/${segment.emoteId}/2x.avif 2x, https://cdn.7tv.app/emote/${segment.emoteId}/3x.avif 3x, https://cdn.7tv.app/emote/${segment.emoteId}/4x.avif 4x`;
+              t.src = `https://cdn.7tv.app/emote/${segment.emoteId}/${emoteTier}.avif`;
+            } else {
+              t.src = emoteUrl;
             }
-          }}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            if (onEmoteRightClick) onEmoteRightClick(segment.content);
-          }}
-          onError={(e) => {
-            const t = e.currentTarget;
-            // A stale/missing disk file falls back to the CDN once (tier for
-            // 7TV, base otherwise) before we give up and show the text code.
-            if (cachedEmoteUrl && !t.dataset.cdnFallback) {
-              t.dataset.cdnFallback = '1';
-              if (is7TVEmote && segment.emoteId) {
-                t.srcset = `https://cdn.7tv.app/emote/${segment.emoteId}/1x.avif 1x, https://cdn.7tv.app/emote/${segment.emoteId}/2x.avif 2x, https://cdn.7tv.app/emote/${segment.emoteId}/3x.avif 3x, https://cdn.7tv.app/emote/${segment.emoteId}/4x.avif 4x`;
-                t.src = `https://cdn.7tv.app/emote/${segment.emoteId}/${emoteTier}.avif`;
-              } else {
-                t.src = emoteUrl;
-              }
-              return;
-            }
-            t.style.display = 'none';
-            t.insertAdjacentText('afterend', segment.content);
-          }}
+            return;
+          }
+          t.style.display = 'none';
+          t.insertAdjacentText('afterend', segment.content);
+        },
+      };
+      const imgElement = ffz?.growX ? (
+        <GrowXEmoteImg
+          {...imgProps}
+          baseHeight={'calc(1.75rem * var(--sn-emote-scale, 1))'}
         />
+      ) : (
+        <img {...imgProps} />
       );
 
       // Big-preview tooltip mirroring the emote-picker's hover card. Compact
@@ -1033,9 +1189,27 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
             <div className="text-center flex flex-col items-center gap-0.5">
               <span className="font-bold text-[13px] leading-tight">{segment.content}</span>
               <span className="text-[10px] text-white/60 leading-tight">{providerLabel}</span>
-              {segment.isZeroWidth && (
-                <span className="text-[9px] font-bold tracking-wider uppercase text-yellow-400 mt-0.5 mix-blend-screen drop-shadow-sm">
-                  Zero-Width
+              {segment.modifierFlags != null ? (
+                <span className="text-[9px] font-bold tracking-wider uppercase text-warning mt-0.5 mix-blend-screen drop-shadow-sm">
+                  Modifier
+                </span>
+              ) : (
+                segment.isZeroWidth && (
+                  <span className="text-[9px] font-bold tracking-wider uppercase text-warning mt-0.5 mix-blend-screen drop-shadow-sm">
+                    Zero-Width
+                  </span>
+                )
+              )}
+              {ffz?.modifierNames && ffz.modifierNames.length > 0 && (
+                <span className="flex flex-wrap justify-center gap-1 mt-0.5">
+                  {ffz.modifierNames.map((n) => (
+                    <span
+                      key={n}
+                      className="text-[9px] font-bold tracking-wider uppercase text-warning mix-blend-screen drop-shadow-sm"
+                    >
+                      {n}
+                    </span>
+                  ))}
                 </span>
               )}
               <span className="text-[10px] text-white/50 mt-0.5">Right-click to copy</span>
@@ -1117,7 +1291,11 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     }
 
     return (
-      <span key={key} style={gridStyle} className={inGrid ? '' : 'align-middle'}>
+      // Text stays on the baseline (no align-middle): middle-aligned text sits
+      // a few px lower than the baseline-aligned username, which read as the
+      // name floating above the message. Emote/emoji images keep their own
+      // align-middle against this baseline.
+      <span key={key} style={gridStyle}>
         {parseTextWithLinks(segment.content)}
       </span>
     );
@@ -1165,15 +1343,54 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
       }
     });
 
-    // Phase 2: Render groups
+    // Phase 2: Render groups. Member 0 is the target: it always draws its own
+    // art and contributes no flags (an orphan modifier therefore renders as a
+    // normal emote, matching FFZ). Members 1..n are the attached overlays /
+    // modifiers: FFZ modifiers with the Hidden bit render no image and instead
+    // contribute their effect to the whole group.
+    const ffzEffectsOn = settings?.chat_design?.ffz_emote_effects !== false;
     return groupedSegments.map((group, index) => {
       if (Array.isArray(group)) {
-        // Render stacked standard in an inline-grid
-        return (
-          <span key={`group-${index}`} className="inline-grid items-center justify-items-center align-middle mx-0.5">
-            {group.map((seg, innerIndex) => renderSegment(seg, `${index}-${innerIndex}`, true, innerIndex > 0))}
+        const aggFlags = ffzEffectsOn
+          ? group.slice(1).reduce((acc, seg) => acc | (seg.modifierFlags ?? 0), 0)
+          : 0;
+        // Effect bits only: Hidden alone (legacy overlay modifiers) needs no
+        // wrapper, and with effects off everything falls through to today's
+        // plain overlay rendering.
+        const effectBits = aggFlags & ~FFZ_HIDDEN;
+        const growX = (effectBits & FFZ_GROW_X) !== 0;
+        const modifierNames = ffzEffectsOn
+          ? group
+              .slice(1)
+              .filter((s) => s.modifierFlags != null)
+              .map((s) => s.content)
+          : [];
+
+        const gridSpan = (
+          <span
+            key={effectBits ? undefined : `group-${index}`}
+            className={`inline-grid items-center justify-items-center ${effectBits ? '' : 'align-middle mx-0.5'}`}
+          >
+            {group.map((seg, innerIndex) => {
+              const hiddenModifier =
+                ffzEffectsOn &&
+                innerIndex > 0 &&
+                ((seg.modifierFlags ?? 0) & FFZ_HIDDEN) !== 0;
+              if (hiddenModifier) return null;
+              return renderSegment(
+                seg,
+                `${index}-${innerIndex}`,
+                true,
+                innerIndex > 0,
+                innerIndex === 0
+                  ? { growX, modifierNames: modifierNames.length ? modifierNames : undefined }
+                  : undefined,
+              );
+            })}
           </span>
         );
+        if (!effectBits) return gridSpan;
+        return wrapWithFfzEffects(gridSpan, effectBits, `group-${index}`);
       }
       return renderSegment(group, index.toString(), false, false);
     });
@@ -1207,7 +1424,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
             href={url}
             // No target="_blank": the webview opens _blank links externally on
             // its own, which would stack a second tab on top of the open() below.
-            className="text-blue-400 hover:text-blue-300 underline cursor-pointer"
+            className="text-info hover:text-info/80 underline cursor-pointer"
             onClick={async (e) => {
               e.preventDefault();
               try {
@@ -1259,6 +1476,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     msgId === 'resub' ||
     msgId === 'subgift' ||
     msgId === 'submysterygift' ||
+    msgId === 'anonsubmysterygift' ||
+    msgId === 'anonsubgift' ||
     msgId === 'sharedchatnotice' ||
     // YouTube channel memberships: a new/continuing member ('membership') and gifted
     // memberships ('membergift') reuse the same sub-card decoration via the system-msg
@@ -1268,7 +1487,9 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     sourceMsgId === 'sub' ||
     sourceMsgId === 'resub' ||
     sourceMsgId === 'subgift' ||
-    sourceMsgId === 'submysterygift';
+    sourceMsgId === 'submysterygift' ||
+    sourceMsgId === 'anonsubmysterygift' ||
+    sourceMsgId === 'anonsubgift';
 
   // TEMP [sub-debug]: trace non-Twitch sub/membership events through the chat render
   // (they show in activity but reportedly not in chat). Confirms the message reaches
@@ -1300,6 +1521,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // The named msg-id values cover the automatic message-style rewards.
   const customRewardId = parsed.tags.get('custom-reward-id');
   const hasCustomReward = !!customRewardId;
+  // Cost + channel points icon for an injected no-input redemption row, shown as
+  // "<reward name> <points glyph> <amount>" instead of a plain "(N)" in the text.
+  const redemptionCost = parsed.tags.get('sn-reward-cost');
+  const redemptionPointsIcon = parsed.tags.get('sn-points-icon');
   const isGigantifiedEmote =
     msgId === 'gigantified-emote-message' || sourceMsgId === 'gigantified-emote-message';
   const isAnimatedMessage =
@@ -1757,7 +1982,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                         useAppStore.getState().addToast(`Failed to switch to ${fetchedChannelName}'s stream`, 'error');
                       }
                     }}
-                    className="text-xs text-blue-400 font-semibold hover:underline cursor-pointer"
+                    className="text-xs text-info font-semibold hover:underline cursor-pointer"
                   >
                     {fetchedChannelName}
                   </button>
@@ -1770,7 +1995,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
         <div className="flex items-center gap-2.5">
           <div className="flex-shrink-0">
             {/* Heart/Charity icon */}
-            <svg className="w-5 h-5 text-green-400" fill="currentColor" viewBox="0 0 20 20">
+            <svg className="w-5 h-5 text-success" fill="currentColor" viewBox="0 0 20 20">
               <path fillRule="evenodd" d="M3.172 5.172a4 4 0 015.656 0L10 6.343l1.172-1.171a4 4 0 115.656 5.656L10 17.657l-6.828-6.829a4 4 0 010-5.656z" clipRule="evenodd" />
             </svg>
           </div>
@@ -1781,7 +2006,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
             <p className="text-white font-semibold leading-relaxed">
               {renderBadges()}
               {renderClickableUsername(parsed.username, parsed.tags.get('display-name') || parsed.username)}
-              <span className="text-green-400 font-bold"> donated {formattedAmount}</span>
+              <span className="text-success font-bold"> donated {formattedAmount}</span>
               {charityName && <span className="text-textSecondary"> to support {charityName}</span>}
             </p>
             {parsed.content && (
@@ -1919,7 +2144,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
         <div className="flex items-center gap-2.5">
           <div className="flex-shrink-0">
             {/* Fire/Watch Streak icon from Twitch */}
-            <svg className="w-5 h-5 text-orange-400" viewBox="0 0 20 20" fill="currentColor">
+            <svg className="w-5 h-5 text-highlight-orange" viewBox="0 0 20 20" fill="currentColor">
               <path fillRule="evenodd" d="M11 4.5 9 2 4.8 6.9A7.48 7.48 0 0 0 3 11.77C3 15.2 5.8 18 9.23 18h1.65A6.12 6.12 0 0 0 17 11.88c0-1.86-.65-3.66-1.84-5.1L12 3l-1 1.5ZM6.32 8.2 9 5l2 2.5L12 6l1.62 2.07A5.96 5.96 0 0 1 15 11.88c0 2.08-1.55 3.8-3.56 4.08.36-.47.56-1.05.56-1.66 0-.52-.18-1.02-.5-1.43L10 11l-1.5 1.87c-.32.4-.5.91-.5 1.43 0 .6.2 1.18.54 1.64A4.23 4.23 0 0 1 5 11.77c0-1.31.47-2.58 1.32-3.57Z" clipRule="evenodd" />
             </svg>
           </div>
@@ -1933,11 +2158,11 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
               {channelPointsReward && (
                 <>
                   {/* Channel Points icon */}
-                  <svg className="w-4 h-4 text-orange-400 inline-block ml-1" viewBox="0 0 24 24" fill="currentColor">
+                  <svg className="w-4 h-4 text-highlight-orange inline-block ml-1" viewBox="0 0 24 24" fill="currentColor">
                     <path d="M12 5v2a5 5 0 0 1 5 5h2a7 7 0 0 0-7-7Z"></path>
                     <path fillRule="evenodd" d="M1 12C1 5.925 5.925 1 12 1s11 4.925 11 11-4.925 11-11 11S1 18.075 1 12Zm11 9a9 9 0 1 1 0-18 9 9 0 0 1 0 18Z" clipRule="evenodd"></path>
                   </svg>
-                  <span className="text-orange-400 font-bold">+{parseInt(channelPointsReward, 10).toLocaleString()}</span>
+                  <span className="text-highlight-orange font-bold">+{parseInt(channelPointsReward, 10).toLocaleString()}</span>
                 </>
               )}
             </p>
@@ -2084,10 +2309,11 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
       const userPaint = userCosmetics?.paints.find((p) => p.selected);
       const userBadge = userCosmetics?.badges.find((b) => b.selected);
 
-      // Resolve a per-recipient color override (separate from the message
-      // author's override at the top of the component). Falls back to Twitch
-      // purple when nothing is set, matching the prior behavior here.
-      const recipientBaseColor = getColorOverride(userIdProp, userOverrides) ?? '#9147FF';
+      // Resolve a per-recipient color: a manual override wins, else the user's
+      // real Twitch name color (batched Helix lookup), else Twitch purple. This
+      // is why a gift recipient no longer inherits the gifter's color.
+      const fetchedColor = useUserColor(userIdProp);
+      const recipientBaseColor = getColorOverride(userIdProp, userOverrides) ?? fetchedColor ?? '#9147FF';
 
       const userStyle = useMemo(() => {
         if (!userPaint) {
@@ -2236,6 +2462,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
         displayMessage = `${parsed.username} gifted a subscription to ${msgParamRecipientDisplayName}!`;
       } else if (msgId === 'submysterygift') {
         displayMessage = `${parsed.username} is gifting ${msgParamMassGiftCount} subscriptions to the community!`;
+      } else if (msgId === 'anonsubmysterygift') {
+        displayMessage = `An anonymous user is gifting ${msgParamMassGiftCount} subscriptions to the community!`;
+      } else if (msgId === 'anonsubgift') {
+        displayMessage = `An anonymous user gifted a subscription to ${msgParamRecipientDisplayName}!`;
       } else {
         displayMessage = `${parsed.username} subscribed!`;
       }
@@ -2270,7 +2500,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                       useAppStore.getState().addToast(`Failed to switch to ${fetchedChannelName}'s stream`, 'error');
                     }
                   }}
-                  className="text-xs text-blue-400 font-semibold hover:underline cursor-pointer"
+                  className="text-xs text-info font-semibold hover:underline cursor-pointer"
                 >
                   {fetchedChannelName}
                 </button>
@@ -2284,11 +2514,11 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
           <div className="flex-shrink-0">
             {/* Prime logo for Prime subs, Gift box for other subs */}
             {msgParamSubPlan === 'Prime' ? (
-              <svg className="w-5 h-5 text-blue-400" fill="currentColor" viewBox="0 0 20 20">
+              <svg className="w-5 h-5 text-info" fill="currentColor" viewBox="0 0 20 20">
                 <path fillRule="evenodd" clipRule="evenodd" d="M18 5v8a2 2 0 0 1-2 2H4a2.002 2.002 0 0 1-2-2V5l4 3 4-4 4 4 4-3z" />
               </svg>
             ) : (
-              <Gift size={20} className="text-purple-400" />
+              <Gift size={20} className="text-accent" />
             )}
           </div>
           <div
@@ -2298,6 +2528,30 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
             <p className="text-white font-semibold leading-relaxed">
               {parseSystemMessageWithClickableNames(displayMessage)}
             </p>
+            {(subMsgId === 'submysterygift' || subMsgId === 'anonsubmysterygift') && giftRecipients.length > 0 && (
+              <div className="text-textSecondary text-xs mt-1 leading-relaxed break-words">
+                <span className="mr-1">
+                  {giftExpected
+                    ? `${giftRecipients.length} of ${giftExpected} gifted to`
+                    : `Gifted to`}
+                </span>
+                {(giftRecipientsExpanded ? giftRecipients : giftRecipients.slice(0, 8)).map((r, i, arr) => (
+                  <span key={r.userId}>
+                    <UsernameWithCosmetics username={r.userName} userIdProp={r.userId} displayName={r.displayName} />
+                    {i < arr.length - 1 ? <span>, </span> : null}
+                  </span>
+                ))}
+                {!giftRecipientsExpanded && giftRecipients.length > 8 && (
+                  <button
+                    type="button"
+                    onClick={() => setGiftRecipientsExpanded(true)}
+                    className="ml-1 text-accent hover:underline cursor-pointer"
+                  >
+                    +{giftRecipients.length - 8} more
+                  </button>
+                )}
+              </div>
+            )}
             {parsed.content && (
               <p className="text-textSecondary mt-1 leading-relaxed break-words">
                 {renderContent(contentWithEmotes)}
@@ -2317,18 +2571,18 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     return (
       <div 
         key={messageId} 
-        className="px-3 border-y border-yellow-500/20 bg-yellow-500/10 mb-[1px]" 
+        className="px-3 border-y border-warning/20 bg-warning/10 mb-[1px]"
         style={{ paddingTop: `${eventPadding}px`, paddingBottom: `${eventPadding}px` }}
       >
         <div className="flex items-center gap-2">
           {/* Information / Alert Icon */}
           <div className="flex-shrink-0">
-            <svg className="w-4 h-4 text-yellow-500/80" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <svg className="w-4 h-4 text-warning/80" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-yellow-200/90 font-medium text-xs leading-relaxed">
+            <p className="text-warning font-medium text-xs leading-relaxed">
               {renderContent(contentWithEmotes)}
             </p>
           </div>
@@ -2532,11 +2786,11 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
       {/* Channel points redemption indicator (highlight, gigantify, animate, skip-subs-mode, custom reward) */}
       {redemptionLabel && (
         <div className="flex items-center justify-end gap-1">
-          <svg className="w-3 h-3 text-cyan-400 opacity-60" viewBox="0 0 20 20" fill="currentColor">
+          <svg className="w-3 h-3 text-highlight-cyan opacity-60" viewBox="0 0 20 20" fill="currentColor">
             <path d="M10 6a4 4 0 014 4h-2a2 2 0 00-2-2V6z" />
             <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-2 0a6 6 0 11-12 0 6 6 0 0112 0z" clipRule="evenodd" />
           </svg>
-          <span className="text-xs text-cyan-400 font-normal opacity-60">{redemptionLabel}</span>
+          <span className="text-xs text-highlight-cyan font-normal opacity-60">{redemptionLabel}</span>
         </div>
       )}
       {/* Reply indicator */}
@@ -2556,7 +2810,24 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
               </svg>
               <span className="font-semibold">{getDisplayedName(parsed.replyInfo.parentUserId, parsed.replyInfo.parentDisplayName, userOverrides)}</span>
-              <span className="truncate flex-1">{parsed.replyInfo.parentMsgBody}</span>
+              <span className="truncate flex-1">
+                {replyPreviewSegments
+                  ? replyPreviewSegments.map((seg, i) =>
+                      (seg.type === 'emote' || seg.type === 'emoji') && (seg.emoteUrl || seg.emojiUrl) ? (
+                        <img
+                          key={`rp-${i}`}
+                          src={seg.emoteUrl || seg.emojiUrl}
+                          alt={seg.content}
+                          loading="lazy"
+                          className="inline-block align-middle mx-px"
+                          style={{ height: '1.35em' }}
+                        />
+                      ) : (
+                        seg.content
+                      ),
+                    )
+                  : parsed.replyInfo.parentMsgBody}
+              </span>
             </div>
           </div>
         </Tooltip>
@@ -2693,7 +2964,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                 <Tooltip content="Right-click to reply" side="top">
                   <span
                     style={{ fontWeight: 700 }}
-                    className="cursor-pointer hover:underline inline-flex items-center gap-1"
+                    className="cursor-pointer hover:underline inline-block"
                     onClick={(e) => {
                       const userId = parsed.tags.get('user-id');
                       const displayName = parsed.tags.get('display-name') || parsed.username;
@@ -2719,7 +2990,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                     {renderedName}
                     {broadcasterType === 'partner' && (
                       <svg
-                        className="w-3.5 h-3.5 inline-block flex-shrink-0"
+                        className="w-3.5 h-3.5 inline-block flex-shrink-0 ml-1"
                         viewBox="0 0 16 16"
                         fill="#9146FF"
                         style={{ verticalAlign: 'middle' }}
@@ -2783,8 +3054,23 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                   >
                     {' '}{renderContent(contentWithEmotes)}
                   </span>
+                  {redemptionCost && (
+                    <span className="inline-flex items-center gap-0.5 ml-1 align-middle text-highlight-cyan/90 font-medium">
+                      {redemptionPointsIcon ? (
+                        <img
+                          src={redemptionPointsIcon}
+                          alt=""
+                          className="w-3.5 h-3.5 inline-block align-middle rounded-full object-cover"
+                          onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                        />
+                      ) : (
+                        <ChannelPointsIcon size={14} className="text-highlight-cyan/90" />
+                      )}
+                      {Number(redemptionCost).toLocaleString()}
+                    </span>
+                  )}
                   {moderationContext && (chatDesign?.deleted_message_style ?? 'strikethrough') === 'strikethrough' && (
-                    <span className="ml-1.5 text-xs text-red-400/70 font-medium">
+                    <span className="ml-1.5 text-xs text-error/70 font-medium">
                       {moderationContext.type === 'timeout'
                         ? `[timed out for ${moderationContext.duration}s]`
                         : moderationContext.type === 'ban'
@@ -2820,7 +3106,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
       {(onMessageCopy || showInlinePin) && broadcasterId && (
         <div
           data-no-drag="true"
-          className="absolute top-1 right-2 z-[50] opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 p-0.5 rounded-lg bg-zinc-900/90 backdrop-blur-sm border border-white/10 shadow-[0_4px_12px_rgba(0,0,0,0.4)]"
+          className="absolute top-1 right-2 z-[50] opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 p-0.5 rounded-lg bg-tertiary/90 backdrop-blur-sm border border-white/10 shadow-[0_4px_12px_rgba(0,0,0,0.4)]"
         >
           {showInlinePin && thisMessageId && parsed.provider === 'twitch' && (
             <Tooltip content={isThisPinned ? 'Unpin message' : 'Pin message'} side="left">
@@ -2843,7 +3129,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                     useAppStore.getState().addToast(isThisPinned ? "Couldn't unpin that message" : "Couldn't pin that message", 'error');
                   }
                 }}
-                className={`p-1.5 rounded-md transition-colors ${isThisPinned ? 'text-accent hover:text-red-400 hover:bg-red-500/15' : 'text-white/50 hover:text-accent hover:bg-accent/15'}`}
+                className={`p-1.5 rounded-md transition-colors ${isThisPinned ? 'text-accent hover:text-error hover:bg-error/15' : 'text-white/50 hover:text-accent hover:bg-accent/15'}`}
               >
                 {isThisPinned ? (
                   <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="2" x2="22" y1="2" y2="22"/><line x1="12" x2="12" y1="17" y2="22"/><path d="M9 9v1.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17h12"/><path d="M15 9.34V6h1a2 2 0 0 0 0-4H7.89"/></svg>
@@ -2857,7 +3143,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
             <Tooltip content="Copy message" side="left">
               <button
                 onClick={(e) => { e.preventDefault(); onMessageCopy(parsed.content); }}
-                className="p-1.5 rounded-md text-white/50 hover:text-white hover:bg-stone-500/20 transition-colors"
+                className="p-1.5 rounded-md text-white/50 hover:text-white hover:bg-surface-hover transition-colors"
               >
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
               </button>
@@ -2872,7 +3158,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
       {isModerator && showModButtons && broadcasterId && (
         <div
           data-no-drag="true"
-          className="absolute bottom-full right-2 mb-0.5 opacity-0 group-hover:opacity-100 transition-all duration-200 flex items-center gap-0.5 p-0.5 bg-zinc-900/95 backdrop-blur-md border border-white/10 shadow-[0_8px_24px_rgba(0,0,0,0.55)] rounded-xl overflow-visible z-[50] translate-y-1 group-hover:translate-y-0"
+          className="absolute bottom-full right-2 mb-0.5 opacity-0 group-hover:opacity-100 transition-[opacity,transform] duration-200 flex items-center gap-0.5 p-0.5 backdrop-blur-md border border-white/10 shadow-[0_8px_24px_rgba(0,0,0,0.55)] rounded-xl overflow-visible z-[50] translate-y-1 group-hover:translate-y-0"
+          // Themed (was hardcoded zinc-900); transition stays scoped so the
+          // backdrop-filter itself is never animated.
+          style={{ backgroundColor: 'color-mix(in srgb, var(--color-background-tertiary) 95%, transparent)' }}
         >
               {/* Delete Message (Twitch + Kick). */}
               <Tooltip content="Delete Message" side="top">
@@ -2882,7 +3171,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                     const msgId = parsed.tags.get('id');
                     if (msgId) void modDelete(msgId);
                   }}
-                  className="p-2 rounded-lg hover:bg-red-500/20 text-white/50 hover:text-red-400 transition-colors"
+                  className="p-2 rounded-lg hover:bg-error/15 text-white/50 hover:text-error transition-colors"
                 >
                   <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                 </button>
@@ -2897,7 +3186,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                   e.preventDefault();
                   void modBan(600);
                 }}
-                className="p-2 rounded-lg hover:bg-yellow-500/20 text-white/50 hover:text-yellow-400 transition-colors"
+                className="p-2 rounded-lg hover:bg-warning/20 text-white/50 hover:text-warning transition-colors"
               >
                 <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
               </button>
@@ -2905,7 +3194,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
             
             {/* Timeout Dropdown */}
             <div className="absolute bottom-full left-1/2 -translate-x-1/2 opacity-0 pointer-events-none group-hover/timeout:opacity-100 group-hover/timeout:pointer-events-auto transition-opacity px-2 pb-1.5">
-              <div className="flex bg-zinc-900 border border-white/10 rounded-md shadow-xl overflow-hidden">
+              <div className="flex bg-tertiary border border-white/10 rounded-md shadow-xl overflow-hidden">
                 {[
                   { label: '1s', val: 1 }, 
                   { label: '10m', val: 600 }, 
@@ -2914,7 +3203,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                 ].map(opt => (
                   <button
                     key={opt.val}
-                    className="px-2 py-1 text-[10px] font-bold text-white/70 hover:text-yellow-400 hover:bg-white/10 transition-colors border-r border-white/5 last:border-0"
+                    className="px-2 py-1 text-[10px] font-bold text-white/70 hover:text-warning hover:bg-white/10 transition-colors border-r border-white/5 last:border-0"
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -2937,7 +3226,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                 e.preventDefault();
                 void modBan(null);
               }}
-              className="p-2 rounded-lg hover:bg-red-500/20 text-white/50 hover:text-red-500 transition-colors"
+              className="p-2 rounded-lg hover:bg-error/15 text-white/50 hover:text-error transition-colors"
             >
               <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
             </button>

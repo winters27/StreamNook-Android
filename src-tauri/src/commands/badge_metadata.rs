@@ -1,14 +1,157 @@
 use crate::services::universal_cache_service::{cache_item, get_cached_item, CacheType};
 use log::debug;
+use once_cell::sync::Lazy;
 use regex::Regex;
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
+
+/// Cache `source` marking a `metadata:{set}-v{ver}` entry as relay-supplied
+/// enrichment (campaign-grounded, richer than the badgebase scrape). Entries
+/// with this source are served as-is and never re-scraped over.
+pub const ENRICHMENT_SOURCE: &str = "socket-enrichment";
+
+/// Discord-only markup that must never reach the desktop: custom emoji
+/// `<:name:id>` / `<a:name:id>` and role/user/channel mentions `<@…>` / `<#…>`.
+/// The relay composes some fields (e.g. `related`) with these for its Discord
+/// post, and that same text rides into the drop payload.
+static DISCORD_TOKEN_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"<a?:\w+:\d+>|<[@#][!&]?\d+>").unwrap());
+
+/// Strip Discord markup and collapse whitespace so relay-supplied text renders
+/// cleanly in the desktop badge panel.
+fn clean_text(s: &str) -> String {
+    let stripped = DISCORD_TOKEN_RE.replace_all(s, " ");
+    stripped.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Fractional seconds in an ISO timestamp (`...:00.000Z`).
+static ISO_FRACTION_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\.\d+(Z|[+-]\d{2}:?\d{2})").unwrap());
+
+/// Drop fractional seconds so the timestamp is second-precision (`...:00Z`). The
+/// panel's inline date converter only matches to seconds, so a millisecond
+/// timestamp otherwise loses its `Z` (parsed as local, not UTC) and leaves a
+/// literal `.000Z` in the rendered text.
+fn normalize_iso(s: &str) -> String {
+    ISO_FRACTION_RE.replace(s, "$1").into_owned()
+}
+
+const MONTH_NAMES: &str =
+    "january|february|march|april|may|june|july|august|september|october|november|december";
+
+/// A prose date RANGE: "July 23 through July 25", "July 23 - August 2",
+/// "July 23, 2026 to July 25". An optional ", YYYY" after each day is tolerated
+/// and ignored — a range renders year-less so the app applies the current year.
+static PROSE_RANGE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(&format!(
+        r"(?i)\b({m})\s+(\d{{1,2}})(?:st|nd|rd|th)?(?:,?\s*\d{{4}})?\s*(?:through|thru|to|until|[-–—])\s*(?:({m})\s+)?(\d{{1,2}})(?:st|nd|rd|th)?\b",
+        m = MONTH_NAMES
+    ))
+    .unwrap()
+});
+
+/// A single EXPLICIT date with a year (and optional time): "July 25, 2026",
+/// "July 25 2026 at 17:00 UTC". Rendered as ISO so the app reads it as UTC.
+static PROSE_SINGLE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(&format!(
+        r"(?i)\b({m})\s+(\d{{1,2}})(?:st|nd|rd|th)?,?\s+(\d{{4}})(?:\s+(?:at\s+)?(\d{{1,2}}):(\d{{2}}))?",
+        m = MONTH_NAMES
+    ))
+    .unwrap()
+});
+
+fn month_index(m: &str) -> Option<u32> {
+    [
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
+    ]
+    .iter()
+    .position(|&n| n == m.to_lowercase())
+    .map(|i| i as u32 + 1)
+}
+
+fn month_abbr(m: &str) -> &'static str {
+    const ABBR: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    month_index(m).map(|i| ABBR[(i - 1) as usize]).unwrap_or("")
+}
+
+/// Today's date as "D Month YYYY" (e.g. "23 July 2026") — the same human shape
+/// badgebase uses for Date of Addition, so it both displays cleanly and sorts.
+fn today_date_string() -> String {
+    use chrono::{Datelike, Local};
+    let dt = Local::now();
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    format!("{} {} {}", dt.day(), MONTHS[(dt.month() - 1) as usize], dt.year())
+}
+
+/// Recover an earn window from our own enricher prose so a badge with no
+/// authoritative campaign window can still be placed in time. Tries a range
+/// first (rendered "Mon D - Mon D"; the app fills the current year), then a
+/// single explicit date with a year (rendered ISO; the app reads it as UTC).
+/// Returns a value ready to follow "Event duration: ".
+fn extract_prose_window(text: &str) -> Option<String> {
+    if let Some(c) = PROSE_RANGE_RE.captures(text) {
+        let m1 = month_abbr(c.get(1)?.as_str());
+        if !m1.is_empty() {
+            let d1 = c.get(2)?.as_str();
+            let m2 = c
+                .get(3)
+                .map(|m| month_abbr(m.as_str()))
+                .filter(|s| !s.is_empty())
+                .unwrap_or(m1);
+            let d2 = c.get(4)?.as_str();
+            return Some(format!("{} {} - {} {}", m1, d1, m2, d2));
+        }
+    }
+    if let Some(c) = PROSE_SINGLE_RE.captures(text) {
+        if let Some(mo) = month_index(c.get(1)?.as_str()) {
+            let day: u32 = c.get(2)?.as_str().parse().ok()?;
+            let year: i32 = c.get(3)?.as_str().parse().ok()?;
+            let hour: u32 = c.get(4).and_then(|h| h.as_str().parse().ok()).unwrap_or(0);
+            let min: u32 = c.get(5).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+            return Some(format!(
+                "{:04}-{:02}-{:02}T{:02}:{:02}:00Z",
+                year, mo, day, hour, min
+            ));
+        }
+    }
+    None
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BadgeMetadata {
     pub date_added: Option<String>,
     pub usage_stats: Option<String>,
     pub more_info: Option<String>,
+    /// Raw relay enrichment object (campaign facts, siblings, window), so the
+    /// detail panel can render structured sections. Absent for badgebase badges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enrichment: Option<serde_json::Value>,
     #[serde(skip_serializing)]
     pub info_url: String,
 }
@@ -19,6 +162,8 @@ pub struct BadgeMetadataCached {
     pub date_added: Option<String>,
     pub usage_stats: Option<String>,
     pub more_info: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enrichment: Option<serde_json::Value>,
 }
 
 /// Fetch additional badge metadata information
@@ -36,6 +181,23 @@ pub async fn fetch_badge_metadata(
         "https://badgebase.co/badges/{}-v{}/",
         badge_set_id, badge_version
     );
+
+    // Relay enrichment is richer than the scrape, so it wins even over a force
+    // refresh. Checked ahead of the force branch so the gallery's refresh
+    // button cannot scrape over it.
+    if let Ok(Some(cached)) = get_cached_item(CacheType::Badge, &cache_key).await {
+        if cached.metadata.source == ENRICHMENT_SOURCE {
+            if let Ok(cached_info) = serde_json::from_value::<BadgeMetadataCached>(cached.data) {
+                return Ok(BadgeMetadata {
+                    date_added: cached_info.date_added,
+                    usage_stats: cached_info.usage_stats,
+                    more_info: cached_info.more_info,
+                    enrichment: cached_info.enrichment,
+                    info_url: url,
+                });
+            }
+        }
+    }
 
     // Check universal cache first (unless force refresh is requested)
     let should_force = force.unwrap_or(false);
@@ -59,6 +221,7 @@ pub async fn fetch_badge_metadata(
                         date_added: cached_info.date_added,
                         usage_stats: cached_info.usage_stats,
                         more_info: cached_info.more_info,
+                        enrichment: cached_info.enrichment,
                         info_url: url,
                     });
                 }
@@ -108,6 +271,7 @@ pub async fn fetch_badge_metadata(
         date_added: date_added.clone(),
         usage_stats: usage_stats.clone(),
         more_info: more_info.clone(),
+        enrichment: None,
     };
 
     // Cache the result permanently (expiry_days = 0 means never expire)
@@ -128,8 +292,134 @@ pub async fn fetch_badge_metadata(
         date_added,
         usage_stats,
         more_info,
+        enrichment: None,
         info_url: url,
     })
+}
+
+/// Compose the badge More Info fields from a relay-pushed `enrichment` object
+/// and cache them under the same `metadata:{set}-v{ver}` key the More Info panel
+/// reads, marked `ENRICHMENT_SOURCE` so a badgebase re-scrape never overwrites
+/// it. The window is emitted as ISO timestamps so the panel highlights it and
+/// derives Available / Coming Soon / Expired. Best-effort; a no-content
+/// enrichment is skipped so the panel falls back to badgebase.
+pub async fn store_enrichment_metadata(
+    badge_set_id: &str,
+    badge_version: &str,
+    enrichment: &serde_json::Value,
+) {
+    let field = |k: &str| {
+        enrichment
+            .get(k)
+            .and_then(|v| v.as_str())
+            .map(clean_text)
+            .filter(|s| !s.is_empty())
+    };
+
+    let mut parts: Vec<String> = Vec::new();
+    let body = field("how_to_earn").or_else(|| field("action"));
+    let body_lc = body.as_deref().unwrap_or("").to_lowercase();
+    if let Some(b) = &body {
+        parts.push(b.clone());
+    }
+    // Surface highlight/caveats only when they say something the main paragraph
+    // doesn't already (the campaign-grounded how_to_earn usually folds the Prime
+    // note and channel detail in, so these would just repeat it).
+    for key in ["highlight", "caveats"] {
+        if let Some(v) = field(key) {
+            let v_lc = v.to_lowercase();
+            // Redundant if the paragraph already contains it, or both are the
+            // Prime-exclusion note phrased differently.
+            let redundant =
+                body_lc.contains(&v_lc) || (v_lc.contains("prime") && body_lc.contains("prime"));
+            if !redundant {
+                parts.push(v);
+            }
+        }
+    }
+    // distribution/footnote intentionally omitted: low-value on desktop and they
+    // render as orphan fragments (a bare "Twitch Drops" line).
+    let start = field("starts_utc");
+    let end = field("ends_utc");
+    match (&start, &end) {
+        (Some(s), Some(e)) => parts.push(format!(
+            "Event duration: {} - {}",
+            normalize_iso(s),
+            normalize_iso(e)
+        )),
+        (Some(s), None) => parts.push(format!("Event duration: from {}", normalize_iso(s))),
+        (None, Some(e)) => parts.push(format!("Event duration: until {}", normalize_iso(e))),
+        (None, None) => {
+            // No authoritative window; recover one from our own prose (e.g. "July
+            // 23 through July 25") so the app can still place the badge in time.
+            if let Some(window) = body.as_deref().and_then(extract_prose_window) {
+                parts.push(format!("Event duration: {}", window));
+            }
+        }
+    }
+    // Siblings LAST so the panel can split them off for chips while the date pills
+    // stay in the paragraph. Newline-separated, may carry Discord emoji markup.
+    if let Some(related_raw) = enrichment.get("related").and_then(|v| v.as_str()) {
+        let items: Vec<String> = related_raw
+            .split('\n')
+            .map(clean_text)
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !items.is_empty() {
+            parts.push(format!("Also part of this event: {}", items.join(", ")));
+        }
+    }
+
+    // Drop duplicate lines (the relay often repeats the Prime note as both
+    // `highlight` and `footnote`).
+    let mut seen = std::collections::HashSet::new();
+    parts.retain(|p| seen.insert(p.clone()));
+
+    if parts.is_empty() {
+        return;
+    }
+
+    let cache_key = format!("metadata:{}-v{}", badge_set_id, badge_version);
+
+    // Carry forward what badgebase knew and the relay does not send.
+    //
+    // Date of Addition: keep a genuine human date, else stamp today's (never the
+    // ISO earn-window) so a fresh drop sorts to the top of the date-newest
+    // gallery. Non-ISO values survive later backfills, so the stamp is stable.
+    //
+    // Usage statistics: the relay has none, and nulling them would break the
+    // most/least-used sort for every badge the feed touches.
+    let existing = match get_cached_item(CacheType::Badge, &cache_key).await {
+        Ok(Some(c)) => serde_json::from_value::<BadgeMetadataCached>(c.data).ok(),
+        _ => None,
+    };
+    let date_added = Some(
+        existing
+            .as_ref()
+            .and_then(|m| m.date_added.clone())
+            .filter(|d| !d.contains('T'))
+            .unwrap_or_else(today_date_string),
+    );
+    let usage_stats = existing.and_then(|m| m.usage_stats);
+
+    let cached = BadgeMetadataCached {
+        date_added,
+        usage_stats,
+        more_info: Some(parts.join("\n\n")),
+        enrichment: Some(enrichment.clone()),
+    };
+
+    if let Ok(json_value) = serde_json::to_value(&cached) {
+        let _ = cache_item(
+            CacheType::Badge,
+            cache_key,
+            json_value,
+            ENRICHMENT_SOURCE.to_string(),
+            0, // Never expire
+        )
+        .await;
+        debug!("[BadgeMetadata] Stored relay enrichment for {}-v{}", badge_set_id, badge_version);
+    }
 }
 
 /// Returns true when `more_info` appears to describe an event window but is

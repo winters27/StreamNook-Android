@@ -452,7 +452,9 @@ export default function ModerationDragLayer() {
             // "snapped in" cue that pairs with the bucket pop.
             animate={{ scale: armed ? 0.86 : 1, opacity: 1, rotate: armed ? 0 : -4 }}
             transition={{ type: 'spring', stiffness: 500, damping: 26 }}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-white/15 bg-zinc-900/90 backdrop-blur-md shadow-[0_12px_32px_rgba(0,0,0,0.6)] whitespace-nowrap"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-white/15 backdrop-blur-md shadow-[0_12px_32px_rgba(0,0,0,0.6)] whitespace-nowrap"
+            // Themed (was hardcoded zinc-900/90).
+            style={{ backgroundColor: 'color-mix(in srgb, var(--color-background-tertiary) 90%, transparent)' }}
           >
             <span className="text-sm font-bold" style={nameStyle}>
               {dragged.displayName}

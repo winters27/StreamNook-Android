@@ -1,23 +1,22 @@
-use crate::commands::badges::get_cached_global_badges;
-use crate::models::settings::AppState;
+//! Badge-drop feed state, and the `BadgeNotification` payload shape shared by
+//! the relay, the Tauri commands and the UI.
+//!
+//! The relay re-pushes a badge under a stable id (`{set_id}-v{version}`) when
+//! its writeup is corrected or its earn window opens. So "already notified" and
+//! "already stored" are tracked separately: two notify legs (first sight,
+//! became available) plus a per-badge content hash. On disk rather than in
+//! `localStorage`, which a WebView data-folder reset would clear.
+
 use crate::services::cache_service;
-use crate::services::universal_cache_service::{get_cached_item, CacheType};
-use log::{debug, error};
+use log::debug;
 
-use chrono::{Datelike, Local, NaiveDate, TimeZone};
-use regex::Regex;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
 use tokio::sync::RwLock;
-use tokio::time::{interval, Duration};
 
-const POLL_INTERVAL_SECS: u64 = 5 * 60; // 5 minutes
-const INITIAL_DELAY_SECS: u64 = 10;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BadgeNotificationStatus {
     New,
@@ -36,441 +35,291 @@ pub struct BadgeNotification {
     pub status: BadgeNotificationStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub date_info: Option<String>,
+    /// Rich, campaign-grounded writeup composed by the relay ("Penrose bot") and
+    /// delivered in the drop payload. Passed through so the desktop can render it
+    /// in the badge More Info panel. Absent on locally-detected notifications.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enrichment: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BadgeMetadata {
-    pub date_added: Option<String>,
-    pub usage_stats: Option<String>,
-    pub more_info: Option<String>,
-    pub info_url: Option<String>,
+impl BadgeNotification {
+    /// Stable id for this badge, matching the relay's drop id.
+    pub fn feed_id(&self) -> String {
+        format!("{}-v{}", self.badge_set_id, self.badge_version)
+    }
+
+    /// Content fingerprint, for telling a corrected re-push from a redundant one.
+    /// Deterministic: `serde_json` maps are `BTreeMap` here, so keys are sorted.
+    pub fn content_hash(&self) -> String {
+        let text = serde_json::to_string(self).unwrap_or_default();
+        // FNV-1a. Detects change; collision resistance is not needed here.
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in text.as_bytes() {
+            hash ^= *byte as u64;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        format!("{hash:016x}")
+    }
+}
+
+/// What the feed should do with an incoming drop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeedAction {
+    /// First sight: merge into the gallery, store enrichment, toast.
+    NotifyNew,
+    /// Earn window has opened: store, then toast availability.
+    NotifyAvailable,
+    /// Writeup changed: store and amend open panels, no toast.
+    SilentStore,
+    /// Unchanged, and availability already announced.
+    Skip,
+}
+
+impl FeedAction {
+    /// Whether the gallery merge and enrichment store need to run.
+    pub fn stores(&self) -> bool {
+        !matches!(self, FeedAction::Skip)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct BadgePollingStateFile {
+struct BadgeFeedStateFile {
+    /// Badges surfaced at least once. Name kept for compatibility with state
+    /// files written by the retired poller.
+    #[serde(default)]
     known_badges: Vec<String>,
+    #[serde(default)]
     notified_available_badges: Vec<String>,
+    /// Feed id to content hash. Absent in older state files, hence `default`.
+    #[serde(default)]
+    content_hashes: HashMap<String, String>,
+    #[serde(default)]
     last_poll_timestamp_ms: u64,
 }
 
 #[derive(Debug, Clone, Default)]
-struct BadgePollingState {
+struct BadgeFeedState {
     known_badges: HashSet<String>,
     notified_available_badges: HashSet<String>,
+    content_hashes: HashMap<String, String>,
     last_poll_timestamp_ms: u64,
 }
 
-impl BadgePollingState {
-    fn from_file(file: BadgePollingStateFile) -> Self {
+impl BadgeFeedState {
+    fn from_file(file: BadgeFeedStateFile) -> Self {
         Self {
             known_badges: file.known_badges.into_iter().collect(),
             notified_available_badges: file.notified_available_badges.into_iter().collect(),
+            content_hashes: file.content_hashes,
             last_poll_timestamp_ms: file.last_poll_timestamp_ms,
         }
     }
 
-    fn to_file(&self) -> BadgePollingStateFile {
-        BadgePollingStateFile {
+    fn to_file(&self) -> BadgeFeedStateFile {
+        BadgeFeedStateFile {
             known_badges: self.known_badges.iter().cloned().collect(),
-            notified_available_badges: self.notified_available_badges.iter().cloned().collect(),
+            notified_available_badges: self
+                .notified_available_badges
+                .iter()
+                .cloned()
+                .collect(),
+            content_hashes: self.content_hashes.clone(),
             last_poll_timestamp_ms: self.last_poll_timestamp_ms,
         }
     }
 }
 
-pub struct BadgePollingService {
-    running: Arc<RwLock<bool>>,
-    is_polling: Arc<RwLock<bool>>,
-    state: Arc<RwLock<BadgePollingState>>,
+/// `None` until first load; guarded so the file is read once.
+static FEED_STATE: Lazy<RwLock<Option<BadgeFeedState>>> = Lazy::new(|| RwLock::new(None));
+
+fn state_file_path() -> anyhow::Result<PathBuf> {
+    Ok(cache_service::get_app_data_dir()?.join("badge_polling_state.json"))
 }
 
-impl BadgePollingService {
-    pub fn new() -> Self {
-        Self {
-            running: Arc::new(RwLock::new(false)),
-            is_polling: Arc::new(RwLock::new(false)),
-            state: Arc::new(RwLock::new(BadgePollingState::default())),
-        }
+fn load_state_from_disk() -> anyhow::Result<BadgeFeedState> {
+    let path = state_file_path()?;
+    if !path.exists() {
+        return Ok(BadgeFeedState::default());
     }
-
-    pub async fn start(&self, app_handle: AppHandle, app_state: AppState) {
-        // Check if already running
-        {
-            let mut running = self.running.write().await;
-            if *running {
-                return;
-            }
-            *running = true;
-        }
-
-        // Load persisted state once at startup. On the blocking pool: sync file
-        // I/O on a runtime worker stalls every async task in the process (a
-        // Defender-scanned AppData read lands in the hundreds-of-ms range,
-        // observed as recurring `rt_stall side:tokio` events). Same rule applied
-        // to the periodic save below.
-        if let Ok(Ok(state)) = tokio::task::spawn_blocking(load_state_from_disk).await {
-            *self.state.write().await = state;
-        }
-
-        let running = self.running.clone();
-        let is_polling = self.is_polling.clone();
-        let state = self.state.clone();
-
-        tokio::spawn(async move {
-            // Let the app settle before first poll
-            tokio::time::sleep(Duration::from_secs(INITIAL_DELAY_SECS)).await;
-
-            // First poll
-            if let Err(e) = poll_once(&app_handle, &app_state, &running, &is_polling, &state).await
-            {
-                error!("[BadgePolling] Initial poll failed: {e}");
-            }
-
-            let mut ticker = interval(Duration::from_secs(POLL_INTERVAL_SECS));
-            // Consume the immediate tick
-            ticker.tick().await;
-
-            loop {
-                ticker.tick().await;
-
-                // Stop if requested
-                if !*running.read().await {
-                    break;
-                }
-
-                // Avoid work if notifications are disabled
-                let badge_notifications_enabled = {
-                    let settings = app_state.settings.lock().unwrap();
-                    settings.live_notifications.enabled
-                        && settings.live_notifications.show_badge_notifications
-                };
-
-                if !badge_notifications_enabled {
-                    continue;
-                }
-
-                if let Err(e) =
-                    poll_once(&app_handle, &app_state, &running, &is_polling, &state).await
-                {
-                    error!("[BadgePolling] Poll failed: {e}");
-                }
-            }
-
-            debug!("[BadgePolling] Service stopped");
-        });
-    }
-
-    pub async fn stop(&self) {
-        let mut running = self.running.write().await;
-        *running = false;
-    }
+    let text = std::fs::read_to_string(&path)?;
+    let file: BadgeFeedStateFile = serde_json::from_str(&text)?;
+    Ok(BadgeFeedState::from_file(file))
 }
 
-async fn poll_once(
-    app_handle: &AppHandle,
-    _app_state: &AppState,
-    running: &Arc<RwLock<bool>>,
-    is_polling: &Arc<RwLock<bool>>,
-    state: &Arc<RwLock<BadgePollingState>>,
-) -> anyhow::Result<()> {
-    // Quick abort
-    if !*running.read().await {
-        return Ok(());
-    }
-
-    // Prevent overlapping polls
-    {
-        let mut polling = is_polling.write().await;
-        if *polling {
-            return Ok(());
-        }
-        *polling = true;
-    }
-
-    let result = poll_once_impl(app_handle, state).await;
-
-    // Always clear polling flag
-    *is_polling.write().await = false;
-
-    result
-}
-
-async fn poll_once_impl(
-    app_handle: &AppHandle,
-    state: &Arc<RwLock<BadgePollingState>>,
-) -> anyhow::Result<()> {
-    // Get cached badges (already fetched by main.rs background prefetch)
-    let cached_badges = match get_cached_global_badges().await {
-        Ok(Some(b)) => b,
-        Ok(None) => return Ok(()),
-        Err(e) => return Err(anyhow::anyhow!(e)),
-    };
-
-    if cached_badges.data.is_empty() {
-        return Ok(());
-    }
-
-    let mut notifications: Vec<BadgeNotification> = Vec::new();
-
-    // We copy the state out for fast checks, then write back once at the end.
-    let mut local_state = state.read().await.clone();
-
-    for badge_set in &cached_badges.data {
-        for version in &badge_set.versions {
-            let badge_key = format!("{}-v{}", badge_set.set_id, version.id);
-
-            let metadata_key = format!("metadata:{}", badge_key);
-            let metadata = match get_cached_item(CacheType::Badge, &metadata_key).await {
-                Ok(Some(entry)) => serde_json::from_value::<BadgeMetadata>(entry.data).ok(),
-                _ => None,
-            };
-
-            let (status, date_info) = get_badge_status(metadata.as_ref());
-
-            // New badge
-            if !local_state.known_badges.contains(&badge_key) {
-                local_state.known_badges.insert(badge_key.clone());
-
-                let should_notify = matches!(
-                    status,
-                    Some(BadgeStatus::Available) | Some(BadgeStatus::ComingSoon)
-                ) || status.is_none();
-
-                if should_notify {
-                    notifications.push(BadgeNotification {
-                        badge_name: version.title.clone(),
-                        badge_set_id: badge_set.set_id.clone(),
-                        badge_version: version.id.clone(),
-                        badge_image_url: first_badge_image_url(version),
-                        badge_description: if version.description.is_empty() {
-                            None
-                        } else {
-                            Some(version.description.clone())
-                        },
-                        status: BadgeNotificationStatus::New,
-                        date_info: date_info.clone(),
-                    });
-                }
-            }
-
-            // Known badge that just became available
-            if local_state.known_badges.contains(&badge_key)
-                && status == Some(BadgeStatus::Available)
-                && !local_state.notified_available_badges.contains(&badge_key)
-            {
-                local_state
-                    .notified_available_badges
-                    .insert(badge_key.clone());
-
-                notifications.push(BadgeNotification {
-                    badge_name: version.title.clone(),
-                    badge_set_id: badge_set.set_id.clone(),
-                    badge_version: version.id.clone(),
-                    badge_image_url: first_badge_image_url(version),
-                    badge_description: if version.description.is_empty() {
-                        None
-                    } else {
-                        Some(version.description.clone())
-                    },
-                    status: BadgeNotificationStatus::Available,
-                    date_info,
-                });
-            }
-        }
-    }
-
-    // Persist updated state on the blocking pool (never sync-write on the
-    // runtime — see the load note above).
-    local_state.last_poll_timestamp_ms = current_time_ms();
-    let to_save = local_state.clone();
-    match tokio::task::spawn_blocking(move || save_state_to_disk(&to_save)).await {
-        Ok(Err(e)) => error!("[BadgePolling] Failed to persist state: {e}"),
-        Err(e) => error!("[BadgePolling] persist task panicked: {e}"),
-        Ok(Ok(())) => {}
-    }
-    *state.write().await = local_state;
-
-    // Emit only the latest badge notification (mirrors old TS behavior)
-    if let Some(latest) = notifications.pop() {
-        // Always emit the generic event
-        let _ = app_handle.emit("badge-notification", vec![latest.clone()]);
-
-        // Emit the specific event for availability transitions
-        if matches!(latest.status, BadgeNotificationStatus::Available) {
-            let _ = app_handle.emit("badge-available", vec![latest]);
-        }
-    }
-
+fn save_state_to_disk(state: &BadgeFeedState) -> anyhow::Result<()> {
+    let path = state_file_path()?;
+    let text = serde_json::to_string_pretty(&state.to_file())?;
+    std::fs::write(path, text)?;
     Ok(())
 }
 
-fn first_badge_image_url(version: &crate::commands::badges::HelixBadgeVersion) -> String {
-    if !version.image_url_4x.is_empty() {
-        return version.image_url_4x.clone();
+/// Loads once, on the blocking pool. Sync file I/O on a runtime worker stalls
+/// every async task in the process (Defender-scanned AppData reads run to
+/// hundreds of ms), so load and save both use `spawn_blocking`.
+async fn ensure_loaded() {
+    if FEED_STATE.read().await.is_some() {
+        return;
     }
-    if !version.image_url_2x.is_empty() {
-        return version.image_url_2x.clone();
+    let loaded = tokio::task::spawn_blocking(load_state_from_disk)
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .unwrap_or_default();
+
+    let mut guard = FEED_STATE.write().await;
+    if guard.is_none() {
+        *guard = Some(loaded);
     }
-    version.image_url_1x.clone()
+}
+
+/// True when this feed logic has never recorded anything: a fresh install, a
+/// lost state file, or a file left behind by the retired poller. The caller
+/// seeds that first batch silently instead of toasting the relay's history.
+///
+/// Keyed on `content_hashes` rather than `known_badges` because the retired
+/// poller wrote the same file with the same key format. A legacy file is
+/// populated but stops at whenever that poller last ran, so testing
+/// `known_badges` reports "not a first run" while every recent badge still
+/// looks unseen.
+pub async fn is_empty() -> bool {
+    ensure_loaded().await;
+    FEED_STATE
+        .read()
+        .await
+        .as_ref()
+        .map(|s| s.content_hashes.is_empty())
+        .unwrap_or(true)
+}
+
+/// Decide what to do with a drop, recording nothing. `is_available` comes from
+/// the earn window, not the payload's `status` (a snapshot of when it was sent).
+pub async fn classify(feed_id: &str, content_hash: &str, is_available: bool) -> FeedAction {
+    ensure_loaded().await;
+    let guard = FEED_STATE.read().await;
+    let Some(state) = guard.as_ref() else {
+        return FeedAction::NotifyNew;
+    };
+
+    if !state.known_badges.contains(feed_id) {
+        return FeedAction::NotifyNew;
+    }
+    if is_available && !state.notified_available_badges.contains(feed_id) {
+        return FeedAction::NotifyAvailable;
+    }
+    if state.content_hashes.get(feed_id).map(String::as_str) != Some(content_hash) {
+        return FeedAction::SilentStore;
+    }
+    FeedAction::Skip
+}
+
+/// Record an outcome. Called only after the store succeeded, so a failed store
+/// retries on the next frame. Does not touch disk; `persist` once per batch.
+pub async fn record(feed_id: &str, content_hash: &str, action: FeedAction, is_available: bool) {
+    ensure_loaded().await;
+    let mut guard = FEED_STATE.write().await;
+    let Some(state) = guard.as_mut() else {
+        return;
+    };
+
+    state.known_badges.insert(feed_id.to_string());
+    state
+        .content_hashes
+        .insert(feed_id.to_string(), content_hash.to_string());
+    // Latched on first sight of an open window too, so a badge that arrives
+    // already available never announces itself twice.
+    if is_available || action == FeedAction::NotifyAvailable {
+        state
+            .notified_available_badges
+            .insert(feed_id.to_string());
+    }
+}
+
+/// Flush to disk. One write per ingest call, not one per drop.
+pub async fn persist() {
+    let snapshot = {
+        let mut guard = FEED_STATE.write().await;
+        let Some(state) = guard.as_mut() else {
+            return;
+        };
+        state.last_poll_timestamp_ms = current_time_ms();
+        state.clone()
+    };
+    let _ = tokio::task::spawn_blocking(move || {
+        if let Err(e) = save_state_to_disk(&snapshot) {
+            debug!("[BadgeFeed] Failed to persist feed state: {e}");
+        }
+    })
+    .await;
 }
 
 fn current_time_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
 }
 
-fn state_file_path() -> anyhow::Result<PathBuf> {
-    Ok(cache_service::get_app_data_dir()?.join("badge_polling_state.json"))
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn load_state_from_disk() -> anyhow::Result<BadgePollingState> {
-    let path = state_file_path()?;
-
-    if !path.exists() {
-        return Ok(BadgePollingState::default());
-    }
-
-    let text = std::fs::read_to_string(&path)?;
-    let file: BadgePollingStateFile = serde_json::from_str(&text)?;
-    Ok(BadgePollingState::from_file(file))
-}
-
-fn save_state_to_disk(state: &BadgePollingState) -> anyhow::Result<()> {
-    let path = state_file_path()?;
-
-    let file = state.to_file();
-    let text = serde_json::to_string_pretty(&file)?;
-    std::fs::write(path, text)?;
-    Ok(())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BadgeStatus {
-    Available,
-    ComingSoon,
-    Expired,
-}
-
-fn get_badge_status(metadata: Option<&BadgeMetadata>) -> (Option<BadgeStatus>, Option<String>) {
-    let Some(metadata) = metadata else {
-        return (None, None);
-    };
-
-    let Some(more_info) = metadata.more_info.as_deref() else {
-        return (None, None);
-    };
-
-    let Some((start, end, date_info)) = parse_date_range(more_info) else {
-        return (None, None);
-    };
-
-    let now = Local::now();
-
-    if now < start {
-        return (Some(BadgeStatus::ComingSoon), Some(date_info));
-    }
-
-    if now >= start && now <= end {
-        return (Some(BadgeStatus::Available), Some(date_info));
-    }
-
-    (Some(BadgeStatus::Expired), Some(date_info))
-}
-
-/// Parse a date range embedded in `more_info`.
-///
-/// Supported formats (matching the old TS implementation):
-/// - "Dec 06 – Dec 07" / "Dec 06 - Dec 07"
-/// - "Dec 1-12" / "Dec 1 - 12"
-fn parse_date_range(
-    text: &str,
-) -> Option<(chrono::DateTime<Local>, chrono::DateTime<Local>, String)> {
-    static FULL_RANGE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
-        Regex::new(
-            r"(?P<sm>[A-Za-z]{3})\s+(?P<sd>\d{1,2})\s*[–-]\s*(?P<em>[A-Za-z]{3})\s+(?P<ed>\d{1,2})",
-        )
-        .unwrap()
-    });
-
-    static SHORT_RANGE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
-        // Negative lookahead (like TS) isn’t supported in Rust regex.
-        // We keep it simple: match "Mon D-D" and allow extra trailing text.
-        Regex::new(r"(?P<m>[A-Za-z]{3})\s+(?P<sd>\d{1,2})\s*[–-]\s*(?P<ed>\d{1,2})").unwrap()
-    });
-
-    static DATE_INFO: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
-        Regex::new(r"(?P<info>[A-Za-z]{3}\s+\d{1,2}(?:\s*[–-]\s*(?:[A-Za-z]{3}\s+)?\d{1,2})?)")
-            .unwrap()
-    });
-
-    let year = Local::now().year();
-
-    let date_info = DATE_INFO
-        .captures(text)
-        .and_then(|c| c.name("info").map(|m| m.as_str().to_string()))
-        .unwrap_or_else(|| text.to_string());
-
-    // Helper: month abbrev -> month number
-    let month_num = |abbr: &str| -> Option<u32> {
-        match abbr {
-            "Jan" => Some(1),
-            "Feb" => Some(2),
-            "Mar" => Some(3),
-            "Apr" => Some(4),
-            "May" => Some(5),
-            "Jun" => Some(6),
-            "Jul" => Some(7),
-            "Aug" => Some(8),
-            "Sep" => Some(9),
-            "Oct" => Some(10),
-            "Nov" => Some(11),
-            "Dec" => Some(12),
-            _ => None,
+    fn badge(name: &str) -> BadgeNotification {
+        BadgeNotification {
+            badge_name: name.to_string(),
+            badge_set_id: "spiderman".to_string(),
+            badge_version: "1".to_string(),
+            badge_image_url: "https://static-cdn.jtvnw.net/badges/v1/abc/3".to_string(),
+            badge_description: None,
+            status: BadgeNotificationStatus::New,
+            date_info: None,
+            enrichment: None,
         }
-    };
-
-    // Full month-to-month range
-    if let Some(caps) = FULL_RANGE.captures(text) {
-        let sm = month_num(caps.name("sm")?.as_str())?;
-        let sd: u32 = caps.name("sd")?.as_str().parse().ok()?;
-        let em = month_num(caps.name("em")?.as_str())?;
-        let ed: u32 = caps.name("ed")?.as_str().parse().ok()?;
-
-        let start_date = NaiveDate::from_ymd_opt(year, sm, sd)?;
-        let end_date = NaiveDate::from_ymd_opt(year, em, ed)?;
-
-        let start = Local
-            .from_local_datetime(&start_date.and_hms_opt(0, 0, 0)?)
-            .single()?;
-        let end = Local
-            .from_local_datetime(&end_date.and_hms_opt(23, 59, 59)?)
-            .single()?;
-
-        return Some((start, end, date_info));
     }
 
-    // Short day range within same month
-    if let Some(caps) = SHORT_RANGE.captures(text) {
-        let m = month_num(caps.name("m")?.as_str())?;
-        let sd: u32 = caps.name("sd")?.as_str().parse().ok()?;
-        let ed: u32 = caps.name("ed")?.as_str().parse().ok()?;
-
-        let start_date = NaiveDate::from_ymd_opt(year, m, sd)?;
-        let end_date = NaiveDate::from_ymd_opt(year, m, ed)?;
-
-        let start = Local
-            .from_local_datetime(&start_date.and_hms_opt(0, 0, 0)?)
-            .single()?;
-        let end = Local
-            .from_local_datetime(&end_date.and_hms_opt(23, 59, 59)?)
-            .single()?;
-
-        return Some((start, end, date_info));
+    #[test]
+    fn feed_id_matches_the_relay_drop_id() {
+        assert_eq!(badge("Spider-Man").feed_id(), "spiderman-v1");
     }
 
-    None
+    #[test]
+    fn content_hash_is_stable_for_identical_payloads() {
+        assert_eq!(badge("Spider-Man").content_hash(), badge("Spider-Man").content_hash());
+    }
+
+    #[test]
+    fn content_hash_changes_when_the_writeup_is_corrected() {
+        let thin = badge("Spider-Man");
+        let mut enriched = badge("Spider-Man");
+        enriched.enrichment = Some(serde_json::json!({ "how_to_earn": "Watch 2 hours." }));
+        assert_ne!(thin.content_hash(), enriched.content_hash());
+    }
+
+    // A legacy `badge_polling_state.json` from the retired poller uses the same
+    // key format, so it looks populated while stopping at whenever that poller
+    // last ran. Seeding must key on content_hashes or every badge that dropped
+    // afterwards notifies on the first launch of a new build.
+    #[test]
+    fn legacy_poller_state_still_counts_as_a_first_run() {
+        let legacy = BadgeFeedStateFile {
+            known_badges: vec!["spiderman-v1".into(), "budz-v1".into()],
+            notified_available_badges: vec![],
+            content_hashes: HashMap::new(),
+            last_poll_timestamp_ms: 0,
+        };
+        let state = BadgeFeedState::from_file(legacy);
+        assert!(!state.known_badges.is_empty(), "legacy field is populated");
+        assert!(
+            state.content_hashes.is_empty(),
+            "but the new logic has never recorded, so this is a first run"
+        );
+    }
+
+    #[test]
+    fn skip_only_applies_when_nothing_changed() {
+        assert!(FeedAction::NotifyNew.stores());
+        assert!(FeedAction::NotifyAvailable.stores());
+        assert!(FeedAction::SilentStore.stores());
+        assert!(!FeedAction::Skip.stores());
+    }
 }

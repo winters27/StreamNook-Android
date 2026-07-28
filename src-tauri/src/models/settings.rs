@@ -184,6 +184,12 @@ pub struct ChatDesignSettings {
     #[serde(default)]
     pub compact_emote_tooltips: bool,
     #[serde(default = "default_true")]
+    pub ffz_emote_effects: bool,
+    /// Which half of the user card opens first: their recent messages (default)
+    /// or the profile body.
+    #[serde(default = "default_true")]
+    pub user_card_opens_messages: bool,
+    #[serde(default = "default_true")]
     pub seventv_emote_notices: bool,
     #[serde(default = "default_true")]
     pub link_previews: bool,
@@ -266,6 +272,8 @@ impl Default for ChatDesignSettings {
             hide_shared_chat: false,
             paint_mentions_in_body: true,
             compact_emote_tooltips: false,
+            ffz_emote_effects: true,
+            user_card_opens_messages: true,
             seventv_emote_notices: true,
             link_previews: true,
             link_preview_keep_link: false,
@@ -470,6 +478,10 @@ pub struct Settings {
     /// chosen font survives restarts; None falls back to the default font.
     #[serde(default)]
     pub font: Option<String>,
+    /// User-typed interface font family, used when `font` is "custom".
+    /// Ignored for any other font id.
+    #[serde(default)]
+    pub font_custom: Option<String>,
     /// Global glassiness, 0-100. Persisted so the slider survives restarts;
     /// None falls back to the default (100) on the frontend.
     #[serde(default)]
@@ -533,6 +545,7 @@ impl Default for Settings {
             auto_switch: AutoSwitchSettings::default(),
             theme: default_theme(),
             font: None,
+            font_custom: None,
             glass_transparency: None,
             setup_complete: false, // New users need to complete setup
             compact_view: None,

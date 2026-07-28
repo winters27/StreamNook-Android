@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react';
-import { X, Gift, Package, Check, Pause, Clock, Star, Ban, ExternalLink, Tv } from 'lucide-react';
+import { X, Gift, Package, Check, Pause, Clock, Star, Ban, Link2, Tv } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import type { UnifiedGame, DropProgress, DropProgressStatus, DropCampaign, TimeBasedDrop, InventoryItem, CompletedDrop, DropBenefit, TwitchStream } from '../../types';
 import { Tooltip } from '../ui/Tooltip';
@@ -436,7 +437,7 @@ export default function GameDetailPanel({
             {/* Centered modal shell. Matches the app's modal primitive (cf. ChannelPickerModal). */}
             <div className="relative w-full max-w-lg max-h-[85vh] bg-background rounded-xl shadow-2xl border border-borderLight overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200">
                 {/* Header */}
-                <div className="flex items-center gap-3 px-5 py-4 border-b border-borderLight bg-backgroundSecondary">
+                <div className="flex items-center gap-3 px-5 py-4 border-b border-borderSubtle bg-backgroundSecondary">
                     <img
                         src={boxArtUrl}
                         alt={game.name}
@@ -450,24 +451,33 @@ export default function GameDetailPanel({
                             {game.active_campaigns.length} campaign{game.active_campaigns.length !== 1 ? 's' : ''} active
                         </p>
                         {(() => {
-                            // Find account link from any active campaign for this game
-                            const accountLink = game.active_campaigns.find(c => c.account_link)?.account_link;
-                            
-                            if (accountLink) {
-                                return (
-                                    <a
-                                        href={accountLink}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="text-xs text-accent hover:text-accent/80 mt-0.5 flex items-center gap-1 hover:underline transition-colors"
-                                        onClick={(e) => e.stopPropagation()}
+                            // Twitch marks a campaign as needing an account link (accountLinkURL)
+                            // that credits drops only once the viewer connects; self.isAccountConnected
+                            // mirrors what Twitch's own rewards page shows. We surface the connect
+                            // action only when Twitch reports not-connected (same rule as Twitch), and
+                            // show nothing once it's satisfied — no permanent stamp.
+                            const connectUrl = game.active_campaigns
+                                .find(c => c.account_link && !c.is_account_connected)?.account_link;
+                            if (!connectUrl) return null;
+                            return (
+                                <Tooltip content="Open the account-connection page in your browser, where you're already signed in to Twitch and the game.">
+                                    <button
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            // The link page is a publisher-side flow (game login + Twitch
+                                            // OAuth), not a twitch.tv-cookie op, so it opens in the real
+                                            // browser rather than the in-app Twitch overlay. Signal the
+                                            // Drops Center to re-check status when the app regains focus.
+                                            invoke('open_browser_url', { url: connectUrl }).catch(() => {});
+                                            window.dispatchEvent(new CustomEvent('drops-connect-initiated'));
+                                        }}
+                                        className="glass-button px-2.5 py-1 mt-1 text-xs font-semibold text-accent flex items-center gap-1.5"
                                     >
-                                        <ExternalLink size={10} />
-                                        Connect game account
-                                    </a>
-                                );
-                            }
-                            return null;
+                                        <Link2 size={12} />
+                                        Connect account
+                                    </button>
+                                </Tooltip>
+                            );
                         })()}
                     </div>
                     <button
@@ -532,7 +542,7 @@ export default function GameDetailPanel({
                             <div className="glass-panel p-4">
                                 <div className="flex items-center gap-2 mb-3">
                                     <Gift size={16} className="text-accent" />
-                                    <h4 className="text-sm font-bold text-textPrimary">Rewards</h4>
+                                    <h4 className="text-[12px] font-semibold uppercase tracking-[0.14em] text-textPrimary">Rewards</h4>
                                     <span className="text-[10px] font-mono text-textMuted bg-background/50 px-2 py-0.5 rounded ml-auto">
                                         {earnedCount}/{rewards.length} earned
                                     </span>
@@ -546,7 +556,7 @@ export default function GameDetailPanel({
                                                     ? (
                                                         <div className="text-left max-w-[15rem]">
                                                             <div className="font-semibold text-textPrimary">{r.name}</div>
-                                                            <div className="mt-1 flex items-center gap-1 text-yellow-400 text-[10px] font-semibold uppercase tracking-wide">
+                                                            <div className="mt-1 flex items-center gap-1 text-warning text-[10px] font-semibold uppercase tracking-wide">
                                                                 <Ban size={9} /> How to unlock
                                                             </div>
                                                             <div className="mt-0.5 font-normal text-textSecondary leading-snug">{r.requirement}</div>
@@ -575,19 +585,19 @@ export default function GameDetailPanel({
                                                     )}
 
                                                     {r.isClaimed && (
-                                                        <div className="absolute top-1 right-1 w-4 h-4 rounded-full bg-green-500 flex items-center justify-center border border-background">
+                                                        <div className="absolute top-1 right-1 w-4 h-4 rounded-full bg-success flex items-center justify-center border border-background">
                                                             <Check size={9} className="text-white" />
                                                         </div>
                                                     )}
 
                                                     {r.isReady && (
-                                                        <div className="absolute top-1 right-1 w-4 h-4 rounded-full bg-yellow-500 flex items-center justify-center border border-background">
+                                                        <div className="absolute top-1 right-1 w-4 h-4 rounded-full bg-warning flex items-center justify-center border border-background">
                                                             <span className="text-[8px] font-bold text-black">!</span>
                                                         </div>
                                                     )}
 
                                                     {!r.isCollectible && !r.isClaimed && (
-                                                        <div className="absolute top-1 left-1 text-yellow-500">
+                                                        <div className="absolute top-1 left-1 text-warning">
                                                             <Ban size={11} />
                                                         </div>
                                                     )}
@@ -766,16 +776,16 @@ export default function GameDetailPanel({
                         if (dropsWithProgress.length === 0) return null;
 
                         return (
-                            <div className="glass-panel p-4 space-y-3 border border-green-500/30 bg-green-500/5">
+                            <div className="glass-panel p-4 space-y-3 border border-success/30 bg-success/5">
                                 <div className="flex items-center justify-between">
-                                    <div className="flex items-center gap-2 text-green-400 font-semibold text-sm">
+                                    <div className="flex items-center gap-2 text-success text-[12px] font-semibold uppercase tracking-[0.14em]">
                                         <span className="relative flex h-2.5 w-2.5">
-                                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                                            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500"></span>
+                                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
+                                            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-success"></span>
                                         </span>
                                         Currently earning
                                         {dropsWithProgress.length > 0 && (
-                                            <span className="text-[10px] font-mono text-green-300 bg-green-500/20 px-1.5 py-0.5 rounded">
+                                            <span className="text-[10px] font-mono text-success bg-success/20 px-1.5 py-0.5 rounded">
                                                 {dropsWithProgress.length} drop{dropsWithProgress.length !== 1 ? 's' : ''}
                                             </span>
                                         )}
@@ -785,7 +795,7 @@ export default function GameDetailPanel({
                                     {externalDropsProvider && (
                                         <button
                                             onClick={onStopAutomation}
-                                            className="glass-button px-2.5 py-1.5 text-xs font-medium text-red-400 flex items-center gap-1.5"
+                                            className="glass-button px-2.5 py-1.5 text-xs font-medium text-error flex items-center gap-1.5"
                                         >
                                             <Pause size={12} />
                                             Stop
@@ -804,7 +814,7 @@ export default function GameDetailPanel({
                                             return (
                                                 <div
                                                     key={dropId}
-                                                    className="flex items-center gap-3 p-2 rounded-lg bg-background/50 border border-green-500/20"
+                                                    className="flex items-center gap-3 p-2 rounded-lg bg-background/50 border border-success/20"
                                                 >
                                                     {/* Benefit Image */}
                                                     <div className="relative shrink-0">
@@ -812,11 +822,11 @@ export default function GameDetailPanel({
                                                             <img
                                                                 src={benefitImage}
                                                                 alt={benefitName}
-                                                                className="w-12 h-12 rounded-lg object-contain border border-green-500/30 bg-background"
+                                                                className="w-12 h-12 rounded-lg object-contain border border-success/30 bg-background"
                                                             />
                                                         ) : (
-                                                            <div className="w-12 h-12 rounded-lg bg-background border border-green-500/30 flex items-center justify-center">
-                                                                <Gift size={18} className="text-green-400" />
+                                                            <div className="w-12 h-12 rounded-lg bg-background border border-success/30 flex items-center justify-center">
+                                                                <Gift size={18} className="text-success" />
                                                             </div>
                                                         )}
                                                     </div>
@@ -835,7 +845,7 @@ export default function GameDetailPanel({
                                                             />
                                                         </div>
                                                         <div className="flex items-center justify-between mt-1">
-                                                            <span className="text-[10px] text-green-400 font-mono">
+                                                            <span className="text-[10px] text-success font-mono">
                                                                 {Math.round(currentMins)}/{requiredMins}m
                                                             </span>
                                                             <span className="text-[10px] text-textMuted font-semibold">
@@ -849,12 +859,12 @@ export default function GameDetailPanel({
                                     </div>
                                 ) : (
                                     // Fallback when automation but no WebSocket progress yet
-                                    <div className="flex items-center gap-3 p-2 bg-background/50 rounded-lg border border-green-500/20">
+                                    <div className="flex items-center gap-3 p-2 bg-background/50 rounded-lg border border-success/20">
                                         {collectDropImage && (
                                             <img
                                                 src={collectDropImage}
                                                 alt={collectBenefitName}
-                                                className="w-12 h-12 rounded-lg object-contain border border-green-500/40 bg-background shrink-0"
+                                                className="w-12 h-12 rounded-lg object-contain border border-success/40 bg-background shrink-0"
                                             />
                                         )}
                                         <div className="flex-1 min-w-0">
@@ -869,7 +879,7 @@ export default function GameDetailPanel({
                                                     style={{ width: `${Math.min(collectProgress, 100)}%` }}
                                                 />
                                             </div>
-                                            <p className="text-xs text-green-400 font-mono mt-1">
+                                            <p className="text-xs text-success font-mono mt-1">
                                                 Waiting for progress update...
                                             </p>
                                         </div>
@@ -894,7 +904,7 @@ export default function GameDetailPanel({
 
                         return (
                             <div>
-                                <h4 className="flex items-center gap-2 text-sm font-bold text-textPrimary mb-3">
+                                <h4 className="flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.14em] text-textPrimary mb-3">
                                     <Gift size={16} className="text-accent" />
                                     Active Campaigns
                                     <span className="text-[10px] font-mono text-textMuted bg-background/50 px-2 py-0.5 rounded ml-auto">
@@ -946,10 +956,10 @@ export default function GameDetailPanel({
 
                         return (
                             <div>
-                                <h4 className="flex items-center gap-2 text-sm font-bold text-textPrimary mb-3">
-                                    <Check size={16} className="text-green-400" />
+                                <h4 className="flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.14em] text-textPrimary mb-3">
+                                    <Check size={16} className="text-success" />
                                     Completed Campaigns
-                                    <span className="text-[10px] font-mono text-green-400 bg-green-500/10 px-2 py-0.5 rounded ml-auto">
+                                    <span className="text-[10px] font-mono text-success bg-success/10 px-2 py-0.5 rounded ml-auto">
                                         {completedCampaigns.length} done
                                     </span>
                                 </h4>
@@ -1190,10 +1200,10 @@ export default function GameDetailPanel({
 
                         return (
                             <div>
-                                <h4 className="flex items-center gap-2 text-sm font-bold text-textPrimary mb-3">
-                                    <Package size={16} className="text-purple-400" />
+                                <h4 className="flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.14em] text-textPrimary mb-3">
+                                    <Package size={16} className="text-highlight-purple" />
                                     Your Collection
-                                    <span className="text-[10px] font-mono text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded ml-auto">
+                                    <span className="text-[10px] font-mono text-highlight-purple bg-highlight-purple/10 px-2 py-0.5 rounded ml-auto">
                                         {totalItems} item{totalItems !== 1 ? 's' : ''}
                                     </span>
                                 </h4>
@@ -1204,7 +1214,7 @@ export default function GameDetailPanel({
                                         {unclaimedDrops.map(({ dropId, dropInstanceId, benefitImage, benefitName }) => (
                                             <div
                                                 key={dropId}
-                                                className="flex items-center gap-3 p-2 rounded-lg bg-yellow-500/10 border border-yellow-500/30"
+                                                className="flex items-center gap-3 p-2 rounded-lg bg-warning/10 border border-warning/30"
                                             >
                                                 {/* Benefit Image */}
                                                 <div className="relative shrink-0">
@@ -1212,15 +1222,15 @@ export default function GameDetailPanel({
                                                         <img
                                                             src={benefitImage}
                                                             alt={benefitName}
-                                                            className="w-12 h-12 rounded-lg object-contain border border-yellow-500/30 bg-background"
+                                                            className="w-12 h-12 rounded-lg object-contain border border-warning/30 bg-background"
                                                         />
                                                     ) : (
-                                                        <div className="w-12 h-12 rounded-lg bg-background border border-yellow-500/30 flex items-center justify-center">
-                                                            <Gift size={18} className="text-yellow-400" />
+                                                        <div className="w-12 h-12 rounded-lg bg-background border border-warning/30 flex items-center justify-center">
+                                                            <Gift size={18} className="text-warning" />
                                                         </div>
                                                     )}
                                                     {/* Ready badge */}
-                                                    <div className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-yellow-500 flex items-center justify-center shadow-lg animate-pulse">
+                                                    <div className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-warning flex items-center justify-center shadow-lg animate-pulse">
                                                         <span className="text-[8px] font-bold text-black">!</span>
                                                     </div>
                                                 </div>
@@ -1232,7 +1242,7 @@ export default function GameDetailPanel({
                                                             {benefitName}
                                                         </span>
                                                     </Tooltip>
-                                                    <p className="text-[10px] text-yellow-400 font-semibold mt-0.5">
+                                                    <p className="text-[10px] text-warning font-semibold mt-0.5">
                                                         Ready to claim!
                                                     </p>
                                                 </div>
@@ -1240,7 +1250,7 @@ export default function GameDetailPanel({
                                                 {/* Claim Button */}
                                                 <button
                                                     onClick={() => onClaimDrop(dropId, dropInstanceId)}
-                                                    className="px-3 py-1.5 bg-green-500 hover:bg-green-400 text-white text-xs font-bold rounded-lg transition-all shadow-lg animate-pulse shrink-0"
+                                                    className="px-3 py-1.5 bg-success hover:bg-success/80 text-white text-xs font-bold rounded-lg transition-all shadow-lg animate-pulse shrink-0"
                                                 >
                                                     Claim
                                                 </button>
@@ -1258,7 +1268,7 @@ export default function GameDetailPanel({
                                                 className="group relative pt-1 pr-1"
                                             >
                                                 {/* Drop Reward Image Container */}
-                                                <div className="w-full aspect-square rounded-lg border border-purple-500/40 bg-purple-500/10 p-1">
+                                                <div className="w-full aspect-square rounded-lg border border-highlight-purple/40 bg-highlight-purple/10 p-1">
                                                     {benefitImage ? (
                                                         <img
                                                             src={benefitImage}
@@ -1268,13 +1278,13 @@ export default function GameDetailPanel({
                                                         />
                                                     ) : (
                                                         <div className="w-full h-full flex items-center justify-center rounded-md bg-background/50">
-                                                            <Gift size={20} className="text-purple-400" />
+                                                            <Gift size={20} className="text-highlight-purple" />
                                                         </div>
                                                     )}
                                                 </div>
 
                                                 {/* Checkmark badge - positioned outside the container */}
-                                                <div className="absolute top-0 right-0 w-5 h-5 rounded-full bg-green-500 flex items-center justify-center shadow-lg border-2 border-background">
+                                                <div className="absolute top-0 right-0 w-5 h-5 rounded-full bg-success flex items-center justify-center shadow-lg border-2 border-background">
                                                     <Check size={10} className="text-white" />
                                                 </div>
 
@@ -1425,19 +1435,19 @@ function CampaignCard({
                         </span>
                     )}
                     {dropType.type === 'mixed' && (
-                        <span className="px-1.5 py-0.5 text-[9px] font-semibold rounded bg-orange-500/20 text-orange-400 border border-orange-500/30 shrink-0 flex items-center gap-1">
+                        <span className="px-1.5 py-0.5 text-[9px] font-semibold rounded bg-highlight-orange/20 text-highlight-orange border border-highlight-orange/30 shrink-0 flex items-center gap-1">
                             <Clock size={9} />
                             Mixed
                         </span>
                     )}
                     {dropType.type === 'instant' && (
-                        <span className="px-1.5 py-0.5 text-[9px] font-semibold rounded bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 shrink-0 flex items-center gap-1">
+                        <span className="px-1.5 py-0.5 text-[9px] font-semibold rounded bg-warning/20 text-warning border border-warning/30 shrink-0 flex items-center gap-1">
                             <Ban size={9} />
                             Event Only
                         </span>
                     )}
                     {dropType.type === 'other' && (
-                        <span className="px-1.5 py-0.5 text-[9px] font-semibold rounded bg-purple-500/20 text-purple-400 border border-purple-500/30 shrink-0 flex items-center gap-1">
+                        <span className="px-1.5 py-0.5 text-[9px] font-semibold rounded bg-highlight-purple/20 text-highlight-purple border border-highlight-purple/30 shrink-0 flex items-center gap-1">
                             <Star size={9} />
                             Special
                         </span>
@@ -1449,7 +1459,7 @@ function CampaignCard({
                     drops.card-action slot to take this over (e.g. earn without
                     watching), in which case we render that instead. */}
                 {!isProgressingThisCampaign && allEarned && (
-                    <span className="text-[10px] font-semibold text-green-400 flex items-center gap-1 bg-green-500/10 px-2 py-1 rounded shrink-0">
+                    <span className="text-[10px] font-semibold text-success flex items-center gap-1 bg-success/10 px-2 py-1 rounded shrink-0">
                         <Check size={11} />
                         Completed
                     </span>
@@ -1488,10 +1498,10 @@ function CampaignCard({
                         )
                 )}
                 {isProgressingThisCampaign && (
-                    <span className="text-xs text-green-400 font-semibold flex items-center gap-1.5 bg-green-500/10 px-2 py-1 rounded">
+                    <span className="text-xs text-success font-semibold flex items-center gap-1.5 bg-success/10 px-2 py-1 rounded">
                         <span className="relative flex h-2 w-2">
-                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                            <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-success"></span>
                         </span>
                         Earning
                     </span>
@@ -1557,9 +1567,9 @@ function CampaignCard({
                                         >
                                             <div className={`w-3 h-3 rounded-full border-2 flex items-center justify-center transition-colors ${
                                                 r.isEarned
-                                                    ? 'bg-green-500 border-green-500'
+                                                    ? 'bg-success border-success'
                                                     : reached
-                                                        ? 'bg-yellow-500 border-yellow-500'
+                                                        ? 'bg-warning border-warning'
                                                         : 'bg-background border-borderLight'
                                             }`}>
                                                 {r.isEarned && <Check size={7} className="text-white" />}
@@ -1580,7 +1590,7 @@ function CampaignCard({
                                             const dp = resolveDropProgress(r.dropId);
                                             onClaimDrop(r.dropId, dp?.drop_instance_id);
                                         }}
-                                        className="px-2.5 py-1 bg-green-500 hover:bg-green-400 text-white text-[10px] font-bold rounded transition-all max-w-[160px] truncate"
+                                        className="px-2.5 py-1 bg-success hover:bg-success/80 text-white text-[10px] font-bold rounded transition-all max-w-[160px] truncate"
                                     >
                                         Claim {r.benefitName}
                                     </button>

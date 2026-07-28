@@ -1,12 +1,78 @@
-import { X, ExternalLink, Gift, ArrowLeft } from 'lucide-react';
+import { X, Gift, ArrowLeft, AlertTriangle, Calendar, ChevronRight, Users, Clock, ArrowUpRight } from 'lucide-react';
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../stores/AppStore';
+import type { TwitchStream } from '../types';
 import { parseBadgeForLinks, type ParsedBadgeLink } from '../services/badgeParsingService';
 import { Tooltip } from './ui/Tooltip';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
+import { BadgeChannelChip } from './badge/BadgeChannelChip';
+import { BadgeChannelCard } from './badge/BadgeChannelCard';
+import { BadgeCategoryCard } from './badge/BadgeCategoryCard';
+import { BadgeSiblingChips } from './badge/BadgeSiblingChips';
 
 import { Logger } from '../utils/logger';
+import { decodeHtmlEntities, deriveBadgeStatus } from '../utils/badgeWindow';
+import { extractChannelLogins } from '../utils/badgeChannels';
+
+// A channel named in earn text, e.g. "/studbudz". Starts with a letter/underscore
+// (so it never matches a date like "/2026") and 4-25 chars (Twitch login length).
+const CHANNEL_MENTION_RE = /(\/[a-zA-Z_][a-zA-Z0-9_]{3,24})\b/g;
+
+// The sibling-list heading, from our enrichment or from badgebase. Everything
+// after it (up to the next blank line) is the list of related event badges.
+const SIBLING_MARKER = /(?:Also part of this event|Other badges related to this event):\s*/i;
+const WINDOW_LINE = /(?:Event duration|Event time):\s*(.+)/i;
+
+// Date-chip styling for an active vs upcoming earn window.
+const CHIP_ACTIVE = 'bg-success/15 text-success ring-1 ring-success/30';
+const CHIP_UPCOMING = 'bg-info/15 text-info ring-1 ring-info/30';
+
+// Split a badge's more_info into its earn paragraph, the event window, and the
+// sibling list, so each renders in its own place in the redesigned panel.
+function parseBadgeMore(
+  moreInfo: string,
+  enrichmentRelated?: string | null,
+): { earnProse: string; window: string | null; siblingText: string } {
+  const idx = moreInfo.search(SIBLING_MARKER);
+  const before = idx === -1 ? moreInfo : moreInfo.slice(0, idx);
+  const afterRaw = idx === -1 ? '' : moreInfo.slice(idx).replace(SIBLING_MARKER, '');
+  const siblingText = (enrichmentRelated || afterRaw).trim().split(/\n\n/)[0];
+  const winMatch = before.match(WINDOW_LINE);
+  const earnProse = before.replace(WINDOW_LINE, '').replace(/\n{3,}/g, '\n\n').trim();
+  return { earnProse, window: winMatch ? winMatch[1].trim() : null, siblingText };
+}
+
+const MONTHS_LC = [
+  'january', 'february', 'march', 'april', 'may', 'june',
+  'july', 'august', 'september', 'october', 'november', 'december',
+];
+
+// Streamer logins a badge points at: "/studbudz" and natural-language "X's
+// (Twitch) channel". Deduped, lowercased. Unresolvable names self-filter (the
+// card renders nothing when the channel isn't found).
+// Rewrite "Month D, YYYY at HH:MM UTC" to the viewer's local time so badge text
+// never shows a raw UTC time.
+function localizeUtcInText(text: string): string {
+  const re = new RegExp(
+    `\\b(${MONTHS_LC.join('|')})\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(\\d{4})\\s+at\\s+(\\d{1,2}):(\\d{2})\\s*UTC\\b`,
+    'gi',
+  );
+  return text.replace(re, (full, mon, day, year, hh, mm) => {
+    const mi = MONTHS_LC.indexOf(String(mon).toLowerCase());
+    if (mi < 0) return full;
+    const d = new Date(Date.UTC(+year, mi, +day, +hh, +mm));
+    if (Number.isNaN(d.getTime())) return full;
+    return d.toLocaleString(undefined, {
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  });
+}
 interface TwitchCategory {
   id: string;
   name: string;
@@ -40,12 +106,61 @@ interface BadgeVersion {
   click_url: string | null;
 }
 
+interface EnrichmentData {
+  how_to_earn?: string | null;
+  action?: string | null;
+  highlight?: string | null;
+  caveats?: string | null;
+  related?: string | null;
+  footnote?: string | null;
+  distribution?: string | null;
+  /// Exact Twitch category from the badge's Drops campaign. Authoritative, so it
+  /// beats guessing a name out of the prose.
+  category?: string | null;
+  /// Logins of the specific channels the badge names, already validated by the
+  /// relay. Preferred over reading them back out of the prose.
+  channels?: string[] | null;
+  starts_utc?: string | null;
+  ends_utc?: string | null;
+}
+
 interface BadgeMetadata {
   date_added: string | null;
   usage_stats: string | null;
   more_info: string | null;
+  enrichment?: EnrichmentData | null;
   info_url: string;
 }
+
+// A link whose name came from the Drops campaign rather than from prose, so it
+// is searched first and ahead of any name guessed out of the copy.
+type LinkCandidate = ParsedBadgeLink & { authoritative?: boolean };
+
+/**
+ * Recover a real category from an over-specific name by dropping trailing words
+ * ("La Velada del Año VI" -> "La Velada"). Only accepts a result the original
+ * name starts with, so it narrows to a genuine parent rather than drifting to
+ * an unrelated category.
+ */
+async function recoverCategoryByPrefix(name: string): Promise<TwitchCategory | null> {
+  const words = name.trim().split(/\s+/);
+  for (let len = words.length - 1; len >= 2; len--) {
+    const query = words.slice(0, len).join(' ');
+    try {
+      const results = await invoke<TwitchCategory[]>('search_categories', { query, limit: 5 });
+      const hit = (results ?? []).find(
+        (r) => name.toLowerCase().startsWith(r.name.toLowerCase()) && r.name.length >= 4
+      );
+      if (hit) return hit;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+// A refined badge link that also carries the category's box art for a cover chip.
+type DisplayLink = ParsedBadgeLink & { boxArtUrl?: string };
 
 interface BadgeDetailOverlayProps {
   badge: BadgeVersion;
@@ -57,26 +172,44 @@ interface BadgeDetailOverlayProps {
 const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverlayProps) => {
   const [badgeBaseInfo, setBadgeBaseInfo] = useState<BadgeMetadata | null>(null);
   const [loadingBadgeBase, setLoadingBadgeBase] = useState(true);
-  const [refinedLinks, setRefinedLinks] = useState<ParsedBadgeLink[]>([]);
+  const [techOpen, setTechOpen] = useState(false);
+  const [refinedLinks, setRefinedLinks] = useState<DisplayLink[]>([]);
   const [loadingCategories, setLoadingCategories] = useState(false);
 
   // Get navigation functions from store
-  const { navigateToCategoryByName, openDropsWithSearch, setShowBadgesOverlay } = useAppStore();
+  const { navigateToCategoryByName, openDropsWithSearch, setShowBadgesOverlay, startStream } =
+    useAppStore();
 
-  // Parse badge text for deep links
+  // Deep links for the badge. The campaign category is used verbatim when the
+  // relay supplied one; the prose parser is a fallback for badges without a
+  // campaign, and its heuristics reject names carrying punctuation or accents
+  // (e.g. "MARVEL TOKON: Fighting Souls").
   const parsedLinks = useMemo(() => {
-    return parseBadgeForLinks(badge.description, badgeBaseInfo?.more_info ?? undefined);
-  }, [badge.description, badgeBaseInfo?.more_info]);
+    const fromProse = parseBadgeForLinks(badge.description, badgeBaseInfo?.more_info ?? undefined);
+    const campaignCategory = badgeBaseInfo?.enrichment?.category?.trim();
+    if (!campaignCategory) return fromProse;
+    return [
+      {
+        type: 'category' as const,
+        name: campaignCategory,
+        originalText: campaignCategory,
+        authoritative: true,
+      },
+      ...fromProse.filter(
+        (l) => l.type !== 'category' || l.name.toLowerCase() !== campaignCategory.toLowerCase()
+      ),
+    ] as LinkCandidate[];
+  }, [badge.description, badgeBaseInfo?.more_info, badgeBaseInfo?.enrichment?.category]);
 
   // Search Twitch for better category/drops names and validate they exist
-  const refineLinks = useCallback(async (links: ParsedBadgeLink[]) => {
+  const refineLinks = useCallback(async (links: LinkCandidate[]) => {
     if (links.length === 0) {
       setRefinedLinks([]);
       return;
     }
 
     setLoadingCategories(true);
-    const validLinks: ParsedBadgeLink[] = [];
+    const validLinks: DisplayLink[] = [];
 
     for (const link of links) {
       if (link.type === 'category') {
@@ -115,13 +248,25 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
 
             Logger.debug(`[BadgeDetail] Refined category: "${link.name}" → "${bestMatch.name}"`);
 
-            // Add the validated link with refined name
+            // Add the validated link with refined name + box art for the chip.
             validLinks.push({
               ...link,
               name: bestMatch.name,
+              boxArtUrl: bestMatch.box_art_url,
             });
           } else {
-            Logger.debug(`[BadgeDetail] No matching category found for "${link.name}", skipping`);
+            // Event names get mistaken for categories ("La Velada del Año VI"
+            // when the category is "La Velada"), so retry on progressively
+            // shorter prefixes and accept only a result the full name starts
+            // with. A name Twitch cannot resolve is dropped rather than
+            // rendered as a card that leads nowhere.
+            const recovered = await recoverCategoryByPrefix(link.name);
+            if (recovered) {
+              Logger.debug(`[BadgeDetail] Recovered category "${link.name}" -> "${recovered.name}"`);
+              validLinks.push({ ...link, name: recovered.name, boxArtUrl: recovered.box_art_url });
+            } else {
+              Logger.debug(`[BadgeDetail] No matching category found for "${link.name}", skipping`);
+            }
           }
         } catch (error) {
           Logger.warn(`[BadgeDetail] Failed to search categories for "${link.name}":`, error);
@@ -184,7 +329,7 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
   }, [parsedLinks, refineLinks]);
 
   // Use refined links if available, otherwise fall back to parsed links
-  const displayLinks = refinedLinks.length > 0 ? refinedLinks : parsedLinks;
+  const displayLinks: DisplayLink[] = refinedLinks.length > 0 ? refinedLinks : parsedLinks;
 
   // Handle clicking on a parsed link
   const handleLinkClick = (link: ParsedBadgeLink) => {
@@ -197,6 +342,15 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
     } else if (link.type === 'drops') {
       openDropsWithSearch(link.name);
     }
+  };
+
+  // Open a streamer's channel exactly like everywhere else in the app: close the
+  // badge overlays first, then hand startStream the stream info so it loads with
+  // all the usual services (player, chat, metadata) rather than a half-state.
+  const handleWatchChannel = (login: string, streamInfo?: TwitchStream) => {
+    setShowBadgesOverlay(false);
+    onClose();
+    void startStream(login, streamInfo);
   };
 
   // Fetch BadgeBase.co information
@@ -220,231 +374,76 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
     fetchBadgeBaseInfo();
   }, [setId, badge.id]);
 
-  // Decode HTML entities like &#8211; → – in text
-  const decodeHtmlEntities = (text: string): string => {
-    let result = text;
-
-    // Decode numeric HTML entities (&#NNNN;)
-    result = result.replace(/&#(\d+);/g, (_match, dec) => {
-      const code = parseInt(dec, 10);
-      return String.fromCharCode(code);
-    });
-
-    // Decode hex HTML entities (&#xHHHH;)
-    result = result.replace(/&#x([0-9a-fA-F]+);/g, (_match, hex) => {
-      const code = parseInt(hex, 16);
-      return String.fromCharCode(code);
-    });
-
-    // Decode common named entities
-    const entities: Record<string, string> = {
-      '&amp;': '&',
-      '&lt;': '<',
-      '&gt;': '>',
-      '&quot;': '"',
-      '&apos;': "'",
-      '&nbsp;': ' ',
-      '&ndash;': '–',
-      '&mdash;': '—',
+  // Live-amend: when the relay pushes enrichment for this badge, refresh the
+  // panel in place (no reopen needed).
+  useEffect(() => {
+    const unlisten = listen<{ badge_set_id: string; badge_version: string }>(
+      'badge-metadata-amended',
+      (event) => {
+        const p = event.payload;
+        if (p.badge_set_id === setId && p.badge_version === badge.id) {
+          invoke<BadgeMetadata>('fetch_badge_metadata', {
+            badgeSetId: setId,
+            badgeVersion: badge.id,
+          })
+            .then(setBadgeBaseInfo)
+            .catch(() => {});
+        }
+      }
+    );
+    return () => {
+      unlisten.then((fn) => fn());
     };
+  }, [setId, badge.id]);
 
-    for (const [entity, char] of Object.entries(entities)) {
-      result = result.split(entity).join(char);
-    }
-
-    return result;
-  };
-
-  // Parse various date range formats
-  const parseDateRange = (inputText: string): { start: Date; end: Date } | null => {
-    // First decode HTML entities
-    const text = decodeHtmlEntities(inputText);
-
-    const months: Record<string, number> = {
-      'Jan': 0, 'Feb': 1, 'Mar': 2, 'Apr': 3,
-      'May': 4, 'Jun': 5, 'Jul': 6, 'Aug': 7,
-      'Sep': 8, 'Oct': 9, 'Nov': 10, 'Dec': 11
-    };
-    const fullMonths: Record<string, number> = {
-      'January': 0, 'February': 1, 'March': 2, 'April': 3,
-      'May': 4, 'June': 5, 'July': 6, 'August': 7,
-      'September': 8, 'October': 9, 'November': 10, 'December': 11
-    };
-    const currentYear = new Date().getFullYear();
-
-    // Try to parse "Event duration: December 6, 2025 – December 7, 2025" format
-    const fullDateRangeMatch = text.match(/Event duration:\s*(\w+)\s+(\d{1,2}),?\s+(\d{4})\s*[–-]\s*(\w+)\s+(\d{1,2}),?\s+(\d{4})/i);
-    if (fullDateRangeMatch) {
-      const startMonthName = fullDateRangeMatch[1];
-      const startDay = parseInt(fullDateRangeMatch[2], 10);
-      const startYear = parseInt(fullDateRangeMatch[3], 10);
-      const endMonthName = fullDateRangeMatch[4];
-      const endDay = parseInt(fullDateRangeMatch[5], 10);
-      const endYear = parseInt(fullDateRangeMatch[6], 10);
-
-      if (Object.hasOwn(fullMonths, startMonthName) && Object.hasOwn(fullMonths, endMonthName)) {
-        const startDate = new Date(startYear, fullMonths[startMonthName], startDay, 0, 0, 0);
-        const endDate = new Date(endYear, fullMonths[endMonthName], endDay, 23, 59, 59);
-
-        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
-          return { start: startDate, end: endDate };
-        }
-      }
-    }
-
-    // Try to parse "Event duration: Dec 19 – Jan 01" format (abbreviated, cross-month/year)
-    const eventDurationMatch = text.match(/Event duration:\s*(\w{3})\s+(\d{1,2})\s*[–-]\s*(\w{3})\s+(\d{1,2})/i);
-    if (eventDurationMatch) {
-      const startMonthAbbrev = eventDurationMatch[1];
-      const startDay = parseInt(eventDurationMatch[2], 10);
-      const endMonthAbbrev = eventDurationMatch[3];
-      const endDay = parseInt(eventDurationMatch[4], 10);
-
-      if (Object.hasOwn(months, startMonthAbbrev) && Object.hasOwn(months, endMonthAbbrev)) {
-        const startMonthNum = months[startMonthAbbrev];
-        const endMonthNum = months[endMonthAbbrev];
-
-        const startYear = currentYear;
-        let endYear = currentYear;
-        if (startMonthNum > endMonthNum) {
-          endYear = currentYear + 1;
-        }
-
-        const startDate = new Date(startYear, startMonthNum, startDay, 0, 0, 0);
-        const endDate = new Date(endYear, endMonthNum, endDay, 23, 59, 59);
-
-        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
-          return { start: startDate, end: endDate };
-        }
-      }
-    }
-
-    // Try to parse "Event duration: Dec 19-25" format (same month)
-    const eventDurationSameMonthMatch = text.match(/Event duration:\s*(\w{3})\s+(\d{1,2})\s*[–-]\s*(\d{1,2})/i);
-    if (eventDurationSameMonthMatch) {
-      const monthAbbrev = eventDurationSameMonthMatch[1];
-      const startDay = parseInt(eventDurationSameMonthMatch[2], 10);
-      const endDay = parseInt(eventDurationSameMonthMatch[3], 10);
-
-      if (Object.hasOwn(months, monthAbbrev)) {
-        const monthNum = months[monthAbbrev];
-        const startDate = new Date(currentYear, monthNum, startDay, 0, 0, 0);
-        const endDate = new Date(currentYear, monthNum, endDay, 23, 59, 59);
-
-        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
-          return { start: startDate, end: endDate };
-        }
-      }
-    }
-
-    // Match "Mon DD – Mon DD" format (e.g., "Dec 06 – Dec 07") - with en-dash or regular dash
-    const fullRangeMatch = text.match(/(\w{3})\s+(\d{1,2})\s*[–-]\s*(\w{3})\s+(\d{1,2})/);
-    if (fullRangeMatch) {
-      const startMonthAbbrev = fullRangeMatch[1];
-      const startDay = parseInt(fullRangeMatch[2], 10);
-      const endMonthAbbrev = fullRangeMatch[3];
-      const endDay = parseInt(fullRangeMatch[4], 10);
-
-      if (Object.hasOwn(months, startMonthAbbrev) && Object.hasOwn(months, endMonthAbbrev)) {
-        const startMonthNum = months[startMonthAbbrev];
-        const endMonthNum = months[endMonthAbbrev];
-        // Start at beginning of the day, end at end of the day
-        const startDate = new Date(currentYear, startMonthNum, startDay, 0, 0, 0);
-        const endDate = new Date(currentYear, endMonthNum, endDay, 23, 59, 59);
-
-        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
-          return { start: startDate, end: endDate };
-        }
-      }
-    }
-
-    // Match "Mon D-D" or "Mon D - D" format (e.g., "Dec 1-12" or "Dec 1 - 12")
-    const shortRangeMatch = text.match(/(\w{3})\s+(\d{1,2})\s*[–-]\s*(\d{1,2})(?!\s*\w)/);
-    if (shortRangeMatch) {
-      const monthAbbrev = shortRangeMatch[1];
-      const startDay = parseInt(shortRangeMatch[2], 10);
-      const endDay = parseInt(shortRangeMatch[3], 10);
-
-      if (Object.hasOwn(months, monthAbbrev)) {
-        const monthNum = months[monthAbbrev];
-        // Start at beginning of the day, end at end of the day
-        const startDate = new Date(currentYear, monthNum, startDay, 0, 0, 0);
-        const endDate = new Date(currentYear, monthNum, endDay, 23, 59, 59);
-
-        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
-          return { start: startDate, end: endDate };
-        }
-      }
-    }
-
-    return null;
-  };
-
-  // Check badge availability status
-  const getBadgeStatus = (): 'available' | 'coming-soon' | 'expired' | null => {
-    const moreInfo = badgeBaseInfo?.more_info;
-    if (!moreInfo) return null;
-
-    const now = Date.now();
-
-    // Helper to classify a date range into a status
-    const classifyRange = (startTime: number, endTime: number): 'available' | 'coming-soon' | 'expired' => {
-      if (now < startTime) return 'coming-soon';
-      if (now >= startTime && now <= endTime) return 'available';
-      return 'expired';
-    };
-
-    // PRIORITY 1: Try ISO timestamps first — they carry explicit years and are always accurate.
-    // This prevents year-less abbreviated formats (e.g., "Oct 18–20") from being parsed with
-    // currentYear and incorrectly categorizing past events as "coming soon".
-    const isoRegex = /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:Z)?)/g;
-    const timestamps = moreInfo.match(isoRegex);
-
-    if (timestamps && timestamps.length > 0) {
-      try {
-        if (timestamps.length === 1) {
-          const startTime = new Date(timestamps[0]).getTime();
-          let endTime: number;
-
-          const durationMatch = moreInfo.match(/(\d+)\s+(minute|hour)s?/i);
-          if (durationMatch) {
-            const duration = parseInt(durationMatch[1], 10);
-            const unit = durationMatch[2].toLowerCase();
-            const startDate = new Date(timestamps[0]);
-            if (unit === 'minute') {
-              startDate.setMinutes(startDate.getMinutes() + duration);
-            } else if (unit === 'hour') {
-              startDate.setHours(startDate.getHours() + duration);
-            }
-            endTime = startDate.getTime();
-          } else {
-            const startDate = new Date(timestamps[0]);
-            endTime = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate(), 23, 59, 59).getTime();
-          }
-
-          return classifyRange(startTime, endTime);
-        } else {
-          const startTime = new Date(timestamps[0]).getTime();
-          const endTime = new Date(timestamps[timestamps.length - 1]).getTime();
-          return classifyRange(startTime, endTime);
-        }
-      } catch {
-        // Fall through to parseDateRange
-      }
-    }
-
-    // PRIORITY 2: Try parseDateRange for abbreviated/natural formats.
-    const dateRange = parseDateRange(moreInfo);
-    if (dateRange) {
-      return classifyRange(dateRange.start.getTime(), dateRange.end.getTime());
-    }
-
-    return null;
-  };
-
-  const badgeStatus = getBadgeStatus();
+  // Derived from the window rather than read off the payload, so a badge whose
+  // earn period opens while the app is running stops reading "Coming Soon".
+  const badgeStatus = deriveBadgeStatus(
+    badgeBaseInfo?.more_info,
+    badgeBaseInfo?.enrichment as Record<string, unknown> | undefined
+  );
   const isAvailable = badgeStatus === 'available';
   const isComingSoon = badgeStatus === 'coming-soon';
+
+  // Parsed once here so the hero (window), the body, and the footer can each use
+  // the piece they need.
+  const badgeEnrichment = badgeBaseInfo?.enrichment;
+  const parsedBadge = badgeBaseInfo?.more_info
+    ? parseBadgeMore(badgeBaseInfo.more_info, badgeEnrichment?.related)
+    : null;
+  const badgeCaveats = badgeEnrichment?.caveats?.trim();
+  const isDrops = (badgeBaseInfo?.more_info || '').toLowerCase().includes('twitch drops');
+  // Streamers this badge points at, as themed live cards.
+  // The relay validates channel handles for badges it enriches, so those win.
+  // Everything else is read out of the prose, which names a channel in several
+  // shapes ("the participating channel StudBudz", "/studbudz", "Ibai's
+  // channel"). Capped because a few event badges list dozens of participating
+  // streamers, and a wall of cards buries the rest of the panel.
+  const relayChannels = badgeBaseInfo?.enrichment?.channels ?? [];
+  const channelLogins = (
+    relayChannels.length > 0
+      ? relayChannels
+      : extractChannelLogins(
+          [badgeBaseInfo?.more_info, badgeBaseInfo?.enrichment?.action, badge.description]
+            .filter(Boolean)
+            .join('\n')
+        )
+  ).slice(0, 6);
+
+  // Render More Info with channel mentions ("/studbudz") turned into clickable
+  // avatar chips, keeping the date-highlighting on the surrounding text.
+  const renderMoreInfo = (text: string) => {
+    return localizeUtcInText(text)
+      .split(CHANNEL_MENTION_RE)
+      .map((part, i) =>
+        i % 2 === 1 ? (
+          <BadgeChannelChip key={i} login={part.slice(1)} onWatch={handleWatchChannel} />
+        ) : (
+          <span key={i}>{convertTimestampsToLocalJSX(part)}</span>
+        ),
+      );
+  };
+
 
   // Convert timestamps to local time and return as JSX with highlighted dates
   // Handles both ISO timestamps and abbreviated date ranges like "Dec 1-12"
@@ -495,11 +494,11 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
         let endClassName = 'px-2 py-0.5 rounded font-medium inline-block ';
 
         if (isAvailable) {
-          startClassName += 'bg-green-500/20 text-green-400 ring-1 ring-green-500/50 shadow-[0_0_10px_rgba(34,197,94,0.3)]';
-          endClassName += 'bg-green-500/10 text-green-300 ring-1 ring-green-500/30';
+          startClassName += CHIP_ACTIVE;
+          endClassName += CHIP_ACTIVE;
         } else if (isComingSoon) {
-          startClassName += 'bg-blue-500/20 text-blue-400 ring-1 ring-blue-500/50 shadow-[0_0_10px_rgba(59,130,246,0.3)]';
-          endClassName += 'bg-blue-500/10 text-blue-300 ring-1 ring-blue-500/30';
+          startClassName += CHIP_UPCOMING;
+          endClassName += CHIP_UPCOMING;
         } else {
           startClassName += 'bg-accent/20 text-accent';
           endClassName += 'bg-accent/20 text-accent';
@@ -552,11 +551,11 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
         let endClassName = 'px-2 py-0.5 rounded font-medium inline-block ';
 
         if (isAvailable) {
-          startClassName += 'bg-green-500/20 text-green-400 ring-1 ring-green-500/50 shadow-[0_0_10px_rgba(34,197,94,0.3)]';
-          endClassName += 'bg-green-500/10 text-green-300 ring-1 ring-green-500/30';
+          startClassName += CHIP_ACTIVE;
+          endClassName += CHIP_ACTIVE;
         } else if (isComingSoon) {
-          startClassName += 'bg-blue-500/20 text-blue-400 ring-1 ring-blue-500/50 shadow-[0_0_10px_rgba(59,130,246,0.3)]';
-          endClassName += 'bg-blue-500/10 text-blue-300 ring-1 ring-blue-500/30';
+          startClassName += CHIP_UPCOMING;
+          endClassName += CHIP_UPCOMING;
         } else {
           startClassName += 'bg-accent/20 text-accent';
           endClassName += 'bg-accent/20 text-accent';
@@ -607,11 +606,11 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
         let endClassName = 'px-2 py-0.5 rounded font-medium inline-block ';
 
         if (isAvailable) {
-          startClassName += 'bg-green-500/20 text-green-400 ring-1 ring-green-500/50 shadow-[0_0_10px_rgba(34,197,94,0.3)]';
-          endClassName += 'bg-green-500/10 text-green-300 ring-1 ring-green-500/30';
+          startClassName += CHIP_ACTIVE;
+          endClassName += CHIP_ACTIVE;
         } else if (isComingSoon) {
-          startClassName += 'bg-blue-500/20 text-blue-400 ring-1 ring-blue-500/50 shadow-[0_0_10px_rgba(59,130,246,0.3)]';
-          endClassName += 'bg-blue-500/10 text-blue-300 ring-1 ring-blue-500/30';
+          startClassName += CHIP_UPCOMING;
+          endClassName += CHIP_UPCOMING;
         } else {
           startClassName += 'bg-accent/20 text-accent';
           endClassName += 'bg-accent/20 text-accent';
@@ -687,11 +686,11 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
           let endClassName = 'px-2 py-0.5 rounded font-medium inline-block ';
 
           if (isAvailable) {
-            startClassName += 'bg-green-500/20 text-green-400 ring-1 ring-green-500/50 shadow-[0_0_10px_rgba(34,197,94,0.3)]';
-            endClassName += 'bg-green-500/10 text-green-300 ring-1 ring-green-500/30';
+            startClassName += CHIP_ACTIVE;
+            endClassName += CHIP_ACTIVE;
           } else if (isComingSoon) {
-            startClassName += 'bg-blue-500/20 text-blue-400 ring-1 ring-blue-500/50 shadow-[0_0_10px_rgba(59,130,246,0.3)]';
-            endClassName += 'bg-blue-500/10 text-blue-300 ring-1 ring-blue-500/30';
+            startClassName += CHIP_UPCOMING;
+            endClassName += CHIP_UPCOMING;
           } else {
             startClassName += 'bg-accent/20 text-accent';
             endClassName += 'bg-accent/20 text-accent';
@@ -752,10 +751,10 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
           // Badge is available now - highlight the active period
           if (isStartDate && timestamps.length > 1) {
             // Start date - when it became available (green with glow)
-            className += 'bg-green-500/20 text-green-400 ring-1 ring-green-500/50 shadow-[0_0_10px_rgba(34,197,94,0.3)]';
+            className += CHIP_ACTIVE;
           } else if (isEndDate && timestamps.length > 1) {
             // End date - when it expires (softer green)
-            className += 'bg-green-500/10 text-green-300 ring-1 ring-green-500/30';
+            className += CHIP_ACTIVE;
           } else {
             // Other dates
             className += 'bg-accent/20 text-accent';
@@ -764,10 +763,10 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
           // Badge is coming soon - highlight the start date
           if (isStartDate && timestamps.length > 1) {
             // Start date - when it will become available (blue with glow)
-            className += 'bg-blue-500/20 text-blue-400 ring-1 ring-blue-500/50 shadow-[0_0_10px_rgba(59,130,246,0.3)]';
+            className += CHIP_UPCOMING;
           } else if (isEndDate && timestamps.length > 1) {
             // End date - when it will expire (softer blue)
-            className += 'bg-blue-500/10 text-blue-300 ring-1 ring-blue-500/30';
+            className += CHIP_UPCOMING;
           } else {
             // Other dates
             className += 'bg-accent/20 text-accent';
@@ -805,7 +804,7 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.18 }}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-2xl"
     >
       {/* Hover-sensitive background overlay */}
       <div
@@ -818,7 +817,7 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.96, y: 12 }}
         transition={{ type: 'spring', stiffness: 380, damping: 30 }}
-        className="bg-secondary border border-borderSubtle rounded-lg shadow-2xl w-[90vw] h-[85vh] max-w-5xl flex flex-col relative z-10"
+        className="liquid-glass-panel w-[90vw] max-h-[85vh] max-w-5xl flex flex-col relative z-10 overflow-hidden"
       >
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-borderSubtle">
@@ -835,15 +834,15 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
               <div className="flex items-center gap-2">
                 <h2 className="text-xl font-bold text-textPrimary">{badge.title}</h2>
                 {isAvailable && (
-                  <div className="flex items-center gap-1.5 px-2 py-1 bg-green-600/20 border border-green-500/50 rounded-full">
-                    <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
-                    <span className="text-xs font-medium text-green-400">Available Now</span>
+                  <div className="flex items-center gap-1.5 px-2 py-1 bg-success/20 border border-success/50 rounded-full">
+                    <span className="w-2 h-2 bg-success rounded-full animate-pulse"></span>
+                    <span className="text-xs font-medium text-success">Available Now</span>
                   </div>
                 )}
                 {isComingSoon && (
-                  <div className="flex items-center gap-1.5 px-2 py-1 bg-blue-600/20 border border-blue-500/50 rounded-full">
-                    <span className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
-                    <span className="text-xs font-medium text-blue-400">Coming Soon</span>
+                  <div className="flex items-center gap-1.5 px-2 py-1 bg-info/20 border border-info/50 rounded-full">
+                    <span className="w-2 h-2 bg-info rounded-full animate-pulse"></span>
+                    <span className="text-xs font-medium text-info">Coming Soon</span>
                   </div>
                 )}
               </div>
@@ -909,121 +908,175 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
               </Tooltip>
             </div>
 
-            {/* Quick Actions - Show when parsed links are found */}
-            {displayLinks.length > 0 && (
-              <div className="space-y-4">
-                <h3 className="text-sm font-semibold text-accent uppercase tracking-wide">
-                  Quick Actions
-                  {loadingCategories && (
-                    <span className="ml-2 text-xs text-textSecondary font-normal">(refining...)</span>
-                  )}
-                </h3>
-                <div className="flex flex-wrap gap-3">
-                  {displayLinks.map((link, index) => (
-                    <button
-                      key={index}
-                      onClick={() => handleLinkClick(link)}
-                      className="flex items-center gap-2 px-4 py-2.5 bg-glass hover:bg-glass-hover border border-borderSubtle hover:border-accent/50 rounded-lg transition-all group"
-                    >
-                      {link.type === 'drops' && (
-                        <Gift size={18} className="text-accent group-hover:scale-110 transition-transform" />
-                      )}
-                      <div className="text-left">
-                        <div className="text-sm font-medium text-textPrimary group-hover:text-accent transition-colors">
-                          {link.type === 'category' ? 'Browse Category' : 'View Drops'}
-                        </div>
-                        <div className="text-xs text-textSecondary">
-                          {link.name}
-                        </div>
-                      </div>
-                      <ExternalLink size={14} className="text-textSecondary opacity-0 group-hover:opacity-100 transition-opacity ml-1" />
-                    </button>
-                  ))}
-                </div>
+            {/* When: the event window sits up top where you look first. */}
+            {parsedBadge?.window && (
+              <div className="flex items-center gap-1.5 text-[13px] text-textSecondary -mt-2">
+                <Calendar size={14} className="shrink-0 text-textMuted" />
+                {convertTimestampsToLocalJSX(parsedBadge.window)}
               </div>
             )}
 
-            {/* Additional Info */}
-            <div className="space-y-4">
-              <h3 className="text-sm font-semibold text-accent uppercase tracking-wide">About This Badge</h3>
-              <div className="bg-glass rounded-lg p-4">
-                <p className="text-textSecondary text-sm leading-relaxed">
-                  This is a global Twitch chat badge that appears next to usernames in chat.
-                  {badge.description && (
-                    <span className="block mt-2 text-textPrimary">
-                      {badge.description}
-                    </span>
+            {/* Redesigned badge body: a typeset page, with the raw fields tucked
+                into a collapsible. Keeps every field, presented richly. */}
+            {/* Body: how to earn (the richer of enrichment prose / description,
+                never both — they say the same thing at two lengths), then tiers. */}
+            <div className="space-y-5">
+              {(parsedBadge?.earnProse || badge.description) && (
+                <div>
+                  <h4 className="text-[12px] font-semibold text-textSecondary uppercase tracking-wide mb-2">
+                    How to earn
+                  </h4>
+                  <div className="text-textPrimary text-[15px] leading-relaxed whitespace-pre-line">
+                    {renderMoreInfo(parsedBadge?.earnProse || badge.description || '')}
+                  </div>
+                </div>
+              )}
+
+              {badgeCaveats && (
+                <div className="flex gap-2.5 items-start bg-warning/10 rounded-lg px-3 py-2.5 text-[14px] text-warning/90">
+                  <AlertTriangle size={15} className="text-warning mt-0.5 shrink-0" />
+                  <span>{badgeCaveats}</span>
+                </div>
+              )}
+
+              {/* Themed navigation: cover-art category card, streamer live cards,
+                  and any drops-event card. */}
+              {(displayLinks.length > 0 || channelLogins.length > 0) && (
+                <div className="flex flex-col gap-2">
+                  {displayLinks.map((link, index) =>
+                    link.type === 'category' ? (
+                      <BadgeCategoryCard
+                        key={`link-${index}`}
+                        name={link.name}
+                        boxArtUrl={link.boxArtUrl}
+                        onClick={() => handleLinkClick(link)}
+                      />
+                    ) : (
+                      <button
+                        key={`link-${index}`}
+                        onClick={() => handleLinkClick(link)}
+                        className="group flex items-center gap-3 w-full text-left p-2.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.07] border border-white/[0.06] transition-colors"
+                      >
+                        <span className="w-[46px] h-[46px] rounded-lg bg-white/[0.06] flex items-center justify-center shrink-0">
+                          <Gift size={20} className="text-accent" />
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-[11px] text-textMuted uppercase tracking-wide">
+                            Drops event
+                          </div>
+                          <div className="text-[15px] font-medium text-textPrimary truncate group-hover:text-accent transition-colors">
+                            {link.name}
+                          </div>
+                          <div className="text-[12px] text-textSecondary">View the drops campaign</div>
+                        </div>
+                        <ArrowUpRight
+                          size={18}
+                          className="text-textMuted group-hover:text-accent transition-colors shrink-0"
+                        />
+                      </button>
+                    ),
                   )}
-                </p>
-              </div>
+                  {channelLogins.map((login) => (
+                    <BadgeChannelCard key={`chan-${login}`} login={login} onWatch={handleWatchChannel} />
+                  ))}
+                  {loadingCategories && (
+                    <div className="text-xs text-textMuted px-1">Finding category…</div>
+                  )}
+                </div>
+              )}
+
+              {parsedBadge?.siblingText && (
+                <div>
+                  <h4 className="text-[12px] font-semibold text-textSecondary uppercase tracking-wide mb-2">
+                    All tiers
+                  </h4>
+                  <BadgeSiblingChips related={parsedBadge.siblingText} currentTitle={badge.title} />
+                </div>
+              )}
             </div>
 
-            {/* Badge Data */}
-            <div className="space-y-4">
-              <h3 className="text-sm font-semibold text-accent uppercase tracking-wide">Badge Data</h3>
-              <div className="bg-glass rounded-lg divide-y divide-borderSubtle">
-                <div className="flex py-3 px-4">
-                  <span className="text-textSecondary font-medium w-40">ID</span>
-                  <span className="text-textPrimary break-all">{setId}</span>
+            {/* Quiet footer: stats + collapsible technical details */}
+            <div className="space-y-3 pt-4 border-t border-white/[0.06]">
+              {(badgeBaseInfo?.usage_stats || badgeBaseInfo?.date_added || isDrops) && (
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-textMuted">
+                  {badgeBaseInfo?.usage_stats && (
+                    <span className="inline-flex items-center gap-1.5">
+                      <Users size={13} className="shrink-0" />
+                      {badgeBaseInfo.usage_stats}
+                    </span>
+                  )}
+                  {badgeBaseInfo?.date_added && (
+                    <span className="inline-flex items-center gap-1.5">
+                      <Clock size={13} className="shrink-0" />
+                      Added {badgeBaseInfo.date_added}
+                    </span>
+                  )}
+                  {isDrops && (
+                    <span className="inline-flex items-center gap-1.5">
+                      <Gift size={13} className="shrink-0" />
+                      Twitch Drops
+                    </span>
+                  )}
                 </div>
-                <div className="flex py-3 px-4">
-                  <span className="text-textSecondary font-medium w-40">Version</span>
-                  <span className="text-textPrimary">{badge.id}</span>
-                </div>
-                <div className="flex py-3 px-4">
-                  <span className="text-textSecondary font-medium w-40">Title</span>
-                  <span className="text-textPrimary">{badge.title}</span>
-                </div>
-                <div className="flex py-3 px-4">
-                  <span className="text-textSecondary font-medium w-40 self-start">Description</span>
-                  <span className="text-textPrimary flex-1">
-                    {badge.description || 'No description available'}
-                  </span>
-                </div>
-                <div className="flex py-3 px-4">
-                  <span className="text-textSecondary font-medium w-40">Click Action</span>
-                  <span className="text-textPrimary">
-                    {badge.click_action || '-'}
-                  </span>
-                </div>
-                <div className="flex py-3 px-4">
-                  <span className="text-textSecondary font-medium w-40">Click URL</span>
-                  <span className="text-textPrimary break-all">
-                    {badge.click_url ? (
+              )}
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setTechOpen((o) => !o)}
+                  className="inline-flex items-center gap-1 text-[12px] text-textMuted hover:text-textSecondary select-none"
+                >
+                  <ChevronRight
+                    size={13}
+                    className={`transition-transform duration-200 ${techOpen ? 'rotate-90' : ''}`}
+                  />
+                  Technical details
+                </button>
+                <AnimatePresence initial={false}>
+                  {techOpen && (
+                    <motion.div
+                      key="tech"
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
+                      className="overflow-hidden"
+                    >
+                      <div className="mt-2 flex flex-col gap-1.5 text-[13px]">
+                  <div className="flex gap-3">
+                    <span className="text-textSecondary w-24 shrink-0">ID</span>
+                    <span className="text-textPrimary break-all">{setId}</span>
+                  </div>
+                  <div className="flex gap-3">
+                    <span className="text-textSecondary w-24 shrink-0">Version</span>
+                    <span className="text-textPrimary">{badge.id}</span>
+                  </div>
+                  <div className="flex gap-3">
+                    <span className="text-textSecondary w-24 shrink-0">Title</span>
+                    <span className="text-textPrimary">{badge.title}</span>
+                  </div>
+                  {badge.click_action && (
+                    <div className="flex gap-3">
+                      <span className="text-textSecondary w-24 shrink-0">Click action</span>
+                      <span className="text-textPrimary">{badge.click_action}</span>
+                    </div>
+                  )}
+                  {badge.click_url && (
+                    <div className="flex gap-3">
+                      <span className="text-textSecondary w-24 shrink-0">Click URL</span>
                       <a
                         href={badge.click_url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-accent hover:underline"
+                        className="text-accent hover:underline break-all"
                       >
                         {badge.click_url}
                       </a>
-                    ) : (
-                      '-'
-                    )}
-                  </span>
-                </div>
-                {/* Additional fields from community data */}
-                {badgeBaseInfo?.date_added && (
-                  <div className="flex py-3 px-4">
-                    <span className="text-textSecondary font-medium w-40">Date of Addition</span>
-                    <span className="text-textPrimary">{badgeBaseInfo.date_added}</span>
-                  </div>
-                )}
-                {badgeBaseInfo?.usage_stats && (
-                  <div className="flex py-3 px-4">
-                    <span className="text-textSecondary font-medium w-40">Usage Statistics</span>
-                    <span className="text-textPrimary">{badgeBaseInfo.usage_stats}</span>
-                  </div>
-                )}
-                {badgeBaseInfo?.more_info && (
-                  <div className="flex py-3 px-4">
-                    <span className="text-textSecondary font-medium w-40 self-start">More Info</span>
-                    <span className="text-textPrimary flex-1">
-                      {convertTimestampsToLocalJSX(badgeBaseInfo.more_info)}
-                    </span>
-                  </div>
-                )}
+                    </div>
+                  )}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
             </div>
 

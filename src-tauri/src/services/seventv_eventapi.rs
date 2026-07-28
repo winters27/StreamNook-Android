@@ -159,36 +159,41 @@ pub async fn clear_all() {
 }
 
 /// Resolve (emote_set_id, seventv_user_id) from the public 7TV user endpoint.
-/// The root object is the 7TV user (its `id`); `emote_set.id` is the active set.
+/// The active set id comes from the root `emote_set_id` (with `/emote_set/id`
+/// as legacy fallback — the inline `emote_set` object is no longer returned).
 async fn resolve_ids(http: &reqwest::Client, channel_id: &str) -> (Option<String>, Option<String>) {
-    let url = format!("{}{}", SEVENTV_USER_URL, channel_id);
-    match http.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => match resp.json::<Value>().await {
-            Ok(json) => {
-                let emote_set_id = json
-                    .pointer("/emote_set/id")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let seventv_user_id = json
-                    .pointer("/id")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                (emote_set_id, seventv_user_id)
+    // The join path fetches this document moments earlier; reuse it.
+    let json: Option<std::sync::Arc<Value>> =
+        match emote_service::seventv_user_payload_cached(channel_id).await {
+            Some(v) => Some(v),
+            None => {
+                let url = format!("{}{}", SEVENTV_USER_URL, channel_id);
+                match http.get(&url).send().await {
+                    Ok(resp) if resp.status().is_success() => match resp.json::<Value>().await {
+                        Ok(v) => Some(std::sync::Arc::new(v)),
+                        Err(e) => {
+                            warn!("[7TV EventAPI] failed to parse user payload: {}", e);
+                            None
+                        }
+                    },
+                    Ok(_) => None, // not on 7TV
+                    Err(e) => {
+                        warn!(
+                            "[7TV EventAPI] user lookup failed for {}: {}",
+                            channel_id, e
+                        );
+                        None
+                    }
+                }
             }
-            Err(e) => {
-                warn!("[7TV EventAPI] failed to parse user payload: {}", e);
-                (None, None)
-            }
-        },
-        Ok(_) => (None, None), // not on 7TV
-        Err(e) => {
-            warn!(
-                "[7TV EventAPI] user lookup failed for {}: {}",
-                channel_id, e
-            );
-            (None, None)
-        }
-    }
+        };
+    let Some(json) = json else { return (None, None) };
+    let emote_set_id = emote_service::seventv_active_set_id(&json);
+    let seventv_user_id = json
+        .pointer("/id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    (emote_set_id, seventv_user_id)
 }
 
 // Cosmetics entitlement event types subscribed per channel. Paired with the

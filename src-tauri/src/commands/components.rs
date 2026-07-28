@@ -498,12 +498,28 @@ echo [%date% %time%] Update started > "%LOG%"
 echo Source exe: %SOURCE_EXE% >> "%LOG%"
 echo Dest exe: %DEST_EXE% >> "%LOG%"
 
-:: Wait for the app to fully close
+:: Wait for StreamNook to close on its own, then force any stragglers. A second
+:: or orphaned StreamNook.exe (a leftover from a crashed shutdown or an earlier
+:: update attempt) used to spin this loop forever, so the swap never ran and the
+:: app relaunched on the old version. Cap the graceful wait, then taskkill the
+:: rest: every instance holds a lock on the shared exe image on disk, and we
+:: relaunch a fresh one below regardless, so killing stale ones is safe.
+set "WAITS=0"
 :waitloop
-timeout /t 1 /nobreak >nul 2>&1
 tasklist /FI "IMAGENAME eq StreamNook.exe" 2>nul | find /I "StreamNook.exe" >nul
-if not errorlevel 1 goto waitloop
+if errorlevel 1 goto closed
+set /a WAITS+=1
+echo [%date% %time%] Waiting for StreamNook to close (attempt !WAITS!) >> "%LOG%"
+if !WAITS! GEQ 10 goto forceclose
+timeout /t 1 /nobreak >nul 2>&1
+goto waitloop
 
+:forceclose
+echo [%date% %time%] Still running after grace period; force-killing stragglers >> "%LOG%"
+taskkill /f /im StreamNook.exe >nul 2>&1
+timeout /t 2 /nobreak >nul 2>&1
+
+:closed
 echo [%date% %time%] StreamNook process closed, beginning exe copy >> "%LOG%"
 
 set "ATTEMPTS=0"
@@ -633,6 +649,14 @@ pub async fn restart_to_apply_update(app_handle: tauri::AppHandle) -> Result<(),
             .arg(&vbs_path)
             .spawn()
             .map_err(|e| format!("Failed to run update script: {}", e))?;
+        // std::process::exit skips Tauri's RunEvent::Exit, so the window-state
+        // plugin never auto-saves and the relaunch forgets which monitor/size
+        // the window had. Flush geometry ourselves first, matching the flags the
+        // plugin is built with (position/size/maximized only).
+        use tauri_plugin_window_state::{AppHandleExt, StateFlags};
+        let _ = app_handle.save_window_state(
+            StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED,
+        );
         std::process::exit(0);
     }
 

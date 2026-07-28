@@ -85,7 +85,7 @@ const TutorialUndockDropZone: React.FC<{ dropId: string }> = ({ dropId }) => {
         absolute inset-0 z-20 flex items-center justify-center rounded-xl pointer-events-auto
         transition-all duration-300 ease-out backdrop-blur-sm
         ${isOver
-          ? 'bg-transparent border-2 border-emerald-400/60 shadow-[0_0_20px_rgba(52,211,153,0.1)_inset]'
+          ? 'bg-transparent border-2 border-emerald-400/60 shadow-[0_0_20px_color-mix(in_srgb,var(--color-success)_10%,transparent)_inset]'
           : 'bg-transparent border-2 border-dashed border-white/10'
         }
       `}
@@ -126,7 +126,7 @@ const HelpCardVisual = React.forwardRef<
       transition-all duration-300 relative group select-none cursor-pointer
       ${isDraggingGhost ? 'opacity-40 scale-95 border-dashed' : ''}
       ${isOverlay ? 'opacity-100 scale-105 shadow-2xl rotate-2 ring-1 ring-white/20 z-50 bg-surface/90 backdrop-blur-xl' : 'hover:bg-glass/20'}
-      ${isFocused && !isDraggingGhost && !isOverlay ? 'shadow-[0_0_20px_rgba(96,165,250,0.3)]' : ''}
+      ${isFocused && !isDraggingGhost && !isOverlay ? 'shadow-[0_0_20px_color-mix(in_srgb,var(--color-info)_30%,transparent)]' : ''}
     `}
   >
     {!isDraggingGhost && (
@@ -272,11 +272,11 @@ export const MultiNookTutorial: React.FC = () => {
           className={`
             w-16 h-16 flex items-center justify-center mb-6 glass-input
             transition-all duration-300 cursor-pointer group
-            ${isGridVisible ? '!bg-surface-active !border-accent/30 !shadow-[inset_5px_5px_12px_-3px_rgba(0,0,0,0.6),inset_-5px_-5px_12px_-3px_rgba(255,255,255,0.15),0_0_20px_rgba(167,139,250,0.1)]' : ''}
+            ${isGridVisible ? '!bg-surface-active !border-accent/30 !shadow-[inset_5px_5px_12px_-3px_rgba(0,0,0,0.6),inset_-5px_-5px_12px_-3px_rgba(255,255,255,0.15),0_0_20px_rgba(var(--color-accent-rgb),0.1)]' : ''}
           `}
           style={{ borderRadius: '1rem' }}
         >
-          <LayoutGrid className={`w-8 h-8 transition-all duration-300 ${!isGridVisible ? 'text-accent group-hover:drop-shadow-[0_0_10px_rgba(167,139,250,0.6)]' : 'text-accent drop-shadow-[0_0_8px_rgba(167,139,250,0.5)]'}`} />
+          <LayoutGrid className={`w-8 h-8 transition-all duration-300 ${!isGridVisible ? 'text-accent group-hover:drop-shadow-[0_0_10px_rgba(var(--color-accent-rgb),0.6)]' : 'text-accent drop-shadow-[0_0_8px_rgba(var(--color-accent-rgb),0.5)]'}`} />
         </button>
         
         <h2 className="text-2xl font-bold text-textPrimary mb-2 tracking-tight">Welcome to MultiNook</h2>

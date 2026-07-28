@@ -33,9 +33,14 @@ const clearPendingFocusToggle = () => {
   }
 };
 
-export const MultiNookCell: React.FC<MultiNookCellProps> = ({ slot, cssOrder, gridSpanClass = '', customStyle = {}, isMaximized = false }) => {
+const MultiNookCellInner: React.FC<MultiNookCellProps> = ({ slot, cssOrder, gridSpanClass = '', customStyle = {}, isMaximized = false }) => {
   const { id, channelLogin, channelName, channelId, volume, muted, isFocused, streamUrl, isMinimized = false, loadError, profileImageUrl } = slot;
-  const { toggleFocusSlot, toggleMaximizeSlot, dockSlot, removeSlot, changeSlotQuality, retrySlot } = usemultiNookStore();
+  // Actions only, so read them without subscribing. A bare `usemultiNookStore()`
+  // here subscribed this tile to the WHOLE store, which meant any mutation
+  // (including a volume drag on a sibling tile) re-rendered every tile in the
+  // grid. Zustand actions keep the same identity for the store's lifetime.
+  const { toggleFocusSlot, toggleMaximizeSlot, dockSlot, removeSlot, changeSlotQuality, retrySlot } =
+    usemultiNookStore.getState();
 
   // Offline tiles show the offline overlay instead of an endless loading spinner.
   const isLoading = !streamUrl && !loadError;
@@ -286,7 +291,7 @@ export const MultiNookCell: React.FC<MultiNookCellProps> = ({ slot, cssOrder, gr
         isFocused && !isMaximized ? 'shadow-[0_0_25px_var(--color-accent-muted)]' : ''
       } ${
         isDragging ? 'opacity-50 blur-sm' : 'opacity-100'
-      } bg-black/40 transition-[box-shadow,opacity,filter] duration-300 group flex items-center justify-center video-player-container [&_.plyr]:w-full [&_.plyr]:h-full [&_.plyr]:absolute [&_.plyr]:inset-0 ${
+      } bg-black/40 transition-opacity duration-300 group flex items-center justify-center video-player-container [&_.plyr]:w-full [&_.plyr]:h-full [&_.plyr]:absolute [&_.plyr]:inset-0 ${
         isMaximized ? 'cursor-default' : 'cursor-pointer'
       }`}
     >
@@ -420,9 +425,9 @@ export const MultiNookCell: React.FC<MultiNookCellProps> = ({ slot, cssOrder, gr
                     ) : heartDropAnimation ? (
                       <HeartBreak weight="fill" className="w-4 h-4 text-red-400 animate-heart-drop" />
                     ) : isFollowing ? (
-                      <HeartBreak weight="fill" className="w-4 h-4 text-red-400 drop-shadow-[0_0_5px_rgba(239,68,68,0.7)]" />
+                      <HeartBreak weight="fill" className="w-4 h-4 text-red-400 drop-shadow-[0_0_5px_color-mix(in_srgb,var(--color-error)_70%,transparent)]" />
                     ) : (
-                      <Heart weight="fill" className="w-4 h-4 text-emerald-400 drop-shadow-[0_0_5px_rgba(16,185,129,0.7)]" />
+                      <Heart weight="fill" className="w-4 h-4 text-emerald-400 drop-shadow-[0_0_5px_color-mix(in_srgb,var(--color-success)_70%,transparent)]" />
                     )}
                   </button>
                 </Tooltip>
@@ -504,3 +509,25 @@ export const MultiNookCell: React.FC<MultiNookCellProps> = ({ slot, cssOrder, gr
     </motion.div>
   );
 };
+
+/** Shallow-compares `customStyle`, which MultiNookView rebuilds as a fresh object
+ *  literal on every render (`{ width, height }` from the layout solver). Without
+ *  this the memo below could never bail. `slot` is compared by reference, which
+ *  works because the store now preserves the identity of slots it did not
+ *  actually change. */
+const sameStyle = (a?: React.CSSProperties, b?: React.CSSProperties): boolean => {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const aKeys = Object.keys(a) as (keyof React.CSSProperties)[];
+  const bKeys = Object.keys(b) as (keyof React.CSSProperties)[];
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((k) => a[k] === b[k]);
+};
+
+export const MultiNookCell = React.memo(MultiNookCellInner, (prev, next) => {
+  if (prev.slot !== next.slot) return false;
+  if (prev.cssOrder !== next.cssOrder) return false;
+  if (prev.gridSpanClass !== next.gridSpanClass) return false;
+  if (prev.isMaximized !== next.isMaximized) return false;
+  return sameStyle(prev.customStyle, next.customStyle);
+});

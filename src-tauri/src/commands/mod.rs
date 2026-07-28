@@ -21,6 +21,7 @@ pub mod emoji;
 pub mod emote_prefetch;
 pub mod emotes;
 pub mod eventsub;
+pub mod ffz;
 pub mod hype_train;
 pub mod identity;
 pub mod justlog;

@@ -356,6 +356,15 @@ async fn download_universal_manifest() -> Result<bool> {
             for (key, entry) in remote_manifest.entries {
                 if entry.metadata.source == "badgebase" {
                     let should_replace = match local_manifest.entries.get(&key) {
+                        // Relay enrichment is campaign-grounded and richer than
+                        // the scrape, and the daily job always carries a newer
+                        // timestamp, so it must never win on timestamp alone.
+                        Some(local)
+                            if local.metadata.source
+                                == crate::commands::badge_metadata::ENRICHMENT_SOURCE =>
+                        {
+                            false
+                        }
                         Some(local) => entry.metadata.timestamp > local.metadata.timestamp,
                         None => true, // New entry not present locally, always insert
                     };

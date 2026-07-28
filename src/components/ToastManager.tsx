@@ -175,7 +175,11 @@ const getToastLayout = (position: ToastPosition, offset: number): ToastLayout =>
 };
 
 const ToastManager = () => {
-  const { toasts, removeToast, addToast, settings } = useAppStore();
+  // Actions are stable, so read them without subscribing. This component does
+  // need to re-render on new toasts, but not on every unrelated store tick.
+  const { removeToast, addToast } = useAppStore.getState();
+  const toasts = useAppStore((s) => s.toasts);
+  const settings = useAppStore((s) => s.settings);
 
   const layout = getToastLayout(
     settings.live_notifications?.toast_position ?? DEFAULT_TOAST_POSITION,

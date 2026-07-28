@@ -69,7 +69,9 @@ export function StyledChatName({
             }
           : {}),
       }}
-      className={`inline-flex items-center ${interactive ? 'cursor-pointer' : ''} ${interactive && !isChip ? 'hover:underline' : ''}`}
+      // inline-block, not inline-flex: a flex container with centered items
+      // gets a synthesized baseline, floating the name above the message text.
+      className={`inline-block ${interactive ? 'cursor-pointer' : ''} ${interactive && !isChip ? 'hover:underline' : ''}`}
       onClick={onClick}
       onContextMenu={onContextMenu}
       data-no-drag="true"

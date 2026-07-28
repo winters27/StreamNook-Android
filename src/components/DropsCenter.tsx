@@ -1,11 +1,13 @@
-import { useEffect, useState, useMemo, useRef } from 'react';
-import { motion, LayoutGroup } from 'framer-motion';
+import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
+import { motion, AnimatePresence, LayoutGroup } from 'framer-motion';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
 import { listen, emit } from '@tauri-apps/api/event';
-import { Search, Gift, MonitorPlay, BarChart3, Package, ArrowDownUp, SlidersHorizontal } from 'lucide-react';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { Search, Gift, MonitorPlay, BarChart3, Package, ArrowDownUp, SlidersHorizontal, Check, ChevronDown, ChevronUp } from 'lucide-react';
 import { usePluginUiRegistry, selectSlot } from '../plugins-ui/registry';
 import { Dropdown } from './ui/Dropdown';
+import { SegmentedSelect } from './settings/_primitives';
 import {
     UnifiedGame, DropCampaign, DropProgress, DropsStatistics,
     DropProgressStatus, DropsDeviceCodeInfo, InventoryResponse, InventoryItem, CompletedDrop, TwitchStream
@@ -46,6 +48,18 @@ interface DropsSettings {
     reserve_token_for_current_stream?: boolean;
     auto_reserve_on_watch?: boolean;
     priority_channels?: Array<{ channel_id: string; channel_login: string; display_name: string }>;
+}
+
+// A campaign has something mineable if any of its drops is watch-time earnable.
+// Event/paid/sub/gift-only campaigns (no watch-time drop) are non-mineable; they
+// only show when the grid's "All drops" view is on.
+function campaignHasMineableDrop(c: DropCampaign): boolean {
+    return (c.time_based_drops || []).some(d =>
+        typeof d.is_collectible === 'boolean'
+            ? d.is_collectible
+            : (d.required_minutes_watched || 0) > 0 ||
+              (d.progress?.required_minutes_watched || 0) > 0
+    );
 }
 
 export default function DropsCenter() {
@@ -89,6 +103,13 @@ export default function DropsCenter() {
     const [searchTerm, setSearchTerm] = useState('');
     // Game grid sort: 'recommended' = relevance order, 'newest'/'oldest' = by most-recent campaign release.
     const [sortMode, setSortMode] = useState<'recommended' | 'newest' | 'oldest'>('recommended');
+    // When on, include campaigns with no watch-time (mineable) drop — paid, sub,
+    // gift, and event-only drops — instead of hiding them from the grid.
+    const [showAllDrops, setShowAllDrops] = useState(false);
+    // Fully-collected games live in their own collapsible section under the
+    // grid (mirrors the Inventory tab's Completed Drops section) instead of
+    // sinking to the bottom of the active grid.
+    const [showCompletedGames, setShowCompletedGames] = useState(false);
     const [selectedGame, setSelectedGame] = useState<UnifiedGame | null>(null);
     const [, setIsLoadingGameDetail] = useState(false);
     const { addToast, setShowDropsOverlay, currentUser, dropsSearchTerm, setDropsSearchTerm } = useAppStore();
@@ -120,6 +141,21 @@ export default function DropsCenter() {
             ? dropProgress.current_drop?.game_name || dropProgress.current_channel?.game_name
             : null)?.toLowerCase() || null;
         let games = unifiedGames;
+
+        // "Mineable only" (default): drop fully non-mineable campaigns from each
+        // game, then any game with nothing left to mine. "All drops" keeps them,
+        // so paid/sub/gift/event-only drops are shown (with their unlock text in
+        // the detail panel). Filtered at render so toggling never reloads.
+        if (!showAllDrops) {
+            games = games
+                .map(g => {
+                    const mineable = g.active_campaigns.filter(campaignHasMineableDrop);
+                    return mineable.length === g.active_campaigns.length
+                        ? g
+                        : { ...g, active_campaigns: mineable, total_active_drops: mineable.reduce((n, c) => n + (c.time_based_drops?.length || 0), 0) };
+                })
+                .filter(g => g.active_campaigns.length > 0);
+        }
 
         // Apply search filter
         if (searchTerm) {
@@ -176,7 +212,7 @@ export default function DropsCenter() {
             }
             return a.name.localeCompare(b.name);
         });
-    }, [unifiedGames, searchTerm, dropsSettings?.favorite_games, sortMode, dropProgress]);
+    }, [unifiedGames, searchTerm, dropsSettings?.favorite_games, sortMode, dropProgress, showAllDrops]);
 
     // Fetch earned badges on mount for badge drop ownership verification
     useEffect(() => {
@@ -374,12 +410,16 @@ export default function DropsCenter() {
                         totalDrops++;
                         const dp = nextProgress.find(p => p.drop_id === drop.id) || drop.progress;
                         const hasCurrentProgress = !!dp && ((dp.current_minutes_watched || 0) > 0 || dp.is_claimed === true);
+                        // An inventory drop flagged is_claimed is a proven claim of THIS
+                        // drop instance (reissues mint new drop ids), so it counts even
+                        // while a stale progress record still carries watch minutes.
+                        // Benefit id/name matching stays gated on no-current-progress.
                         const owned = dp?.is_claimed === true
+                            || ownedDropIds.has(drop.id)
                             || (!hasCurrentProgress && (
-                                ownedDropIds.has(drop.id)
-                                || (drop.benefit_edges?.some(b =>
+                                drop.benefit_edges?.some(b =>
                                     ownedBenefitIds.has(b.id) || ownedByName(b.name)
-                                ) ?? false)
+                                ) ?? false
                             ));
                         if (owned) {
                             claimedCount++;
@@ -688,6 +728,53 @@ export default function DropsCenter() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [dropsSearchTerm, unifiedGames]);
 
+    // The "Connect account" button opens the publisher's link page in the external browser, so
+    // there's no in-app close event to hang a refresh on. Instead: when the user clicks Connect we
+    // arm a pending flag, and re-check connection status the next time the app regains focus (they've
+    // come back from the browser). Gated by the flag so we don't refetch on every alt-tab.
+    const pendingConnectRef = useRef(false);
+
+    // Re-check status without a full reload. loadDropsData() here would blank the panel behind a
+    // spinner AND clear the backend's live progress map (see handleClaimDrop); instead we fetch fresh
+    // campaigns via a command that skips the progress sync, then patch the is_account_connected /
+    // account_link flags in place — on both the grid and the open panel (selectedGame is a snapshot,
+    // not a live reference into unifiedGames).
+    const refreshConnectionStatus = useCallback(async () => {
+        const fresh = await invoke<DropCampaign[]>('refresh_drops_connection_status').catch(() => null);
+        if (!fresh) return;
+        const byId = new Map(fresh.map(c => [c.id, c]));
+        const patchGame = (g: UnifiedGame): UnifiedGame => ({
+            ...g,
+            active_campaigns: g.active_campaigns.map(c => {
+                const f = byId.get(c.id);
+                return f
+                    ? { ...c, is_account_connected: f.is_account_connected, account_link: f.account_link }
+                    : c;
+            }),
+        });
+        setUnifiedGames(prev => prev.map(patchGame));
+        setSelectedGame(prev => (prev ? patchGame(prev) : prev));
+    }, []);
+
+    useEffect(() => {
+        const arm = () => { pendingConnectRef.current = true; };
+        window.addEventListener('drops-connect-initiated', arm);
+        let unlisten: (() => void) | undefined;
+        getCurrentWindow()
+            .onFocusChanged(({ payload: focused }) => {
+                if (focused && pendingConnectRef.current) {
+                    pendingConnectRef.current = false;
+                    refreshConnectionStatus();
+                }
+            })
+            .then(u => { unlisten = u; })
+            .catch(() => {});
+        return () => {
+            window.removeEventListener('drops-connect-initiated', arm);
+            unlisten?.();
+        };
+    }, [refreshConnectionStatus]);
+
 
     // ---- Data Loading & Merging Logic ----
     const loadDropsData = async () => {
@@ -751,18 +838,6 @@ export default function DropsCenter() {
                 return game;
             };
 
-            // A campaign only belongs in the games grid if it has something you can
-            // still collect: at least one watch-time (collectible) drop. Event/special
-            // campaigns with no watch-time drops have "nothing to collect", so we skip
-            // them instead of surfacing dead entries that read "nothing to collect".
-            const campaignIsCollectible = (c: DropCampaign): boolean =>
-                (c.time_based_drops || []).some(d =>
-                    typeof d.is_collectible === 'boolean'
-                        ? d.is_collectible
-                        : (d.required_minutes_watched || 0) > 0 ||
-                          (d.progress?.required_minutes_watched || 0) > 0
-                );
-
             // Process Active Campaigns and merge progress data from inventory
             if (campaignsData) {
                 campaignsData.forEach(campaign => {
@@ -797,12 +872,10 @@ export default function DropsCenter() {
                             };
                         })
                     };
-                    
-                    // Skip campaigns with nothing to collect (all event/special drops).
-                    if (!campaignIsCollectible(campaignWithProgress)) {
-                        return;
-                    }
 
+                    // Include every active campaign (mineable or not). The grid's
+                    // "Mineable only / All drops" toggle filters non-mineable ones at
+                    // render (see filteredGames), so flipping it never reloads.
                     const game = getOrCreateGame(campaign.game_id, campaign.game_name, campaign.image_url);
                     game.active_campaigns.push(campaignWithProgress);
                     game.total_active_drops += campaign.time_based_drops.length;
@@ -886,12 +959,16 @@ export default function DropsCenter() {
                             // ONLY when this drop isn't itself in progress. A drop with watch-time
                             // is being actively collected and must not be counted as already-earned.
                             const hasCurrentProgress = !!dp && ((dp.current_minutes_watched || 0) > 0 || dp.is_claimed === true);
+                            // An inventory drop flagged is_claimed is a proven claim of
+                            // THIS drop instance (reissues mint new drop ids), so it
+                            // counts even while a stale progress record still carries
+                            // watch minutes. Benefit id/name matching stays gated.
                             const owned = dp?.is_claimed === true
+                                || ownedDropIds.has(drop.id)
                                 || (!hasCurrentProgress && (
-                                    ownedDropIds.has(drop.id)
-                                    || (drop.benefit_edges?.some(b =>
+                                    drop.benefit_edges?.some(b =>
                                         ownedBenefitIds.has(b.id) || ownedByName(b.name)
-                                    ) ?? false)
+                                    ) ?? false
                                 ));
                             if (owned) {
                                 claimedDropsCount++;
@@ -1342,7 +1419,7 @@ export default function DropsCenter() {
             </svg>
 
             {/* Header with Tabs */}
-            <div className="flex items-center justify-center gap-2 px-4 py-3 bg-backgroundSecondary border-b border-borderLight shrink-0 relative z-20">
+            <div className="flex items-center justify-center gap-2 px-4 py-3 bg-backgroundSecondary border-b border-borderSubtle shrink-0 relative z-20">
                 {/* Tab Navigation - Framer Motion Sliding Highlight Style (Centered) */}
                 <LayoutGroup>
                 <div className="flex items-center glass-panel px-1.5 py-1 rounded-xl">
@@ -1427,35 +1504,10 @@ export default function DropsCenter() {
                 </div>
                 </LayoutGroup>
 
-                {/* Right side: Search + Logout (Absolutely positioned) */}
+                {/* Account-level logout stays in the tab header (tab-independent);
+                    the games browsing controls live in their own toolbar row below,
+                    so a descriptive filter label never crowds the centered tabs. */}
                 <div className="absolute right-4 flex items-center gap-3">
-                    {activeTab === 'games' && (
-                        <Dropdown
-                            value={sortMode}
-                            onChange={setSortMode}
-                            triggerPrefix="Sort"
-                            align="right"
-                            ariaLabel="Sort games"
-                            leadingIcon={<ArrowDownUp size={13} />}
-                            options={[
-                                { value: 'recommended', label: 'Recommended' },
-                                { value: 'newest', label: 'Newest' },
-                                { value: 'oldest', label: 'Oldest' },
-                            ]}
-                        />
-                    )}
-                    {activeTab === 'games' && (
-                        <div className="relative">
-                            <input
-                                type="text"
-                                placeholder="Search games..."
-                                value={searchTerm}
-                                onChange={(e) => setSearchTerm(e.target.value)}
-                                className="glass-input pl-8 pr-4 py-1.5 text-sm w-48 focus:w-64 transition-all focus:outline-none"
-                            />
-                            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-textSecondary" />
-                        </div>
-                    )}
                     <Tooltip content="Logout from Drops (Android Client)" side="bottom">
                         <button
                             className="px-3 py-1.5 text-xs font-medium rounded-lg glass-panel text-textSecondary hover:text-red-400 hover:bg-red-500/10 hover:border-red-500/30 border border-transparent transition-all"
@@ -1466,6 +1518,46 @@ export default function DropsCenter() {
                     </Tooltip>
                 </div>
             </div>
+
+            {/* Games browsing toolbar: filter + sort on the left, search on the
+                right. Full-width row so labels never fight the tabs for space. */}
+            {activeTab === 'games' && (
+                <div className="flex items-center justify-between gap-3 px-4 py-2 bg-backgroundSecondary border-b border-borderSubtle shrink-0 relative z-10">
+                    <div className="flex items-center gap-3">
+                        <SegmentedSelect
+                            value={showAllDrops ? 'all' : 'mineable'}
+                            onChange={(v) => setShowAllDrops(v === 'all')}
+                            options={[
+                                { value: 'mineable', label: 'Watch to earn' },
+                                { value: 'all', label: 'All drops' },
+                            ]}
+                        />
+                        <Dropdown
+                            value={sortMode}
+                            onChange={setSortMode}
+                            triggerPrefix="Sort"
+                            align="left"
+                            ariaLabel="Sort games"
+                            leadingIcon={<ArrowDownUp size={13} />}
+                            options={[
+                                { value: 'recommended', label: 'Recommended' },
+                                { value: 'newest', label: 'Newest' },
+                                { value: 'oldest', label: 'Oldest' },
+                            ]}
+                        />
+                    </div>
+                    <div className="relative">
+                        <input
+                            type="text"
+                            placeholder="Search games..."
+                            value={searchTerm}
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                            className="glass-input pl-8 pr-4 py-1.5 text-sm w-48 focus:w-64 transition-all focus:outline-none"
+                        />
+                        <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-textSecondary" />
+                    </div>
+                </div>
+            )}
 
             {/* Content Area */}
             <div className="flex-1 overflow-hidden relative">
@@ -1497,27 +1589,140 @@ export default function DropsCenter() {
                             </div>
                         )}
 
-                        {/* Game Cards Grid - responsive layout that scales with window size */}
-                        {filteredGames.length > 0 && (
-                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 3xl:grid-cols-8 gap-3 sm:gap-4">
-                                {filteredGames.map(game => (
-                                    <GameCard
-                                        key={game.id}
-                                        game={game}
-                                        allGames={unifiedGames}
-                                        progress={progress}
-                                        dropProgress={dropProgress}
-                                        isSelected={selectedGame?.id === game.id}
-                                        isFavorite={(dropsSettings?.favorite_games || []).some(
-                                            pg => pg.toLowerCase() === game.name.toLowerCase()
-                                        )}
-                                        onClick={() => handleGameSelect(selectedGame?.id === game.id ? null : game)}
-                                        onStopAutomation={handleStopAutomation}
-                                        onToggleFavorite={handleToggleFavorite}
-                                    />
-                                ))}
-                            </div>
-                        )}
+                        {/* Game Cards Grid - responsive layout that scales with window size.
+                            Fully-collected games are split out of the active grid into
+                            their own collapsible section below (same idiom as the
+                            Inventory tab's Completed Drops section). */}
+                        {filteredGames.length > 0 && (() => {
+                            const activeGames = filteredGames.filter(g => !g.all_drops_claimed);
+                            const completedGames = filteredGames.filter(g => g.all_drops_claimed);
+                            const gridClass = "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 3xl:grid-cols-8 gap-3 sm:gap-4";
+                            const renderGameCard = (game: UnifiedGame) => (
+                                <GameCard
+                                    key={game.id}
+                                    game={game}
+                                    allGames={unifiedGames}
+                                    progress={progress}
+                                    dropProgress={dropProgress}
+                                    isSelected={selectedGame?.id === game.id}
+                                    isFavorite={(dropsSettings?.favorite_games || []).some(
+                                        pg => pg.toLowerCase() === game.name.toLowerCase()
+                                    )}
+                                    onClick={() => handleGameSelect(selectedGame?.id === game.id ? null : game)}
+                                    onStopAutomation={handleStopAutomation}
+                                    onToggleFavorite={handleToggleFavorite}
+                                />
+                            );
+                            return (
+                                <>
+                                    {activeGames.length > 0 && (
+                                        <div className={gridClass}>
+                                            {activeGames.map(renderGameCard)}
+                                        </div>
+                                    )}
+
+                                    {/* Everything collected: a calm caught-up note instead of an empty grid */}
+                                    {activeGames.length === 0 && !searchTerm && (
+                                        <div className="flex flex-col items-center justify-center text-center py-10">
+                                            <div className="p-3 rounded-full bg-success/15 mb-3">
+                                                <Check size={28} className="text-success" />
+                                            </div>
+                                            <h3 className="text-lg font-bold text-textPrimary mb-1">All caught up</h3>
+                                            <p className="text-sm text-textSecondary">You have collected every available drop.</p>
+                                        </div>
+                                    )}
+
+                                    {/* Docked completed drawer. Collapsed it is a compact pill in
+                                        the bottom-right corner (always in view, near-zero
+                                        footprint); expanded it blooms into the full panel sliding
+                                        up from the bottom edge. The sticky wrapper spans the row
+                                        but is pointer-transparent so cards behind it stay
+                                        clickable. */}
+                                    {completedGames.length > 0 && (
+                                        <div className={`sticky bottom-0 z-20 pointer-events-none ${activeGames.length > 0 ? 'mt-4' : ''}`}>
+                                            <AnimatePresence initial={false} mode="wait">
+                                                {!showCompletedGames ? (
+                                                    <motion.div
+                                                        key="completed-pill"
+                                                        initial={{ opacity: 0, y: 10, scale: 0.96 }}
+                                                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                                                        exit={{ opacity: 0, y: 10, scale: 0.96 }}
+                                                        // The dynamic-island grow/shrink spring, so both
+                                                        // directions of the morph feel identical.
+                                                        transition={{ type: 'spring', stiffness: 360, damping: 32, mass: 0.9, opacity: { duration: 0.15 } }}
+                                                        className="flex justify-center pb-2"
+                                                    >
+                                                        {/* Same glass-badge language as the LIVE badge, in
+                                                            success green: enough presence to be seen over
+                                                            the card grid, still a pill rather than a bar. */}
+                                                        <motion.button
+                                                            onClick={() => setShowCompletedGames(true)}
+                                                            aria-expanded={false}
+                                                            whileHover={{ scale: 1.04 }}
+                                                            whileTap={{ scale: 0.97 }}
+                                                            transition={{ type: 'spring', stiffness: 360, damping: 32, mass: 0.9 }}
+                                                            className="pointer-events-auto flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold text-textPrimary"
+                                                            style={{
+                                                                backgroundColor: 'color-mix(in srgb, var(--color-background) 90%, transparent)',
+                                                                backgroundImage: 'linear-gradient(135deg, color-mix(in srgb, var(--color-success) 30%, transparent) 0%, color-mix(in srgb, var(--color-success) 18%, transparent) 50%, color-mix(in srgb, var(--color-success) 30%, transparent) 100%)',
+                                                                border: '1px solid color-mix(in srgb, var(--color-success) 55%, transparent)',
+                                                                boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.25), inset 0 -1px 0 rgba(0,0,0,0.15), 0 4px 16px rgba(0,0,0,0.45)',
+                                                            }}
+                                                        >
+                                                            <Check size={15} className="text-success" strokeWidth={3} />
+                                                            <span>Completed</span>
+                                                            <span className="px-1.5 py-0.5 rounded-full bg-success/25 text-success text-xs font-bold tabular-nums leading-none">
+                                                                {completedGames.length}
+                                                            </span>
+                                                            <ChevronUp size={15} className="text-textSecondary" />
+                                                        </motion.button>
+                                                    </motion.div>
+                                                ) : (
+                                                    <motion.div
+                                                        key="completed-panel"
+                                                        initial={{ opacity: 0, y: 24 }}
+                                                        animate={{ opacity: 1, y: 0 }}
+                                                        exit={{ opacity: 0, y: 24 }}
+                                                        // Same dynamic-island spring as the pill, so the
+                                                        // expand and collapse mirror each other.
+                                                        transition={{ type: 'spring', stiffness: 360, damping: 32, mass: 0.9, opacity: { duration: 0.15 } }}
+                                                        className="pointer-events-auto glass-panel border border-success/30 overflow-hidden rounded-lg origin-bottom"
+                                                        style={{ backgroundColor: 'color-mix(in srgb, var(--color-background) 92%, transparent)' }}
+                                                    >
+                                                        <button
+                                                            onClick={() => setShowCompletedGames(false)}
+                                                            aria-expanded={true}
+                                                            className="w-full flex items-center justify-between gap-3 p-3 hover:bg-surface/50 transition-colors"
+                                                        >
+                                                            <div className="flex items-center gap-3">
+                                                                <div className="p-2 rounded-lg bg-success/20 border border-success/30">
+                                                                    <Check size={20} className="text-success" />
+                                                                </div>
+                                                                <div className="text-left">
+                                                                    <h3 className="font-bold text-textPrimary">Completed</h3>
+                                                                    <p className="text-xs text-textSecondary">Every drop for these games is collected</p>
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex items-center gap-2">
+                                                                <span className="px-2 py-1 text-xs font-bold rounded-lg bg-success/20 text-success border border-success/30">
+                                                                    {completedGames.length} {completedGames.length === 1 ? 'game' : 'games'}
+                                                                </span>
+                                                                <ChevronDown size={18} className="text-textSecondary" />
+                                                            </div>
+                                                        </button>
+                                                        <div className="border-t border-success/20 bg-background/50 p-3 max-h-[55vh] overflow-y-auto custom-scrollbar">
+                                                            <div className={gridClass}>
+                                                                {completedGames.map(renderGameCard)}
+                                                            </div>
+                                                        </div>
+                                                    </motion.div>
+                                                )}
+                                            </AnimatePresence>
+                                        </div>
+                                    )}
+                                </>
+                            );
+                        })()}
 
                         {/* Detail Panel */}
                         {selectedGame && (

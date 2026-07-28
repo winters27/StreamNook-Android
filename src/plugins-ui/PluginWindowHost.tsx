@@ -91,12 +91,13 @@ export const PluginWindowHost = () => {
           getThemeById(DEFAULT_THEME_ID);
     if (theme) applyTheme(theme);
     applyGlassStrength(settings.glass_transparency ?? DEFAULT_GLASS_TRANSPARENCY);
-    applyFont(settings.font ?? DEFAULT_FONT_ID);
+    applyFont(settings.font ?? DEFAULT_FONT_ID, settings.font_custom);
   }, [
     settings.theme,
     settings.custom_themes,
     settings.glass_transparency,
     settings.font,
+    settings.font_custom,
     settings.oled_accent,
   ]);
 

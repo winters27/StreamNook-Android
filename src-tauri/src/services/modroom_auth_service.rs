@@ -48,6 +48,17 @@ pub struct ModRoomCredential {
     pub expires_at: i64,
 }
 
+/// Why a valid access token could not be produced. `NeedsConnect` means the
+/// stored credential is missing or dead (the user must redo the consent);
+/// `Network` means Twitch was unreachable or erroring and a retry may succeed.
+/// The distinction matters: showing the consent CTA for a network blip sends
+/// an already-connected user through OAuth for nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenFail {
+    NeedsConnect,
+    Network,
+}
+
 /// Bare result of a token endpoint round trip, before we attach identity.
 struct FreshToken {
     access_token: String,
@@ -128,18 +139,26 @@ pub fn build_authorize_url(state: &str) -> Result<String> {
     Ok(url.to_string())
 }
 
-async fn post_token(params: &[(&str, &str)]) -> Result<FreshToken> {
+/// 4xx from id.twitch.tv means the grant itself is dead (revoked consent,
+/// rotated-away refresh token) -> NeedsConnect. Transport failures and 5xx are
+/// Twitch trouble -> Network (retryable).
+async fn post_token(params: &[(&str, &str)]) -> Result<FreshToken, TokenFail> {
     let client = crate::services::http::client().clone();
     let resp = client
         .post("https://id.twitch.tv/oauth2/token")
         .form(params)
         .send()
-        .await?;
-    if !resp.status().is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        return Err(anyhow!("mod-room token request failed: {}", body));
+        .await
+        .map_err(|_| TokenFail::Network)?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(if status.is_client_error() {
+            TokenFail::NeedsConnect
+        } else {
+            TokenFail::Network
+        });
     }
-    let tr: TokenResponse = resp.json().await?;
+    let tr: TokenResponse = resp.json().await.map_err(|_| TokenFail::Network)?;
     let expires_at = Utc::now() + ChronoDuration::seconds(tr.expires_in.unwrap_or(3600) as i64);
     Ok(FreshToken {
         access_token: tr.access_token,
@@ -157,9 +176,10 @@ async fn exchange_code(code: &str) -> Result<FreshToken> {
         ("redirect_uri", REDIRECT_URI),
     ])
     .await
+    .map_err(|e| anyhow!("mod-room code exchange failed: {:?}", e))
 }
 
-async fn refresh(refresh_token: &str) -> Result<FreshToken> {
+async fn refresh(refresh_token: &str) -> Result<FreshToken, TokenFail> {
     let mut fresh = post_token(&[
         ("client_id", CLIENT_ID),
         ("client_secret", CLIENT_SECRET),
@@ -223,23 +243,25 @@ fn refresh_lock() -> &'static Mutex<()> {
 }
 
 /// A currently-valid access token, refreshing if it is within five minutes of
-/// expiry. Errors if not connected or if a refresh fails (the caller should then
-/// prompt a reconnect).
-pub async fn get_valid_access_token() -> Result<String> {
+/// expiry. The error tells the caller whether to prompt a reconnect
+/// (`NeedsConnect`) or to retry later (`Network`).
+pub async fn get_valid_access_token() -> Result<String, TokenFail> {
     // Take the lock before loading, so a caller that waited here reads the token
     // a concurrent refresh just persisted instead of refreshing again.
     let _guard = refresh_lock().lock().await;
-    let mut cred = load().ok_or_else(|| anyhow!("mod rooms not connected"))?;
+    let mut cred = load().ok_or(TokenFail::NeedsConnect)?;
     let buffer = 300;
     if Utc::now().timestamp() >= cred.expires_at - buffer {
         if cred.refresh_token.is_empty() {
-            return Err(anyhow!("scoped token expired and no refresh token; reconnect needed"));
+            return Err(TokenFail::NeedsConnect);
         }
         let fresh = refresh(&cred.refresh_token).await?;
         cred.access_token = fresh.access_token;
         cred.refresh_token = fresh.refresh_token;
         cred.expires_at = fresh.expires_at;
-        store(&cred)?;
+        // The refreshed token is valid regardless of whether persisting worked;
+        // a failed write just means the next call refreshes again.
+        let _ = store(&cred);
     }
     Ok(cred.access_token)
 }
@@ -263,7 +285,9 @@ struct Pagination {
 /// caller treats that as "unknown" and falls back to per-channel detection.
 pub async fn list_moderated_channels() -> Result<Vec<String>> {
     let cred = load().ok_or_else(|| anyhow!("mod rooms not connected"))?;
-    let token = get_valid_access_token().await?;
+    let token = get_valid_access_token()
+        .await
+        .map_err(|e| anyhow!("scoped token unavailable: {:?}", e))?;
     let client = crate::services::http::client().clone();
     let mut out: Vec<String> = Vec::new();
     let mut after: Option<String> = None;

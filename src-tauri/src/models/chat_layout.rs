@@ -99,6 +99,10 @@ pub enum MessageSegment {
         emote_url: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         is_zero_width: Option<bool>,
+        /// FFZ modifier bitmask; present only on FFZ modifier emotes. The
+        /// renderer applies these effects to the preceding emote.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        modifier_flags: Option<u32>,
     },
     Emoji {
         content: String,

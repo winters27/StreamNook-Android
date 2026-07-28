@@ -133,7 +133,7 @@ const ColorWheelPicker = ({ color, onChange, label }: ColorWheelPickerProps) => 
         className="flex items-center gap-3 px-3 py-2 glass-input w-full text-left"
       >
         <div 
-          className="w-8 h-8 rounded border-2 border-borderSubtle"
+          className="w-8 h-8 rounded border border-borderSubtle"
           style={{ backgroundColor: color }}
         />
         <span className="text-sm text-textPrimary font-mono">{color.toUpperCase()}</span>
@@ -205,7 +205,7 @@ const ColorWheelPicker = ({ color, onChange, label }: ColorWheelPickerProps) => 
             {/* Preview */}
             <div className="flex items-center gap-3 p-3 glass-input rounded">
               <div 
-                className="w-12 h-12 rounded border-2 border-borderSubtle"
+                className="w-12 h-12 rounded border border-borderSubtle"
                 style={{ backgroundColor: hslToHex(hue, saturation, lightness) }}
               />
               <div>

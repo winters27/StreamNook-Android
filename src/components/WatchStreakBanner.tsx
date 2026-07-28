@@ -60,8 +60,8 @@ const WatchStreakBanner: React.FC<WatchStreakBannerProps> = ({
 
   // Collapsed mode: notification banner
   return (
-    <div className="mb-2 flex items-center gap-3 px-3 py-2 bg-amber-500/5 backdrop-blur-md rounded-lg border border-amber-500/20 hover:border-amber-500/40 hover:bg-amber-500/10 transition-all duration-200">
-      <div className="flex items-center justify-center w-6 h-6 rounded bg-amber-500/10 flex-shrink-0 shadow-[0_0_8px_rgba(245,158,11,0.2)]">
+    <div className="mb-2 flex items-center gap-3 px-3 py-2 bg-amber-500/5 backdrop-blur-md rounded-lg border border-amber-500/20 hover:border-amber-500/40 hover:bg-amber-500/10 transition-colors duration-200">
+      <div className="flex items-center justify-center w-6 h-6 rounded bg-amber-500/10 flex-shrink-0 shadow-[0_0_8px_color-mix(in_srgb,var(--color-warning)_20%,transparent)]">
         <Flame size={14} className="text-amber-400 stroke-[2.5]" />
       </div>
       
@@ -83,7 +83,7 @@ const WatchStreakBanner: React.FC<WatchStreakBannerProps> = ({
         {/* Share button */}
         <button
           onClick={onActivateShare}
-          className="px-3 py-1.5 text-xs font-semibold text-black bg-amber-500 hover:bg-amber-400 rounded-[4px] shadow-[0_0_10px_rgba(245,158,11,0.2)] transition-all active:scale-95"
+          className="px-3 py-1.5 text-xs font-semibold text-black bg-amber-500 hover:bg-amber-400 rounded-[4px] shadow-[0_0_10px_color-mix(in_srgb,var(--color-warning)_20%,transparent)] transition-all active:scale-95"
         >
           Share
         </button>

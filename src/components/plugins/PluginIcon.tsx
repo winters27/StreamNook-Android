@@ -12,8 +12,8 @@ import { Puzzle } from 'lucide-react';
 import type { PluginTier } from '../../types/plugins';
 import streamNookLogo from '../../assets/streamnook-logo.png';
 
-const TILE_BEVEL =
-  'inset 1px 1px 0 0 rgba(255,255,255,0.10), inset -1px -1px 0 0 rgba(0,0,0,0.18)';
+// Canonical bevel recipe lives in globals.css as --bevel-tile.
+const TILE_BEVEL = 'var(--bevel-tile)';
 
 const TIER_TINT: Record<PluginTier, string> = {
   A: 'rgba(110, 200, 160, 0.16)',

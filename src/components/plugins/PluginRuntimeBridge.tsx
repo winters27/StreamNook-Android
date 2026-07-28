@@ -119,21 +119,21 @@ const PluginRuntimeBridge = () => {
               <button
                 type="button"
                 onClick={() => respond('deny')}
-                className="rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-[13px] text-textSecondary transition-colors hover:bg-white/10 hover:text-textPrimary"
+                className="glass-button-secondary px-4 py-2 text-[13px] text-textSecondary hover:text-textPrimary"
               >
                 Deny
               </button>
               <button
                 type="button"
                 onClick={() => respond('always')}
-                className="rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-[13px] text-textSecondary transition-colors hover:bg-white/10 hover:text-textPrimary"
+                className="glass-button-secondary px-4 py-2 text-[13px] text-textSecondary hover:text-textPrimary"
               >
                 Don't ask again
               </button>
               <button
                 type="button"
                 onClick={() => respond('allow')}
-                className="rounded-lg border border-accent/25 bg-accent/15 px-4 py-2 text-[13px] font-medium text-textPrimary transition-colors hover:bg-accent/25"
+                className="glass-button-secondary !bg-accent/15 px-4 py-2 text-[13px] font-medium text-textPrimary hover:!bg-accent/25"
               >
                 Allow
               </button>

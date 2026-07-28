@@ -732,6 +732,7 @@ export function BlendedChatPane({ channels }: { channels: BlendedChannel[] }) {
       <div ref={setFeedEl} className="relative min-h-0 flex-1 overflow-hidden">
         <ChatMessageList
           messages={messages}
+          renderToken={revision}
           isPaused={paused}
           onScroll={onScroll}
           onPauseIntent={onPauseIntent}
@@ -754,7 +755,7 @@ export function BlendedChatPane({ channels }: { channels: BlendedChannel[] }) {
             <button
               type="button"
               onClick={handleResume}
-              className="flex items-center gap-2 rounded-full bg-black/95 px-4 py-2 text-sm font-medium text-white shadow-lg glass-button"
+              className="flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium text-white shadow-lg glass-button"
             >
               <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -824,7 +825,7 @@ export function BlendedChatPane({ channels }: { channels: BlendedChannel[] }) {
                 <div
                   className="glass-panel absolute bottom-full z-50 mb-1 max-h-64 w-56 overflow-y-auto rounded-lg border border-borderLight py-1 shadow-2xl scrollbar-thin"
                   // Opaque themed surface: a live backdrop-blur flickers over chat.
-                  style={{ backgroundColor: 'var(--color-background-tertiary)' }}
+                  style={{ backgroundColor: 'var(--color-background-tertiary)', backdropFilter: 'none', WebkitBackdropFilter: 'none' }}
                 >
                   {groups.map((g) => {
                     const allOn = g.chans.every(isOn);

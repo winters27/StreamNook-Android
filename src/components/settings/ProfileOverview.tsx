@@ -60,6 +60,7 @@ import {
   getTotalUsersCount,
   getAccolades,
   grantAccolade,
+  claimLoginAccolades,
   getFavoriteChannel,
   type UserStats,
   type ChannelWatch,
@@ -182,7 +183,7 @@ const StatTile = ({
         <span className="flex flex-shrink-0 items-center justify-center" style={color ? { color } : undefined}>
           {glyph ?? (Icon ? <Icon size={compact ? 15 : 17} strokeWidth={2.25} /> : null)}
         </span>
-        <span className={`font-medium uppercase tracking-[0.08em] text-textMuted ${compact ? 'text-[10px]' : 'text-[11px]'}`}>
+        <span className={`font-medium uppercase tracking-[0.14em] text-textMuted ${compact ? 'text-[10px]' : 'text-[11px]'}`}>
           {label}
         </span>
       </div>
@@ -393,10 +394,10 @@ const ProfileOverview = ({
         // (idempotent) and reflect optimistically. Never grant on someone
         // else's profile.
         if (isOwnProfile) {
-          getActiveSeasonalAccoladeIds(new Date()).forEach((id) => {
-            set.add(id);
-            grantAccolade(userId, id).catch(() => {});
-          });
+          // Optimistic display; claim_login_accolades (server clock) is the
+          // authority for the actual grant.
+          getActiveSeasonalAccoladeIds(new Date()).forEach((id) => set.add(id));
+          void claimLoginAccolades(userId);
         }
         setEarnedAccolades(set);
       })
@@ -464,7 +465,8 @@ const ProfileOverview = ({
   useEffect(() => {
     if (!isOwnProfile || !createdAt || !userId) return;
     if (isCakeDay(createdAt, new Date())) {
-      grantAccolade(userId, CAKE_DAY_ID).catch(() => {});
+      // Server grants cake-day via claim_login_accolades (fired above); reflect
+      // optimistically here for immediate display.
       setEarnedAccolades((prev) => new Set(prev).add(CAKE_DAY_ID));
     }
   }, [createdAt, userId, isOwnProfile]);
@@ -613,7 +615,7 @@ const ProfileOverview = ({
   // viewing someone else (the self settings view always shows everything).
   const sectionHidden = (key: string) => !isOwnProfile && hiddenSections.includes(key);
   const sectionStyle = accentRgb ? { borderColor: `rgba(${accentRgb}, 0.3)` } : undefined;
-  const sectionPad = compact ? 'p-3.5' : 'p-5';
+  const sectionPad = compact ? 'p-3.5' : 'p-4';
   const gridGap = compact ? 'gap-2' : 'gap-3';
   const headMb = compact ? 'mb-2.5' : 'mb-4';
   // Contextual section label: your own profile says "Your", another member's
@@ -642,7 +644,7 @@ const ProfileOverview = ({
     >
       <div className={`flex items-center gap-2 ${compact ? 'mb-2' : 'mb-3'}`}>
         <Clock size={16} strokeWidth={2.25} style={{ color: ICON_COLOR.amber }} />
-        <span className="text-[11px] font-medium uppercase tracking-[0.1em] text-textMuted">
+        <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-textMuted">
           Hours watched
         </span>
       </div>
@@ -668,8 +670,8 @@ const ProfileOverview = ({
   );
 
   const twitchEl = sectionHidden('twitch') ? null : (
-    <div className={`glass-panel rounded-xl ${sectionPad}`} style={sectionStyle}>
-      <h4 className={`${headMb} flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-textPrimary`}>
+    <div className={`settings-card ${sectionPad}`} style={sectionStyle}>
+      <h4 className={`${headMb} flex items-center gap-1.5 text-[12px] font-semibold uppercase tracking-[0.14em] text-textPrimary`}>
         <TwitchGlyph size={14} className="text-[#9146FF]" /> {twitchLabel}
       </h4>
       <motion.div
@@ -711,8 +713,8 @@ const ProfileOverview = ({
   );
 
   const lifetimeEl = sectionHidden('lifetime') ? null : (
-    <div className={`glass-panel rounded-xl ${sectionPad}`} style={sectionStyle}>
-      <h4 className={`${headMb} flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-textPrimary`}>
+    <div className={`settings-card ${sectionPad}`} style={sectionStyle}>
+      <h4 className={`${headMb} flex items-center gap-1.5 text-[12px] font-semibold uppercase tracking-[0.14em] text-textPrimary`}>
         <Tv size={14} className="text-textMuted" /> Lifetime in StreamNook
       </h4>
       <motion.div
@@ -798,10 +800,10 @@ const ProfileOverview = ({
 
   // Accolades - collectible medallions. A big wall, so it anchors the bottom.
   const accoladesEl = sectionHidden('accolades') ? null : (
-    <div className={`glass-panel rounded-xl ${sectionPad}`} style={sectionStyle}>
+    <div className={`settings-card ${sectionPad}`} style={sectionStyle}>
       <div className={`flex items-center gap-1.5 ${compact ? 'mb-2.5' : 'mb-5'}`}>
         <Trophy size={14} className="text-textMuted" />
-        <h4 className="text-sm font-semibold uppercase tracking-wide text-textPrimary">
+        <h4 className="text-[12px] font-semibold uppercase tracking-[0.14em] text-textPrimary">
           Accolades
         </h4>
         <span className="ml-auto text-[11px] tabular-nums text-textMuted">

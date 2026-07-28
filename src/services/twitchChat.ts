@@ -6,7 +6,7 @@ import { kickBadgeImage } from '../utils/kickBadges';
 // Message segment types - matches Rust MessageSegment enum
 export type MessageSegment =
   | { type: 'text'; content: string }
-  | { type: 'emote'; content: string; emote_id?: string; emote_url: string; is_zero_width?: boolean }
+  | { type: 'emote'; content: string; emote_id?: string; emote_url: string; is_zero_width?: boolean; modifier_flags?: number }
   | { type: 'emoji'; content: string; emoji_url: string }
   | { type: 'link'; content: string; url: string }
   // Cheermote segment for animated bits (e.g., Cheer500)

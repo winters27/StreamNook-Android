@@ -108,7 +108,7 @@ class ErrorBoundary extends Component<Props, State> {
                         </p>
                         <button
                             onClick={this.reset}
-                            className="glass-button text-white text-xs font-medium px-3 py-1.5 rounded-lg border border-white/10 hover:bg-white/10 transition-colors"
+                            className="glass-button text-white text-xs font-medium px-3 py-1.5 rounded-lg border border-transparent hover:bg-white/10 transition-colors"
                         >
                             Reload {componentName}
                         </button>

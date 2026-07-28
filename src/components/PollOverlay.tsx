@@ -190,11 +190,11 @@ const PollOverlay = ({ channelId, isHypeTrainActive = false }: PollOverlayProps)
         {/* Header */}
         <button
           onClick={() => setIsExpanded(!isExpanded)}
-          className={`w-full p-3 bg-backgroundSecondary hover:bg-backgroundSecondary/80 transition-colors ${isExpanded ? 'border-b border-border' : ''}`}
+          className={`w-full p-3 bg-backgroundSecondary hover:bg-backgroundSecondary/80 transition-colors ${isExpanded ? 'border-b border-borderSubtle' : ''}`}
         >
           <div className={`flex gap-2 ${isExpanded ? 'items-start' : 'items-center'}`}>
-            <div className="p-1.5 bg-purple-500/30 rounded-md flex-shrink-0">
-              <BarChart3 className="w-4 h-4 text-purple-400" />
+            <div className="p-1.5 bg-accent/30 rounded-md flex-shrink-0">
+              <BarChart3 className="w-4 h-4 text-accent" />
             </div>
             <div className="flex-1 min-w-0">
               <p className={`text-sm font-semibold text-textPrimary text-left leading-tight ${isExpanded ? '' : 'truncate'}`}>
@@ -203,15 +203,15 @@ const PollOverlay = ({ channelId, isHypeTrainActive = false }: PollOverlayProps)
             </div>
             <div className="flex items-center gap-1.5 flex-shrink-0">
               {isClosed ? (
-                <span className="text-xs font-medium text-purple-400 bg-purple-500/20 border border-purple-500/40 px-1.5 py-1 rounded-md">
+                <span className="text-xs font-medium text-accent bg-accent/20 border border-accent/40 px-1.5 py-1 rounded-md">
                   Final
                 </span>
               ) : timeRemaining > 0 ? (
-                <span className="text-xs font-mono font-bold text-yellow-400 bg-yellow-500/20 border border-yellow-500/40 px-1.5 py-1 rounded-md">
+                <span className="text-xs font-mono font-bold text-warning bg-warning/20 border border-warning/40 px-1.5 py-1 rounded-md">
                   {formatTime(timeRemaining)}
                 </span>
               ) : (
-                <span className="text-xs font-medium text-red-400 bg-red-500/20 border border-red-500/40 px-1.5 py-1 rounded-md">
+                <span className="text-xs font-medium text-error bg-error/20 border border-error/40 px-1.5 py-1 rounded-md">
                   Closed
                 </span>
               )}
@@ -239,23 +239,23 @@ const PollOverlay = ({ channelId, isHypeTrainActive = false }: PollOverlayProps)
                     key={choice.id}
                     onClick={() => clickable && handleVote(choice.id)}
                     disabled={!clickable}
-                    className={`w-full relative p-2.5 rounded-lg border-2 transition-all overflow-hidden ${
+                    className={`w-full relative p-2.5 rounded-lg border transition-all overflow-hidden ${
                       isWinner
-                        ? 'bg-purple-500/20 border-purple-400'
+                        ? 'bg-accent/20 border-accent'
                         : isVoted
-                          ? 'bg-purple-500/20 border-purple-400/70'
-                          : 'bg-backgroundSecondary border-border ' + (clickable ? 'hover:bg-purple-500/10 hover:border-purple-500/40 cursor-pointer' : 'cursor-default')
+                          ? 'bg-accent/20 border-accent/70'
+                          : 'bg-backgroundSecondary border-border ' + (clickable ? 'hover:bg-accent/10 hover:border-accent/40 cursor-pointer' : 'cursor-default')
                     }`}
                   >
                     {/* Vote-share bar */}
                     <div
-                      className={`absolute inset-y-0 left-0 rounded-md opacity-25 transition-[width] duration-500 ${isWinner ? 'bg-purple-500' : 'bg-purple-500/70'}`}
+                      className={`absolute inset-y-0 left-0 rounded-md opacity-25 transition-[width] duration-500 ${isWinner ? 'bg-accent' : 'bg-accent/70'}`}
                       style={{ width: `${percentage}%` }}
                     />
                     <div className="relative flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2 min-w-0">
-                        {isWinner && <Trophy className="w-3.5 h-3.5 text-purple-300 flex-shrink-0" />}
-                        {isVoted && !isWinner && <CheckCircle2 className="w-3.5 h-3.5 text-purple-300 flex-shrink-0" />}
+                        {isWinner && <Trophy className="w-3.5 h-3.5 text-accent flex-shrink-0" />}
+                        {isVoted && !isWinner && <CheckCircle2 className="w-3.5 h-3.5 text-accent flex-shrink-0" />}
                         <span className="font-semibold text-textPrimary text-sm truncate">{choice.title}</span>
                       </div>
                       <div className="flex items-center gap-3 text-xs text-textSecondary flex-shrink-0">
@@ -274,9 +274,9 @@ const PollOverlay = ({ channelId, isHypeTrainActive = false }: PollOverlayProps)
             {/* Footer status line */}
             <div className="px-3 pb-3">
               {votedChoiceId && !isClosed && (
-                <div className="py-2 px-3 bg-purple-500/15 border border-purple-500/40 rounded-lg flex items-center justify-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-purple-400" />
-                  <span className="text-purple-400 text-sm font-semibold">Vote counted</span>
+                <div className="py-2 px-3 bg-accent/15 border border-accent/40 rounded-lg flex items-center justify-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-accent" />
+                  <span className="text-accent text-sm font-semibold">Vote counted</span>
                 </div>
               )}
               {!votedChoiceId && !isLocked && (

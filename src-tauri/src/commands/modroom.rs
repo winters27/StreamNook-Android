@@ -95,6 +95,8 @@ pub struct RoomToken {
     pub room_key: String,
     /// The caller's own Twitch user id (to identify their own messages).
     pub user_id: String,
+    /// The caller's own login (optimistic rendering + mention detection).
+    pub login: String,
 }
 
 /// Request a room token for a channel. Returns the gate's error string on denial
@@ -106,9 +108,13 @@ pub async fn modroom_get_room_token(channel_id: String) -> Result<RoomToken, Str
         return Err("missing_channel".to_string());
     }
 
-    let token = auth::get_valid_access_token()
-        .await
-        .map_err(|_| "needs_connect".to_string())?;
+    // `network` (unlike `needs_connect`) tells the frontend this is transient:
+    // it retries with backoff instead of showing the consent CTA to a user who
+    // is already connected but briefly offline.
+    let token = auth::get_valid_access_token().await.map_err(|e| match e {
+        auth::TokenFail::NeedsConnect => "needs_connect".to_string(),
+        auth::TokenFail::Network => "network".to_string(),
+    })?;
 
     let client = crate::services::http::client().clone();
     let resp = client
@@ -117,10 +123,10 @@ pub async fn modroom_get_room_token(channel_id: String) -> Result<RoomToken, Str
         .json(&serde_json::json!({ "channelId": channel_id }))
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| "network".to_string())?;
 
     let status = resp.status();
-    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let body: serde_json::Value = resp.json().await.map_err(|_| "network".to_string())?;
 
     if !status.is_success() {
         let err = body
@@ -155,6 +161,11 @@ pub async fn modroom_get_room_token(channel_id: String) -> Result<RoomToken, Str
             .to_string(),
         user_id: body
             .get("userId")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        login: body
+            .get("login")
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string(),

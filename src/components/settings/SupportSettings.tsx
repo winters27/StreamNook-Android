@@ -142,8 +142,8 @@ const SupportSettings = () => {
                                 of the icon then rest on a plain frosted blur (no color bleed); an
                                 opaque square icon simply covers it. */}
                             <div
-                                className={`relative h-[68px] w-[68px] overflow-hidden rounded-2xl border-4${
-                                    iconUrl ? ' bg-white/[0.04] backdrop-blur-md' : ''
+                                className={`relative h-[68px] w-[68px] overflow-hidden rounded-2xl border ${
+                                    iconUrl ? 'bg-white/[0.04] backdrop-blur-md' : ''
                                 }`}
                                 style={cutoutBorder}
                             >

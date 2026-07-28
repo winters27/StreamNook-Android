@@ -151,7 +151,7 @@ const MultiNookPresets: React.FC = () => {
             activeThumb
               ? `ring-1 ${isOpen ? 'ring-white/30' : 'ring-white/15 hover:ring-white/30'}`
               : isOpen
-                ? 'glass-input text-accent'
+                ? 'glass-button-active text-accent'
                 : 'glass-button text-textSecondary hover:text-accent'
           }`}
           style={{ borderRadius: '8px' }}

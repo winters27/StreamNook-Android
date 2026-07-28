@@ -281,6 +281,8 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
     hide_shared_chat: stored?.hide_shared_chat ?? false,
     paint_mentions_in_body: stored?.paint_mentions_in_body ?? true,
     compact_emote_tooltips: stored?.compact_emote_tooltips ?? false,
+    ffz_emote_effects: stored?.ffz_emote_effects ?? true,
+    user_card_opens_messages: stored?.user_card_opens_messages ?? true,
     seventv_emote_notices: stored?.seventv_emote_notices ?? true,
     link_previews: stored?.link_previews ?? true,
     link_preview_keep_link: stored?.link_preview_keep_link ?? false,
@@ -447,6 +449,18 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
             />
           }
         />
+        <SettingsRow
+          title="Collapse gift-sub floods"
+          description="When someone gifts a batch of subs, show one 'gifting N subs' row with the recipients attached, instead of a separate row per gift. Turn off to see every gift row."
+          control={
+            <Toggle
+              enabled={settings.collapse_gift_subs ?? true}
+              onChange={() =>
+                updateSettings({ ...settings, collapse_gift_subs: !(settings.collapse_gift_subs ?? true) })
+              }
+            />
+          }
+        />
       </SettingsSection>
 
       <SettingsSection label="Chat Logging">
@@ -470,7 +484,7 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
                 <button
                   type="button"
                   onClick={browseLogFolder}
-                  className="flex-shrink-0 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-[13px] text-textSecondary transition-colors hover:bg-white/10 hover:text-textPrimary"
+                  className="glass-button-secondary flex-shrink-0 px-3 py-1.5 text-[13px] text-textSecondary hover:text-textPrimary"
                 >
                   Browse
                 </button>
@@ -478,7 +492,7 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
                   <button
                     type="button"
                     onClick={() => setLogging({ folder: '' })}
-                    className="flex-shrink-0 rounded-md px-2 py-1.5 text-[13px] text-textMuted transition-colors hover:bg-white/5 hover:text-textPrimary"
+                    className="glass-button-secondary flex-shrink-0 px-2 py-1.5 text-[13px] text-textMuted hover:text-textPrimary"
                   >
                     Reset
                   </button>
@@ -486,7 +500,7 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
                 <button
                   type="button"
                   onClick={openLogFolder}
-                  className="flex-shrink-0 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-[13px] text-textSecondary transition-colors hover:bg-white/10 hover:text-textPrimary"
+                  className="glass-button-secondary flex-shrink-0 px-3 py-1.5 text-[13px] text-textSecondary hover:text-textPrimary"
                 >
                   Open
                 </button>
@@ -993,6 +1007,17 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
         />
 
         <SettingsRow
+          title="FFZ emote effects"
+          description="Apply FrankerFaceZ modifiers (wide, flips, rainbow, shake, ...) to the emote before them, like FFZ does. Off shows modifier emotes as plain overlay emotes."
+          control={
+            <Toggle
+              enabled={cd.ffz_emote_effects}
+              onChange={() => setDesign({ ffz_emote_effects: !cd.ffz_emote_effects })}
+            />
+          }
+        />
+
+        <SettingsRow
           title="7TV emote update notices"
           description="Show a chat notice when a channel's 7TV emote set changes live (a mod adds, removes, or renames an emote). The new emote is usable right away either way."
           control={
@@ -1030,6 +1055,23 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
             className="w-full accent-accent cursor-pointer"
           />
         </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection
+        id="settings-section-user-cards"
+        label="User Cards"
+        description="The card that opens when you click someone in chat."
+      >
+        <SettingsRow
+          title="Open on their messages"
+          description="Land on the person's recent chat history straight away. Off opens the profile first, with their badges and stats. Either way the card switches between the two."
+          control={
+            <Toggle
+              enabled={cd.user_card_opens_messages}
+              onChange={() => setDesign({ user_card_opens_messages: !cd.user_card_opens_messages })}
+            />
+          }
+        />
       </SettingsSection>
 
       <SettingsSection

@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo, useRef, useSyncExternalStore } from 'reac
 import { createPortal } from 'react-dom';
 import { X, ArrowUpDown, RefreshCw, Check, Trophy, Award, ChevronUp, ChevronDown, Search, ExternalLink, Lock } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../stores/AppStore';
 import { getAllUserBadgesWithEarned } from '../services/badgeService';
 import { getProfileFromMemoryCache, getFullProfileWithFallback } from '../services/cosmeticsCache';
@@ -23,7 +24,7 @@ import {
 } from '../services/supabaseService';
 import type { CosmeticCatalogEntry } from '../services/supabaseService';
 import { StreamNookTierCard } from './StreamNookBadge';
-import { COSMETIC_ASSET_BY_SLUG } from './cosmeticAssets';
+import { resolveCosmeticAsset } from './cosmeticAssets';
 import { listAtmospheres, getAtmosphereUnlock } from '../services/atmospheres';
 import { AtmosphereBackground } from './AtmosphereBackground';
 import streamNookLogo from '../assets/streamnook-logo.png';
@@ -31,6 +32,7 @@ import chatterinoLogo from '../assets/chatterino-logo.svg';
 import betterttvLogo from '../assets/betterttv-logo.png';
 
 import { Logger } from '../utils/logger';
+import { deriveBadgeStatus } from '../utils/badgeWindow';
 // Tab navigation types
 type AttainableTab = 'twitch-badges' | '7tv-badges' | '7tv-paints' | 'streamnook' | 'bttv' | 'chat-clients';
 // Sub-tabs within the StreamNook section (its own badges vs its atmospheres).
@@ -75,6 +77,9 @@ interface BadgeMetadata {
   date_added: string | null;
   usage_stats: string | null;
   more_info: string | null;
+  /// Campaign-grounded writeup from the badge relay. Carries the authoritative
+  /// earn window, which is what classifies a badge as live or upcoming.
+  enrichment?: Record<string, unknown> | null;
   info_url: string;
 }
 
@@ -247,6 +252,19 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
     loadChatClientBadges();
   }, []);
 
+  // Live-refresh the Twitch tab when the relay pushes a drop: the Rust side has
+  // already merged the badge into the global cache and stored its enrichment, so
+  // re-reading the cache surfaces the new tile (and its rich More Info) with no
+  // manual refresh.
+  useEffect(() => {
+    const unlisten = listen('badge-metadata-amended', () => {
+      loadBadges();
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
   // Deep-link to the StreamNook tab. Fires synchronously since the tab
   // content doesn't depend on async-loaded data.
   useEffect(() => {
@@ -267,13 +285,17 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
 
   // Cosmetics catalog + ownership for the StreamNook tab grid.
   useSyncExternalStore(subscribeCosmeticsVersion, getCosmeticsVersion, getCosmeticsVersion);
-  // Only wearable badges belong in this grid. Atmospheres also live in the
-  // cosmetics catalog (kind 'atmosphere') for ownership, but they are applied
-  // from the Atmospheres picker, not worn as the icon.
-  const cosmeticsCatalog = getAllCosmetics().filter((c) => c.kind === 'badge');
   const ownedCosmeticSlugs = currentUser?.user_id
     ? getOwnedCosmeticSlugs(currentUser.user_id)
     : new Set<string>();
+  // Only wearable badges belong in this grid. Atmospheres also live in the
+  // cosmetics catalog (kind 'atmosphere') for ownership, but they are applied
+  // from the Atmospheres picker, not worn as the icon. Hidden cosmetics
+  // (owner-only badges) are kept out of the public collection unless the viewer
+  // actually owns one, so they can still equip it from here.
+  const cosmeticsCatalog = getAllCosmetics().filter(
+    (c) => c.kind === 'badge' && (!c.hidden || ownedCosmeticSlugs.has(c.slug)),
+  );
   const activeCosmeticSlug = currentUser?.user_id ? getActiveCosmeticSlug(currentUser.user_id) : null;
   const [selectedCosmetic, setSelectedCosmetic] = useState<CosmeticCatalogEntry | null>(null);
 
@@ -1434,338 +1456,13 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
     }
   };
 
-  // Decode HTML entities like &#8211; → – in text
-  const decodeHtmlEntities = (text: string): string => {
-    let result = text;
-
-    // Decode numeric HTML entities (&#NNNN;)
-    result = result.replace(/&#(\d+);/g, (_match, dec) => {
-      const code = parseInt(dec, 10);
-      return String.fromCharCode(code);
-    });
-
-    // Decode hex HTML entities (&#xHHHH;)
-    result = result.replace(/&#x([0-9a-fA-F]+);/g, (_match, hex) => {
-      const code = parseInt(hex, 16);
-      return String.fromCharCode(code);
-    });
-
-    // Decode common named entities
-    const entities: Record<string, string> = {
-      '&amp;': '&',
-      '&lt;': '<',
-      '&gt;': '>',
-      '&quot;': '"',
-      '&apos;': "'",
-      '&nbsp;': ' ',
-      '&ndash;': '–',
-      '&mdash;': '—',
-    };
-
-    for (const [entity, char] of Object.entries(entities)) {
-      result = result.split(entity).join(char);
-    }
-
-    return result;
-  };
-
-  // Parse abbreviated date range format like "Dec 1-12", "Dec 1 - 12", or "Dec 06 – Dec 07"
-  // Also handles natural language formats like "December 4, 2025 at 9:00 AM"
-  // NOTE: Handles both regular dashes (-), en-dashes (–), and em-dashes (—)
-  const parseDateRange = (inputText: string): { start: Date; end: Date } | null => {
-    // First decode any HTML entities in the text
-    const text = decodeHtmlEntities(inputText);
-    const months: Record<string, number> = {
-      'Jan': 0, 'Feb': 1, 'Mar': 2, 'Apr': 3,
-      'May': 4, 'Jun': 5, 'Jul': 6, 'Aug': 7,
-      'Sep': 8, 'Oct': 9, 'Nov': 10, 'Dec': 11
-    };
-    const fullMonths: Record<string, number> = {
-      'January': 0, 'February': 1, 'March': 2, 'April': 3,
-      'May': 4, 'June': 5, 'July': 6, 'August': 7,
-      'September': 8, 'October': 9, 'November': 10, 'December': 11
-    };
-    const currentYear = new Date().getFullYear();
-
-    // Regex pattern for dashes (regular dash, en-dash, em-dash)
-    const dashPattern = '[-–—]';
-
-    // Try to parse "Event duration: Dec 19 – Jan 01" format
-    const eventDurationMatch = text.match(/Event duration:\s*(\w{3})\s+(\d{1,2})\s*[-–—]\s*(\w{3})\s+(\d{1,2})/i);
-    if (eventDurationMatch) {
-      const startMonthAbbrev = eventDurationMatch[1];
-      const startDay = parseInt(eventDurationMatch[2], 10);
-      const endMonthAbbrev = eventDurationMatch[3];
-      const endDay = parseInt(eventDurationMatch[4], 10);
-
-      if (Object.hasOwn(months, startMonthAbbrev) && Object.hasOwn(months, endMonthAbbrev)) {
-        const startMonthNum = months[startMonthAbbrev];
-        const endMonthNum = months[endMonthAbbrev];
-
-        // Determine year - if end month is before start month, it crosses into next year
-        const startYear = currentYear;
-        let endYear = currentYear;
-
-        // If event starts in Dec and ends in Jan, the end is in next year
-        if (startMonthNum > endMonthNum) {
-          endYear = currentYear + 1;
-        }
-
-        const startDate = new Date(startYear, startMonthNum, startDay, 0, 0, 0);
-        const endDate = new Date(endYear, endMonthNum, endDay, 23, 59, 59);
-
-        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
-          return { start: startDate, end: endDate };
-        }
-      }
-    }
-
-    // Try to parse "Event duration: Dec 19-25" format (same month)
-    const eventDurationSameMonthMatch = text.match(/Event duration:\s*(\w{3})\s+(\d{1,2})\s*[-–—]\s*(\d{1,2})/i);
-    if (eventDurationSameMonthMatch) {
-      const monthAbbrev = eventDurationSameMonthMatch[1];
-      const startDay = parseInt(eventDurationSameMonthMatch[2], 10);
-      const endDay = parseInt(eventDurationSameMonthMatch[3], 10);
-
-      if (Object.hasOwn(months, monthAbbrev)) {
-        const monthNum = months[monthAbbrev];
-        const startDate = new Date(currentYear, monthNum, startDay, 0, 0, 0);
-        const endDate = new Date(currentYear, monthNum, endDay, 23, 59, 59);
-
-        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
-          return { start: startDate, end: endDate };
-        }
-      }
-    }
-
-    // Try to parse ISO format: "Event start: 2025-12-04T15:00:00Z"
-    const isoEventStartMatch = text.match(/Event start:\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z?)/i);
-    if (isoEventStartMatch) {
-      try {
-        const startDate = new Date(isoEventStartMatch[1]);
-        if (!isNaN(startDate.getTime())) {
-          // Look for an end time in ISO format
-          const isoEndMatch = text.match(/Event end:\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z?)/i);
-          let endDate: Date;
-
-          if (isoEndMatch) {
-            endDate = new Date(isoEndMatch[1]);
-          } else {
-            // No explicit end, assume event lasts until end of that day
-            endDate = new Date(startDate);
-            endDate.setHours(23, 59, 59, 999);
-          }
-
-          if (!isNaN(endDate.getTime())) {
-            return { start: startDate, end: endDate };
-          }
-        }
-      } catch {
-        // Fall through to other parsers
-      }
-    }
-
-    // Try to parse ISO date range: "2025-12-04T15:00:00Z – 2025-12-04T23:59:00Z"
-    const isoRangeMatch = text.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z?)\s*[-–—]\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z?)/);
-    if (isoRangeMatch) {
-      try {
-        const startDate = new Date(isoRangeMatch[1]);
-        const endDate = new Date(isoRangeMatch[2]);
-        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
-          return { start: startDate, end: endDate };
-        }
-      } catch {
-        // Fall through to other parsers
-      }
-    }
-
-    // Try to parse natural language format: "Month Day, Year at HH:MM AM/PM – Month Day, Year at HH:MM AM/PM"
-    // Example: "December 4, 2025 at 7:00 AM – December 4, 2025 at 11:59 PM"
-    const fullDateRangeMatch = text.match(
-      new RegExp(`(\\w+)\\s+(\\d{1,2}),?\\s+(\\d{4})\\s+at\\s+(\\d{1,2}):(\\d{2})\\s*(AM|PM)\\s*${dashPattern}\\s*(\\w+)\\s+(\\d{1,2}),?\\s+(\\d{4})\\s+at\\s+(\\d{1,2}):(\\d{2})\\s*(AM|PM)`, 'i')
+  // Derived from the window rather than read off a stored field, so a badge
+  // whose earn period opens while the gallery is open reclassifies itself.
+  const getBadgeStatus = (badge: BadgeWithMetadata) =>
+    deriveBadgeStatus(
+      badge.badgebase_info?.more_info,
+      badge.badgebase_info?.enrichment as Record<string, unknown> | undefined
     );
-    if (fullDateRangeMatch) {
-      const parseDateTime = (monthName: string, day: string, year: string, hours: string, minutes: string, meridiem: string): Date | null => {
-        let h = parseInt(hours, 10);
-        const m = parseInt(minutes, 10);
-        const y = parseInt(year, 10);
-        const d = parseInt(day, 10);
-
-        if (meridiem.toUpperCase() === 'PM' && h !== 12) h += 12;
-        else if (meridiem.toUpperCase() === 'AM' && h === 12) h = 0;
-
-        if (Object.hasOwn(fullMonths, monthName)) {
-          return new Date(y, fullMonths[monthName], d, h, m, 0);
-        }
-        return null;
-      };
-
-      const startDate = parseDateTime(
-        fullDateRangeMatch[1], fullDateRangeMatch[2], fullDateRangeMatch[3],
-        fullDateRangeMatch[4], fullDateRangeMatch[5], fullDateRangeMatch[6]
-      );
-      const endDate = parseDateTime(
-        fullDateRangeMatch[7], fullDateRangeMatch[8], fullDateRangeMatch[9],
-        fullDateRangeMatch[10], fullDateRangeMatch[11], fullDateRangeMatch[12]
-      );
-
-      if (startDate && endDate && !isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
-        return { start: startDate, end: endDate };
-      }
-    }
-
-    // Try to parse natural language format: "Event start: Month Day, Year at HH:MM AM/PM"
-    // Example: "Event start: December 4, 2025 at 9:00 AM"
-    const eventStartMatch = text.match(/Event start:\s*(\w+)\s+(\d{1,2}),?\s+(\d{4})\s+at\s+(\d{1,2}):(\d{2})\s*(AM|PM)/i);
-    if (eventStartMatch) {
-      const monthName = eventStartMatch[1];
-      const day = parseInt(eventStartMatch[2], 10);
-      const year = parseInt(eventStartMatch[3], 10);
-      let hours = parseInt(eventStartMatch[4], 10);
-      const minutes = parseInt(eventStartMatch[5], 10);
-      const meridiem = eventStartMatch[6].toUpperCase();
-
-      // Convert to 24-hour format
-      if (meridiem === 'PM' && hours !== 12) {
-        hours += 12;
-      } else if (meridiem === 'AM' && hours === 12) {
-        hours = 0;
-      }
-
-      if (Object.hasOwn(fullMonths, monthName)) {
-        const monthNum = fullMonths[monthName];
-        const startDate = new Date(year, monthNum, day, hours, minutes, 0);
-
-        // For events with a start time but no explicit end, assume the event lasts for the rest of that day
-        // or we can look for duration in the text
-        let endDate = new Date(year, monthNum, day, 23, 59, 59);
-
-        // Try to find duration hint (e.g., "60 minutes", "2 hours")
-        const durationMatch = text.match(/(\d+)\s+(minute|hour)s?/i);
-        if (durationMatch) {
-          const duration = parseInt(durationMatch[1], 10);
-          const unit = durationMatch[2].toLowerCase();
-          endDate = new Date(startDate);
-          if (unit === 'minute') {
-            endDate.setMinutes(endDate.getMinutes() + duration);
-          } else if (unit === 'hour') {
-            endDate.setHours(endDate.getHours() + duration);
-          }
-        }
-
-        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
-          return { start: startDate, end: endDate };
-        }
-      }
-    }
-
-    // Match "Mon DD – Mon DD" format (e.g., "Dec 06 – Dec 07") - with en-dash or regular dash
-    const fullRangeMatch = text.match(/(\w{3})\s+(\d{1,2})\s*[–-]\s*(\w{3})\s+(\d{1,2})/);
-    if (fullRangeMatch) {
-      const startMonthAbbrev = fullRangeMatch[1];
-      const startDay = parseInt(fullRangeMatch[2], 10);
-      const endMonthAbbrev = fullRangeMatch[3];
-      const endDay = parseInt(fullRangeMatch[4], 10);
-
-      if (Object.hasOwn(months, startMonthAbbrev) && Object.hasOwn(months, endMonthAbbrev)) {
-        const startMonthNum = months[startMonthAbbrev];
-        const endMonthNum = months[endMonthAbbrev];
-        // Start at beginning of the day, end at end of the day
-        const startDate = new Date(currentYear, startMonthNum, startDay, 0, 0, 0);
-        const endDate = new Date(currentYear, endMonthNum, endDay, 23, 59, 59);
-
-        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
-          return { start: startDate, end: endDate };
-        }
-      }
-    }
-
-    // Match "Mon D-D" or "Mon D - D" format (e.g., "Dec 1-12" or "Dec 1 - 12")
-    const shortRangeMatch = text.match(/(\w{3})\s+(\d{1,2})\s*[–-]\s*(\d{1,2})(?!\s*\w)/);
-    if (shortRangeMatch) {
-      const monthAbbrev = shortRangeMatch[1];
-      const startDay = parseInt(shortRangeMatch[2], 10);
-      const endDay = parseInt(shortRangeMatch[3], 10);
-
-      if (Object.hasOwn(months, monthAbbrev)) {
-        const monthNum = months[monthAbbrev];
-        // Start at beginning of the day, end at end of the day
-        const startDate = new Date(currentYear, monthNum, startDay, 0, 0, 0);
-        const endDate = new Date(currentYear, monthNum, endDay, 23, 59, 59);
-
-        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
-          return { start: startDate, end: endDate };
-        }
-      }
-    }
-
-    return null;
-  };
-
-  // Check badge availability status
-  const getBadgeStatus = (badge: BadgeWithMetadata): 'available' | 'coming-soon' | 'expired' | null => {
-    const moreInfo = badge.badgebase_info?.more_info;
-    if (!moreInfo) return null;
-
-    const now = Date.now();
-
-    // Helper to classify a date range into a status
-    const classifyRange = (startTime: number, endTime: number): 'available' | 'coming-soon' | 'expired' => {
-      if (now < startTime) return 'coming-soon';
-      if (now >= startTime && now <= endTime) return 'available';
-      return 'expired';
-    };
-
-    // PRIORITY 1: Try ISO timestamps first — they carry explicit years and are always accurate.
-    // This prevents year-less abbreviated formats (e.g., "Oct 18–20") from being parsed with
-    // currentYear and incorrectly categorizing past events as "coming soon".
-    const isoRegex = /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:Z)?)/g;
-    const timestamps = moreInfo.match(isoRegex);
-
-    if (timestamps && timestamps.length > 0) {
-      try {
-        if (timestamps.length === 1) {
-          const startTime = new Date(timestamps[0]).getTime();
-          let endTime: number;
-
-          // Try to find duration hint (e.g., "60 minutes", "2 hours")
-          const durationMatch = moreInfo.match(/(\d+)\s+(minute|hour)s?/i);
-          if (durationMatch) {
-            const duration = parseInt(durationMatch[1], 10);
-            const unit = durationMatch[2].toLowerCase();
-            const startDate = new Date(timestamps[0]);
-            if (unit === 'minute') {
-              startDate.setMinutes(startDate.getMinutes() + duration);
-            } else if (unit === 'hour') {
-              startDate.setHours(startDate.getHours() + duration);
-            }
-            endTime = startDate.getTime();
-          } else {
-            const startDate = new Date(timestamps[0]);
-            endTime = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate(), 23, 59, 59).getTime();
-          }
-
-          return classifyRange(startTime, endTime);
-        } else {
-          const startTime = new Date(timestamps[0]).getTime();
-          const endTime = new Date(timestamps[timestamps.length - 1]).getTime();
-          return classifyRange(startTime, endTime);
-        }
-      } catch {
-        // Fall through to parseDateRange
-      }
-    }
-
-    // PRIORITY 2: Try parseDateRange for abbreviated/natural formats.
-    // These may use currentYear for year-less dates, which is acceptable
-    // when no ISO timestamps are available.
-    const dateRange = parseDateRange(moreInfo);
-    if (dateRange) {
-      return classifyRange(dateRange.start.getTime(), dateRange.end.getTime());
-    }
-
-    return null;
-  };
 
   const isBadgeAvailable = (badge: BadgeWithMetadata): boolean => {
     return getBadgeStatus(badge) === 'available';
@@ -1938,7 +1635,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                 onClick={() => setActiveTab('twitch-badges')}
                 className={`px-4 py-2 rounded-lg transition-all flex items-center gap-2 ${
                   activeTab === 'twitch-badges'
-                    ? 'glass-button text-[#b983ff] shadow-[0_0_15px_rgba(185,131,255,0.25)]'
+                    ? 'glass-button text-accent shadow-[0_0_15px_rgba(var(--color-accent-rgb),0.25)]'
                     : 'text-textSecondary hover:text-textPrimary'
                 }`}
               >
@@ -1987,7 +1684,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                 onClick={() => setActiveTab('streamnook')}
                 className={`px-4 py-2 rounded-lg transition-all flex items-center gap-2 ${
                   activeTab === 'streamnook'
-                    ? 'glass-button text-violet-200 shadow-[0_0_15px_rgba(167,139,250,0.25)]'
+                    ? 'glass-button text-accent shadow-[0_0_15px_rgba(var(--color-accent-rgb),0.25)]'
                     : 'text-textSecondary hover:text-textPrimary'
                 }`}
               >
@@ -2183,7 +1880,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                   <button
                     onClick={() => setSortBy('available')}
                     className={`px-3 py-1.5 rounded-lg text-sm transition-colors flex items-center gap-2 ${sortBy === 'available'
-                      ? 'glass-button text-green-400 border-green-500/30 shadow-[0_0_10px_rgba(34,197,94,0.3)]'
+                      ? 'glass-button text-green-400 border-green-500/30 shadow-[0_0_10px_color-mix(in_srgb,var(--color-success)_30%,transparent)]'
                       : 'hover:bg-white/5 text-textSecondary hover:text-white'
                       }`}
                   >
@@ -2193,7 +1890,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                   <button
                     onClick={() => setSortBy('coming-soon')}
                     className={`px-3 py-1.5 rounded-lg text-sm transition-colors flex items-center gap-2 ${sortBy === 'coming-soon'
-                      ? 'glass-button text-blue-400 border-blue-500/30 shadow-[0_0_10px_rgba(59,130,246,0.3)]'
+                      ? 'glass-button text-blue-400 border-blue-500/30 shadow-[0_0_10px_color-mix(in_srgb,var(--color-info)_30%,transparent)]'
                       : 'hover:bg-white/5 text-textSecondary hover:text-white'
                       }`}
                   >
@@ -2653,14 +2350,21 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                   </p>
                   <div className="grid grid-cols-3 gap-6 max-w-md mx-auto">
                     {cosmeticsCatalog.map((cosmetic) => {
-                      const asset = COSMETIC_ASSET_BY_SLUG[cosmetic.slug];
+                      const asset = resolveCosmeticAsset(cosmetic);
                       if (!asset) return null;
                       const owned = ownedCosmeticSlugs.has(cosmetic.slug);
                       const isActive = activeCosmeticSlug === cosmetic.slug;
                       return (
                         <Tooltip
                           key={cosmetic.slug}
-                          content={owned ? `${cosmetic.name} (Collected!)` : cosmetic.name}
+                          content={
+                            <div className="text-center">
+                              <div className="font-semibold">{cosmetic.name}{owned ? ' · Collected' : ''}</div>
+                              {cosmetic.description && (
+                                <div className="text-[11px] text-textSecondary mt-0.5">{cosmetic.description}</div>
+                              )}
+                            </div>
+                          }
                           side="bottom"
                         >
                           <button
@@ -3113,7 +2817,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
       {selectedCosmetic && createPortal(
         (() => {
           const cosmetic = selectedCosmetic;
-          const asset = COSMETIC_ASSET_BY_SLUG[cosmetic.slug];
+          const asset = resolveCosmeticAsset(cosmetic);
           const owned = ownedCosmeticSlugs.has(cosmetic.slug);
           const isActive = activeCosmeticSlug === cosmetic.slug;
           // Switch only — never unequip. A StreamNook member always wears a

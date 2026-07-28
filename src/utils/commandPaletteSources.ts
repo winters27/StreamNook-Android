@@ -770,7 +770,8 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   // Theme
   { tab: 'Theme', keywords: 'theme color accent skin dark light palette glassiness font' },
   { tab: 'Theme', section: 'Glassiness', keywords: 'glassiness glass transparency frosted opacity panels see-through blur solid flat opaque disable turn off no glass' },
-  { tab: 'Theme', section: 'Font', keywords: 'font typeface interface satoshi inter geist manrope outfit space grotesk serif system family text' },
+  { tab: 'Theme', section: 'Font', sectionId: 'settings-section-font', keywords: 'font typeface interface satoshi inter geist manrope outfit space grotesk serif system family text' },
+  { tab: 'Theme', section: 'Font', sectionId: 'settings-section-font', label: 'Custom font', keywords: 'custom font own font any font google fonts poppins bebas neue rubik lato nunito playfair jetbrains mono quicksand typeface family install download add my own change font' },
 
   // Chat
   { tab: 'Chat', keywords: 'chat placement design fonts dividers timestamps mentions emotes logging channel points highlights commands reminders' },
@@ -780,13 +781,15 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   { tab: 'Chat', section: 'Chat Events', sectionId: 'settings-section-chat-events', label: 'Polls', keywords: 'polls poll vote voting live poll overlay chat event show hide toggle turn off' },
   { tab: 'Chat', section: 'Chat Events', sectionId: 'settings-section-chat-events', label: 'Predictions', keywords: 'predictions prediction bet outcome channel points overlay chat event show hide toggle turn off' },
   { tab: 'Chat', section: 'Chat Events', sectionId: 'settings-section-chat-events', label: 'Channel Point Redemptions', keywords: 'channel point redemptions redeem reward no input chat row show hide toggle turn off' },
+  { tab: 'Chat', section: 'Chat Events', sectionId: 'settings-section-chat-events', label: 'Collapse gift-sub floods', keywords: 'gift subs gifted collapse flood mystery bomb community batch spam one liner recipients sub gift show hide toggle turn off' },
   { tab: 'Chat', section: 'Chat Logging', keywords: 'chat logging save logs text files folder per channel timestamps events moderation record history' },
   { tab: 'Chat', section: 'Chat Design', keywords: 'chat design font size weight spacing dividers timestamps seconds mention colors reply name separator style prefix colon dot arrow pipe dash chip bracket accent bar pinned message collapse bar alternating backgrounds' },
   { tab: 'Chat', section: 'Link Previews', keywords: 'link preview previews load card url unfurl embed trusted sources shorten links domains clean' },
   { tab: 'Chat', section: 'Emotes', keywords: 'emotes emote size hover preview spacing inline scale 7tv bttv ffz' },
   { tab: 'Chat', section: 'Chat Input', keywords: 'chat input composer bypass duplicate message quick send ctrl enter keep message repeat' },
   { tab: 'Chat', section: 'Emote Tab Completion', sectionId: 'settings-section-emote-tab-completion', keywords: 'emote tab completion autocomplete carousel kappa cycle shift starts contains match include chat users' },
-  { tab: 'Chat', section: 'Render Style', keywords: 'render style deleted messages strikethrough dimmed hidden shared chat paint mentions inline compact emote tooltips 7tv update notices smooth scroll resume message buffer scrollback' },
+  { tab: 'Chat', section: 'Render Style', keywords: 'render style deleted messages strikethrough dimmed hidden shared chat paint mentions inline compact emote tooltips 7tv update notices smooth scroll resume message buffer scrollback ffz emote effects modifier wide flip rainbow shake frankerfacez' },
+  { tab: 'Chat', section: 'User Cards', sectionId: 'settings-section-user-cards', keywords: 'user card profile popup click username open messages chat history first badges stats view default landing' },
   { tab: 'Chat', section: '7TV Cosmetics', keywords: '7tv cosmetics paint drop shadows username paints shadow readability' },
   { tab: 'Chat', section: 'Highlight Appearance', keywords: 'highlight appearance display style tint opacity flash window title unfocused look' },
   { tab: 'Chat', section: 'Highlight Phrases', keywords: 'highlights phrases keywords alerts words names patterns flash match' },
@@ -800,6 +803,7 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   // Moderation
   { tab: 'Moderation', keywords: 'moderation mod ban timeout delete chat actions logs nuke purge mass visibility highlights' },
   { tab: 'Moderation', section: 'Moderation Actions', keywords: 'moderation actions action style mod drag moderate grab buttons both ban timeout delete whisper profile buckets pin pinned message inline column bar above beside chat layout' },
+  { tab: 'Moderation', section: 'Mod Rooms', keywords: 'mod rooms room private encrypted team chat consent connect disconnect connected account moderator backchannel' },
   { tab: 'Moderation', section: 'Mod Logs', keywords: 'mod logs panel recent moderation actions timeouts bans deletions sidebar' },
   { tab: 'Moderation', section: 'Message Visibility', keywords: 'message visibility announce mod actions inline hide strikethrough removed banned timed out deleted' },
   { tab: 'Moderation', section: 'Log Highlights', keywords: 'log highlights color code mod log severity highlight style category colors' },
@@ -824,6 +828,7 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   { tab: 'Overlay', section: 'Messages', label: 'Message bubbles', keywords: 'overlay message bubbles bubble pill speech messenger shape corner radius background rounded color opacity chat box' },
   { tab: 'Overlay', section: 'Messages', label: 'Max lines per message', keywords: 'overlay max lines truncate clamp long message copypasta ellipsis wall of text limit' },
   { tab: 'Overlay', section: 'Messages', label: 'Remove messages after', keywords: 'overlay remove expire auto clear stale old messages seconds lifetime hide after inactivity' },
+  { tab: 'Overlay', section: 'Messages', label: 'Restore chat on reload', keywords: 'overlay restore keep clear chat on reload obs refresh restart stream start buffer persist blank empty last messages' },
   { tab: 'Overlay', section: 'Filters', label: 'Hide messages containing', keywords: 'overlay hide messages containing words phrases profanity filter banned blocklist spoiler swear' },
   { tab: 'Overlay', section: 'Events', label: 'Outline color', keywords: 'overlay event outline color fixed ring custom platform default recolor' },
   { tab: 'Overlay', section: 'Events', label: 'Event outline animation', keywords: 'overlay event outline animate animation sheen pulse chase sweep shimmer border flash spark ring one shot repeat loop every 5 seconds' },

@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback, memo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../stores/AppStore';
 import { ChevronLeft, ChevronRight, Users, Sparkles, Radio, Heart, Gift, Flame } from 'lucide-react';
 import type { TwitchStream } from '../types';
@@ -148,7 +149,7 @@ const StreamItem = memo(({
                     across an expanded list, needless idle animation). Reuses the
                     stream-card `pulse-dot` keyframes (transform-scale, GPU-cheap)
                     and only animates on the hovered row via group-hover. */}
-                <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-background group-hover:animate-[pulse-dot_2s_ease-in-out_infinite]" style={{ backgroundColor: '#eb0000' }} />
+                <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-live border-2 border-background group-hover:animate-[pulse-dot_2s_ease-in-out_infinite]" />
                 {/* Drops indicator on avatar - only show in compact mode */}
                 {hasDrops && !showExpanded && (
                     <div className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-accent flex items-center justify-center border border-background">
@@ -216,7 +217,7 @@ const StreamItem = memo(({
             {showExpanded && (
                 <div className="flex items-center gap-1 flex-shrink-0 animate-fade-in">
                     <div className="flex items-center gap-1 text-xs text-textSecondary">
-                        <Radio size={10} style={{ color: '#eb0000' }} />
+                        <Radio size={10} className="text-live" />
                         <span>{formatViewerCount(stream.viewer_count)}</span>
                     </div>
                     {showFavorite && (
@@ -230,7 +231,7 @@ const StreamItem = memo(({
                                     fill={isFavorite ? 'url(#glass-heart-fill)' : 'none'}
                                     stroke={isFavorite ? 'url(#glass-heart-stroke)' : 'currentColor'}
                                     strokeWidth={isFavorite ? 1.5 : 2}
-                                    className={`transition-all duration-300 ${isFavorite ? 'drop-shadow-[0_4px_8px_rgba(236,72,153,0.5)]' : 'text-textMuted hover:text-white opacity-0 group-hover:opacity-100'} ${isHeartAnimating ? 'animate-heart-break' : ''}`}
+                                    className={`transition-all duration-300 ${isFavorite ? 'drop-shadow-[0_4px_8px_color-mix(in_srgb,var(--color-highlight-pink)_50%,transparent)]' : 'text-textMuted hover:text-white opacity-0 group-hover:opacity-100'} ${isHeartAnimating ? 'animate-heart-break' : ''}`}
                                 />
                             </button>
                         </Tooltip>
@@ -248,22 +249,38 @@ const Sidebar = ({ side = 'left' }: { side?: 'left' | 'right' }) => {
     // reveal-on-hover, so the left edge belongs to the chat and the two don't fight
     // over the same hover zone).
     const onRight = side === 'right';
+    // Actions without a subscription (stable for the store's lifetime); state
+    // through a shallow-compared selector, so an unrelated store tick no longer
+    // re-renders the whole sidebar.
     const {
-        followedStreams,
-        recommendedStreams,
         loadFollowedStreams,
         loadRecommendedStreams,
         loadMoreRecommendedStreams,
+        isFavoriteStreamer,
+        refreshHypeTrainStatuses,
+    } = useAppStore.getState();
+    const {
+        followedStreams,
+        recommendedStreams,
         hasMoreRecommended,
         isLoadingMore,
         currentStream,
         isAuthenticated,
-        isFavoriteStreamer,
         // Hype Train status for stream badges
         activeHypeTrainChannels,
-        refreshHypeTrainStatuses,
         watchStreaks,
-    } = useAppStore();
+    } = useAppStore(
+        useShallow((s) => ({
+            followedStreams: s.followedStreams,
+            recommendedStreams: s.recommendedStreams,
+            hasMoreRecommended: s.hasMoreRecommended,
+            isLoadingMore: s.isLoadingMore,
+            currentStream: s.currentStream,
+            isAuthenticated: s.isAuthenticated,
+            activeHypeTrainChannels: s.activeHypeTrainChannels,
+            watchStreaks: s.watchStreaks,
+        })),
+    );
 
 
     // Sidebar mode from settings

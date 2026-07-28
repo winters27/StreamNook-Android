@@ -2,6 +2,7 @@
 // colored SVGs. Falls back to a brand-color dot for providers whose logo isn't
 // bundled yet. Used on MultiChat tabs, per-column headers, and mod-panel cells.
 
+import { Tooltip } from './ui/Tooltip';
 import twitchLogo from '../assets/provider-logos/twitch.svg?url';
 import kickLogo from '../assets/provider-logos/kick.svg?url';
 import youtubeLogo from '../assets/provider-logos/youtube.svg?url';
@@ -33,23 +34,25 @@ export function ProviderLogo({
   const src = providerLogo(provider);
   if (src) {
     return (
-      <img
-        src={src}
-        alt={meta.label}
-        title={meta.label}
-        draggable={false}
-        className={`shrink-0 ${className}`}
-        style={{ width: size, height: size }}
-      />
+      <Tooltip content={meta.label}>
+        <img
+          src={src}
+          alt={meta.label}
+          draggable={false}
+          className={`shrink-0 ${className}`}
+          style={{ width: size, height: size }}
+        />
+      </Tooltip>
     );
   }
   // Fallback: brand-color dot for providers without a bundled logo yet.
   return (
-    <span
-      className={`shrink-0 rounded-full ${className}`}
-      title={meta.label}
-      style={{ width: size, height: size, backgroundColor: meta.color }}
-    />
+    <Tooltip content={meta.label}>
+      <span
+        className={`shrink-0 rounded-full ${className}`}
+        style={{ width: size, height: size, backgroundColor: meta.color }}
+      />
+    </Tooltip>
   );
 }
 

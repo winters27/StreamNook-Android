@@ -363,15 +363,14 @@ export const ModLogsWidget: React.FC<{
    *  than show a button that goes nowhere. */
   onOpenSettings?: () => void;
 }> = ({ forceShow, channelLabels, onOpenSettings }) => {
-  const {
-    modLogs,
-    clearModLogs,
-    settings,
-    loadModLogsForChannel,
-    pruneModLogsToChannels,
-    currentStream,
-    channelsInPopouts,
-  } = useAppStore();
+  // Actions without a subscription; state through individual selectors. This
+  // was a whole-store subscription on a component that is also woken by every
+  // chat revision bump below, so it re-rendered on essentially everything.
+  const { clearModLogs, loadModLogsForChannel, pruneModLogsToChannels } = useAppStore.getState();
+  const modLogs = useAppStore((s) => s.modLogs);
+  const settings = useAppStore((s) => s.settings);
+  const currentStream = useAppStore((s) => s.currentStream);
+  const channelsInPopouts = useAppStore((s) => s.channelsInPopouts);
   const slots = usemultiNookStore((s) => s.slots);
   const channelKeys = useChatConnectionStore((s) => Array.from(s.channels.keys()).sort().join(','));
   const logsContainerRef = useRef<HTMLDivElement>(null);

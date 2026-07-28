@@ -234,7 +234,7 @@ export default function TwitchOverlay() {
     }
     return (
       <div
-        className="flex items-center gap-2 px-3 bg-[#18181b] border-b border-white/15 select-none"
+        className="flex items-center gap-2 px-3 bg-[#18181b] border-b border-white/5 select-none"
         style={{ height: URL_BAR_HEIGHT, fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif' }}
       >
         <Lock size={13} className="shrink-0 text-[#3fb950]" />

@@ -42,10 +42,29 @@ export const useMultiNookPlayer = ({
   const onWaitingRef = useRef<(() => void) | null>(null);
   const onNativeLoadedMetadataRef = useRef<(() => void) | null>(null);
 
-  // Update time display for live streams to show "LIVE" or time behind
+  // The rAF loop below captures a []-dep callback, so props it needs to read
+  // have to arrive through a ref or the running loop keeps a stale value.
+  const isMinimizedRef = useRef(isMinimized);
+  isMinimizedRef.current = isMinimized;
+
+  // Update time display for live streams to show "LIVE" or time behind.
+  //
+  // The rAF scheduling here is deliberately left alone: progressUpdateIntervalRef
+  // holds a requestAnimationFrame handle and is released with
+  // cancelAnimationFrame, so swapping in a timer without changing every cancel
+  // site would be a silent no-op that leaks a forever-running timer per tile.
+  // What actually cost time was the per-frame DOM work below (querySelector +
+  // buffered read + textContent write, multiplied by N tiles), so that is what
+  // is gated.
   const updateLiveTimeDisplay = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
+
+    // Docked/hidden tiles and a backgrounded window do no DOM work at all.
+    if (isMinimizedRef.current || (typeof document !== 'undefined' && document.hidden)) {
+      progressUpdateIntervalRef.current = requestAnimationFrame(updateLiveTimeDisplay);
+      return;
+    }
 
     // In MultiNook, Player container holds the UI
     const container = (playerRef.current as any)?.elements?.container || video.parentElement?.parentElement;
@@ -58,23 +77,33 @@ export const useMultiNookPlayer = ({
     const currentTimeDisplay = container.querySelector('.plyr__time--current');
     if (currentTimeDisplay) {
       const buffered = video.buffered;
+      let nextText = 'LIVE';
+      let atLive = true;
       if (buffered.length > 0) {
         const bufferedEnd = buffered.end(buffered.length - 1);
         const timeFromLive = bufferedEnd - video.currentTime;
-
-        if (timeFromLive < 5) {
-          currentTimeDisplay.textContent = 'LIVE';
-          currentTimeDisplay.classList.add('plyr__time--live');
-        } else {
+        if (timeFromLive >= 5) {
           const behindSeconds = Math.floor(timeFromLive);
           const mins = Math.floor(behindSeconds / 60);
           const secs = behindSeconds % 60;
-          currentTimeDisplay.textContent = `-${mins}:${secs.toString().padStart(2, '0')}`;
-          currentTimeDisplay.classList.remove('plyr__time--live');
+          nextText = `-${mins}:${secs.toString().padStart(2, '0')}`;
+          atLive = false;
         }
-      } else {
-        currentTimeDisplay.textContent = 'LIVE';
-        currentTimeDisplay.classList.add('plyr__time--live');
+      }
+      // Compare against what is ACTUALLY in the DOM, never against a cached
+      // copy of our own last write. Plyr writes its own playback time into this
+      // same node on every timeupdate, so a cached comparison sees "unchanged",
+      // skips the write, and leaves Plyr's counter on screen (the live badge
+      // turns into a clock counting up from when you joined). Assigning
+      // textContent replaces the text node and invalidates layout even for an
+      // identical string, so the read is still worth it: in the steady state it
+      // drops us from a write every frame to a write only when Plyr has just
+      // clobbered us. Reading textContent does not force layout.
+      if (currentTimeDisplay.textContent !== nextText) {
+        currentTimeDisplay.textContent = nextText;
+      }
+      if (currentTimeDisplay.classList.contains('plyr__time--live') !== atLive) {
+        currentTimeDisplay.classList.toggle('plyr__time--live', atLive);
       }
     }
 

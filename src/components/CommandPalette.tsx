@@ -97,8 +97,8 @@ const SECTION_TINTS: Partial<Record<PaletteSection, string>> = {
   Categories:      'rgba(170, 165, 185, 0.20)',
 };
 
-const TILE_BEVEL =
-  'inset 1px 1px 0 0 rgba(255,255,255,0.10), inset -1px -1px 0 0 rgba(0,0,0,0.18)';
+// Canonical bevel recipe lives in globals.css as --bevel-tile.
+const TILE_BEVEL = 'var(--bevel-tile)';
 
 interface FlatRow {
   item: PaletteItem;

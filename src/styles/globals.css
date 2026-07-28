@@ -297,6 +297,14 @@ html[data-motion="off"] .update-pill { animation: none; }
   --color-accent-hover: #adc4cc;
   --color-accent-muted: rgba(151, 177, 185, 0.5);
   --color-accent-neon: #c8e0e8; /* Brighter neon variant for highlights */
+  /* Accent as raw channels for rgba(var(--color-accent-rgb), a) shadows.
+     Kept in sync per theme by applyTheme(). */
+  --color-accent-rgb: 151, 177, 185;
+
+  /* Canonical Winters' Glass inset bevels, shared with component style objects
+     via var() so the recipe lives in exactly one place. */
+  --bevel-tile: inset 1px 1px 0 0 rgba(255, 255, 255, 0.10), inset -1px -1px 0 0 rgba(0, 0, 0, 0.18);
+  --bevel-hero: inset 1px 1px 0 0 rgba(255, 255, 255, 0.14), inset -1px -1px 0 0 rgba(0, 0, 0, 0.22), 0 4px 10px rgba(0, 0, 0, 0.18);
 
   /* Border colors */
   --color-border: rgba(151, 177, 185, 0.3);
@@ -491,7 +499,14 @@ body {
     inset 1px 1px 0 0 rgba(255, 255, 255, 0.08),
     inset -1px -1px 0 0 rgba(0, 0, 0, 0.15),
     0 4px 10px rgba(0, 0, 0, 0.15);
-  transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.25);
+  /* Scoped, never `all`: animating backdrop-filter on state change is the
+     WebView2 flicker bug (see the MultiChat glass-artifact fix). */
+  transition: background-color 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.25),
+    box-shadow 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.25),
+    border-color 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.25),
+    color 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.25),
+    transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.25),
+    opacity 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.25);
 }
 
 /* Telemetry HUD over live video. Readability here must NOT ride the global
@@ -526,7 +541,11 @@ body {
     inset 0 1px 0 0 rgba(255, 255, 255, 0.10),
     0 1px 2px rgba(0, 0, 0, 0.22),
     0 10px 24px -14px rgba(0, 0, 0, 0.55);
-  transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.25);
+  transition: background-color 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.25),
+    background-image 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.25),
+    box-shadow 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.25),
+    transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.25),
+    opacity 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.25);
 }
 
 .glass-tile:hover {
@@ -670,8 +689,14 @@ body {
   border-radius: 8px;
   backdrop-filter: blur(calc(8px * var(--glass-strength)));
   /* Bouncy, fluid elasticity with a softened overshoot (was 2.2, which read as
-     a cartoonish bounce) so glass buttons settle smoothly without feeling violent. */
-  transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.5);
+     a cartoonish bounce) so glass buttons settle smoothly without feeling violent.
+     Scoped, never `all`: animating backdrop-filter is the WebView2 flicker bug. */
+  transition: background-color 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.5),
+    box-shadow 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.5),
+    border-color 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.5),
+    color 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.5),
+    transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.5),
+    opacity 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.5);
 }
 
 /* Static variant for framer-motion layout animations */
@@ -707,7 +732,11 @@ body {
      behind it into soft gradients — scaled by the Glassiness slider down to none. */
   -webkit-backdrop-filter: blur(calc(96px * var(--glass-strength))) saturate(180%);
   backdrop-filter: blur(calc(96px * var(--glass-strength))) saturate(180%);
-  transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition: background-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow 0.3s cubic-bezier(0.2, 0.8, 0.2, 1),
+    border-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1),
+    transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 /* Glassiness floor. At 0% the slider sets html[data-glass="off"]; strip every
@@ -747,7 +776,11 @@ html[data-motion="reduced"] .animate-scale-in {
   animation: fade-in 0.18s ease-out forwards;
 }
 html[data-motion="reduced"] .glass-button {
-  transition: all 0.18s ease-out;
+  /* Same scoped property list as the full-motion rule; `all` would reintroduce
+     the animated backdrop-filter for reduced-motion users. */
+  transition: background-color 0.18s ease-out, box-shadow 0.18s ease-out,
+    border-color 0.18s ease-out, color 0.18s ease-out, transform 0.18s ease-out,
+    opacity 0.18s ease-out;
 }
 html[data-motion="reduced"] .animate-ping,
 html[data-motion="reduced"] .animate-pulse,
@@ -804,11 +837,15 @@ html[data-motion="reduced"] .animate-shimmer {
   backdrop-filter: blur(calc(8px * var(--glass-strength)));
   
   /* The exact Neumorphic formulation provided: long offsets, high blur, negative spread */
-  box-shadow: 
+  box-shadow:
     inset 4px 4px 10px -3px rgba(0, 0, 0, 0.5),     /* Soft, diffuse inner shadow */
     inset -4px -4px 10px -3px rgba(255, 255, 255, 0.1); /* Soft, diffuse inner highlight */
-    
-  transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.25);
+
+  transition: background-color 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.25),
+    box-shadow 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.25),
+    border-color 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.25),
+    color 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.25),
+    opacity 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.25);
 }
 
 .glass-input:focus {
@@ -1322,19 +1359,32 @@ html[data-motion="reduced"] .animate-shimmer {
   animation: hype-marquee 12s linear forwards;
 }
 
-/* Animated wavy edge for hype train progress bar */
+/* Animated wavy edge for hype train progress bar.
+   This used to animate `mask-position` on the element itself, which forces the
+   compositor to re-rasterize the SVG mask every single frame, forever, once per
+   banner (and MultiChat renders one banner per blended channel with a live
+   train). The mask tile is 100px tall and repeats vertically, so translating the
+   whole masked layer by exactly one tile is visually identical and runs as a
+   cheap compositor transform instead. The layer overscans 100px above and below
+   so the wrap is seamless; the banner's own overflow-hidden clips it. */
 @keyframes wave-flow {
-  0% {
-    mask-position: 0 0;
-    -webkit-mask-position: 0 0;
-  }
-  100% {
-    mask-position: 0 100px;
-    -webkit-mask-position: 0 100px;
-  }
+  from { transform: translateY(0); }
+  to   { transform: translateY(100px); }
 }
 
 .hype-train-wave-edge {
+  /* Positioning only — the masked, animated fill is the ::before below. */
+  background-color: transparent;
+}
+
+.hype-train-wave-edge::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -100px;
+  bottom: -100px;
+  background-color: var(--color-background);
   /* Create a wavy left edge using a repeating gradient mask - longer smoother waves */
   -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 100'%3E%3Cpath d='M10,0 Q20,25 10,50 Q0,75 10,100 L20,100 L20,0 Z' fill='black'/%3E%3C/svg%3E");
   mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 100'%3E%3Cpath d='M10,0 Q20,25 10,50 Q0,75 10,100 L20,100 L20,0 Z' fill='black'/%3E%3C/svg%3E");
@@ -1344,7 +1394,12 @@ html[data-motion="reduced"] .animate-shimmer {
   mask-repeat: repeat-y;
   -webkit-mask-position: 0 0;
   mask-position: 0 0;
+  will-change: transform;
   animation: wave-flow 3s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hype-train-wave-edge::before { animation: none; }
 }
 
 /* Glow text shadow for celebration text */
@@ -1589,6 +1644,152 @@ html[data-motion="reduced"] .animate-shimmer {
 
 .animate-penrose-rotate {
   animation: penrose-rotate 3s linear infinite;
+}
+
+/* StreamNook mark: nine cubes marching one slot around the Penrose triangle.
+   Geometry ported from scripts/penrose-source.html, the same source the gold
+   subscriber badge and the tenure badges are baked from.
+
+   Face shades derive from the live theme accent, so the mark retints with no
+   JavaScript. The lightness ladder uses the gold subscriber badge's own depth
+   ratios (top 1.05 sheen / 0.85, right 0.80 / 0.56, left 0.56 / 0.40) because a
+   gentler ladder reads flat and stale; the chroma treatment follows the app
+   icon's material law: as a face darkens it also gets MORE chromatic, which is
+   what keeps the shadows a deep version of the accent instead of grey. The
+   chroma clamp matters. An already vivid accent (Monokai pink, Gruvbox yellow)
+   cannot take a chroma lift without leaving the sRGB gamut, and the gamut
+   mapping that follows shifts lightness enough to invert the bevel. clamp()
+   with min greater than max returns min, so vivid accents pass through
+   untouched while muted ones get the lift. */
+.penrose-march {
+  --pm-top-hi: var(--color-accent);
+  --pm-top-lo: color-mix(in srgb, var(--color-accent) 80%, #000000);
+  --pm-right-hi: color-mix(in srgb, var(--color-accent) 74%, #000000);
+  --pm-right-lo: color-mix(in srgb, var(--color-accent) 45%, #000000);
+  --pm-left-hi: color-mix(in srgb, var(--color-accent) 45%, #000000);
+  --pm-left-lo: color-mix(in srgb, var(--color-accent) 26%, #000000);
+}
+
+/* Preferred ladder, needs relative colour syntax. The srgb ladder above is the
+   fallback and tracks these lightnesses within about 2% on every theme accent;
+   it just lacks the chroma lift, so its shadows read slightly cooler. */
+@supports (color: oklch(from red calc(l * 0.5) clamp(c, calc(c * 1.2), 0.13) h)) {
+  .penrose-march {
+    --pm-top-hi: oklch(from var(--color-accent) calc(l * 1.05) c h);
+    --pm-top-lo: oklch(from var(--color-accent) calc(l * 0.85) clamp(c, calc(c * 1.06), 0.13) h);
+    --pm-right-hi: oklch(from var(--color-accent) calc(l * 0.80) clamp(c, calc(c * 1.14), 0.13) h);
+    --pm-right-lo: oklch(from var(--color-accent) calc(l * 0.56) clamp(c, calc(c * 1.30), 0.13) h);
+    --pm-left-hi: oklch(from var(--color-accent) calc(l * 0.56) clamp(c, calc(c * 1.30), 0.13) h);
+    --pm-left-lo: oklch(from var(--color-accent) calc(l * 0.40) clamp(c, calc(c * 1.45), 0.13) h);
+  }
+}
+
+.penrose-march .pm-top-hi {
+  stop-color: var(--pm-top-hi);
+}
+.penrose-march .pm-top-lo {
+  stop-color: var(--pm-top-lo);
+}
+.penrose-march .pm-right-hi {
+  stop-color: var(--pm-right-hi);
+}
+.penrose-march .pm-right-lo {
+  stop-color: var(--pm-right-lo);
+}
+.penrose-march .pm-left-hi {
+  stop-color: var(--pm-left-hi);
+}
+.penrose-march .pm-left-lo {
+  stop-color: var(--pm-left-lo);
+}
+
+/* Note on the cube face seams. The three faces share exact edges and each is
+   antialiased separately, so the shared edges are slightly translucent. The
+   component backs each seam with a narrow strip painted via the SAME gradient
+   as the darker adjacent face (the strips carry their fills as attributes, not
+   here). Rejected fixes, in order: stroking the faces (bleeds onto the next
+   cube), a full-size opaque underlay (light rim around every cube), an inset
+   underlay in one mid tone (reads light against the dark face and dark against
+   the light face, a half-and-half line). */
+
+.penrose-march .pm-cube {
+  animation-duration: 1.5s;
+  animation-iteration-count: infinite;
+  animation-timing-function: cubic-bezier(0.6, 0, 0.4, 1);
+}
+
+@keyframes pm-flow-a {
+  from {
+    transform: translate(0, 0);
+  }
+  to {
+    transform: translate(26px, 15px);
+  }
+}
+@keyframes pm-flow-b {
+  from {
+    transform: translate(0, 0);
+  }
+  to {
+    transform: translate(-26px, 15px);
+  }
+}
+@keyframes pm-flow-c {
+  from {
+    transform: translate(0, 0);
+  }
+  to {
+    transform: translate(0, -30px);
+  }
+}
+
+/* Cube 8's right face is drawn twice at different depths, with only one opaque
+   at a time and an instant step at the half-way mark. That moves the face
+   between layers without it ever visually disappearing. Copied from the source
+   file as-is: the stacking is hand-tuned and has to be judged by eye, not by
+   counting changed pixels. */
+@keyframes pm-phase-a {
+  0%,
+  49.9% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes pm-phase-b {
+  0%,
+  49.9% {
+    opacity: 0;
+  }
+  50%,
+  100% {
+    opacity: 1;
+  }
+}
+
+.penrose-march .pm-flow-a {
+  animation-name: pm-flow-a;
+}
+.penrose-march .pm-flow-b {
+  animation-name: pm-flow-b;
+}
+.penrose-march .pm-flow-c {
+  animation-name: pm-flow-c;
+}
+.penrose-march .pm-flow-c.pm-phase-a {
+  animation-name: pm-flow-c, pm-phase-a;
+}
+.penrose-march .pm-flow-c.pm-phase-b {
+  animation-name: pm-flow-c, pm-phase-b;
+}
+
+/* Frozen at their base positions the cubes are exactly the static logo. */
+@media (prefers-reduced-motion: reduce) {
+  .penrose-march .pm-cube {
+    animation: none;
+  }
 }
 
 /* Plyr Custom Styling - Theme aware */
@@ -3093,6 +3294,64 @@ html[data-motion="reduced"] .animate-shimmer {
   }
 }
 
+/* Small secondary action button (Browse / Open / Add / Cancel rows). Replaces
+   the hand-rolled bordered-chip recipe: fill + inset bevel carry the shape,
+   border stays transparent per the no-chip-border rule. */
+.glass-button-secondary {
+  background-color: color-mix(in srgb, var(--color-surface) 60%, transparent);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  box-shadow:
+    inset 1px 1px 0 0 rgba(255, 255, 255, 0.08),
+    inset -1px -1px 0 0 rgba(0, 0, 0, 0.14);
+  transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+.glass-button-secondary:hover {
+  background-color: var(--color-surface-hover);
+}
+.glass-button-secondary:active {
+  background-color: var(--color-surface-active);
+}
+
+/* Engaged toolbar toggle: the pressed-in neumorphic trench (same recipe as
+   .titlebar-icon-btn.is-active) at the glass-button radius, so a toggle's ON
+   state reads as physically held down without the corner radius jumping to the
+   12px .glass-input trench it used to borrow. Callers supply text color. */
+.glass-button-active {
+  background-color: var(--color-surface);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  box-shadow:
+    inset 2px 2px 5px -2px rgba(0, 0, 0, 0.55),
+    inset -2px -2px 5px -2px rgba(255, 255, 255, 0.09);
+}
+
+/* General-purpose hairline separators between stacked children, the same
+   weight as the sanctioned .settings-card row hairline. */
+.hairline-y > * + * {
+  border-top: 1px solid color-mix(in srgb, var(--color-border-subtle) 55%, transparent);
+}
+
+/* Chat popover panel (autocompletes, mod menu, pinned message). The heavy
+   frost is the look; the blur scales with the Glassiness slider like every
+   other glass class. Transition is scoped (never `all`) so backdrop-filter is
+   never animated, which is the actual WebView2 flicker trigger. If a specific
+   popover is ever OBSERVED to flicker over chat, flatten that one site with an
+   inline backdrop-filter override; do not de-blur the class. */
+.sn-popover {
+  background-color: color-mix(in srgb, var(--color-background) 50%, transparent);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  -webkit-backdrop-filter: blur(calc(64px * var(--glass-strength))) saturate(300%);
+  backdrop-filter: blur(calc(64px * var(--glass-strength))) saturate(300%);
+  box-shadow:
+    inset 1px 1px 0 0 rgba(255, 255, 255, 0.08),
+    inset -1px -1px 0 0 rgba(0, 0, 0, 0.15),
+    0 8px 24px -8px rgba(0, 0, 0, 0.55);
+  transition: background-color 0.2s ease, box-shadow 0.2s ease,
+    border-color 0.2s ease, opacity 0.2s ease, transform 0.2s ease;
+}
+
 /* Bonus-chest "claim me" attention. The chest button rests most of the cycle,
    then does a short wiggle-and-pop so an unclaimed chest periodically catches
    the eye instead of sitting there unnoticed. Motion only (no glow). Pauses on
@@ -3114,3 +3373,94 @@ html[data-motion="reduced"] .animate-shimmer {
   animation: none;
 }
 
+
+/* ============================================================
+   FFZ emote effects (modifier emotes: ffzW/X/Y/Cursed/Hyper/...).
+   Applied by ChatMessage as wrapper elements around an emote group;
+   durations and curves mirror FrankerFaceZ's own effect styles.
+   Static effects (flip / wide / tint) are inline styles; only the
+   animated ones live here so reduced motion can switch them off.
+   ============================================================ */
+
+@keyframes sn-ffz-rainbow {
+  0% { filter: hue-rotate(0deg); }
+  100% { filter: hue-rotate(360deg); }
+}
+.sn-ffz-anim-rainbow { animation: sn-ffz-rainbow 2s linear infinite; }
+
+@keyframes sn-ffz-shake {
+  0% { transform: translate(1px, 1px); }
+  25% { transform: translate(-1px, -1px); }
+  50% { transform: translate(-1px, 1px); }
+  75% { transform: translate(1px, -1px); }
+  100% { transform: translate(1px, 1px); }
+}
+.sn-ffz-anim-shake { animation: sn-ffz-shake 0.1s linear infinite; }
+
+@keyframes sn-ffz-jam {
+  0% { transform: translate(0, 0) rotate(0deg); }
+  25% { transform: translate(1px, 1px) rotate(6deg); }
+  50% { transform: translate(0, 2px) rotate(0deg); }
+  75% { transform: translate(-1px, 1px) rotate(-6deg); }
+  100% { transform: translate(0, 0) rotate(0deg); }
+}
+.sn-ffz-anim-jam { animation: sn-ffz-jam 0.6s linear infinite; }
+
+@keyframes sn-ffz-bounce {
+  0% { transform: translateY(0) scale(1, 1); }
+  25% { transform: translateY(-25%) scale(0.95, 1.05); }
+  50% { transform: translateY(0) scale(1.05, 0.95); }
+  75% { transform: translateY(-12%) scale(1, 1); }
+  100% { transform: translateY(0) scale(1, 1); }
+}
+.sn-ffz-anim-bounce { animation: sn-ffz-bounce 0.5s linear infinite; }
+
+@keyframes sn-ffz-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+.sn-ffz-anim-spin { animation: sn-ffz-spin 1.5s linear infinite; }
+
+@keyframes sn-ffz-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+.sn-ffz-anim-slide { animation: sn-ffz-slide 2s linear infinite; }
+
+/* Arrive/Leave are one-shot entrance/exit effects in FFZ, not loops. */
+@keyframes sn-ffz-appear {
+  0% { transform: translateX(-100%); opacity: 0; }
+  100% { transform: translateX(0); opacity: 1; }
+}
+.sn-ffz-anim-appear { animation: sn-ffz-appear 0.5s ease-out 1 both; }
+
+@keyframes sn-ffz-leave {
+  0% { transform: translateX(0); opacity: 1; }
+  100% { transform: translateX(100%); opacity: 0; }
+}
+.sn-ffz-anim-leave { animation: sn-ffz-leave 0.5s ease-in 1 both; }
+
+/* Reduced motion keeps static effects (flip / wide / tint) but stops the
+   animated ones. data-motion="off" is already covered by the global kill. */
+html[data-motion="reduced"] .sn-ffz-anim-rainbow,
+html[data-motion="reduced"] .sn-ffz-anim-shake,
+html[data-motion="reduced"] .sn-ffz-anim-jam,
+html[data-motion="reduced"] .sn-ffz-anim-bounce,
+html[data-motion="reduced"] .sn-ffz-anim-spin,
+html[data-motion="reduced"] .sn-ffz-anim-slide,
+html[data-motion="reduced"] .sn-ffz-anim-appear,
+html[data-motion="reduced"] .sn-ffz-anim-leave {
+  animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sn-ffz-anim-rainbow,
+  .sn-ffz-anim-shake,
+  .sn-ffz-anim-jam,
+  .sn-ffz-anim-bounce,
+  .sn-ffz-anim-spin,
+  .sn-ffz-anim-slide,
+  .sn-ffz-anim-appear,
+  .sn-ffz-anim-leave {
+    animation: none;
+  }
+}

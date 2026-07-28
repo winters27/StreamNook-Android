@@ -177,11 +177,12 @@ export default function HypeTrainBanner({ train, confettiTarget, onExpire }: Hyp
           }`}
           style={{ width: `${percentage}%`, transition: 'width 0.5s ease-out' }}
         />
-        {/* Unfilled portion with animated wavy left edge */}
+        {/* Unfilled portion with animated wavy left edge. The fill colour lives
+            on the ::before layer in globals.css, which is what carries the mask
+            and the animation. */}
         <div
           className="absolute inset-0 hype-train-wave-edge"
           style={{
-            backgroundColor: 'var(--color-background)',
             left: `calc(${percentage}% - 19px)`,
             width: `calc(${100 - percentage}% + 19px)`,
             transition: 'left 0.5s ease-out, width 0.5s ease-out',

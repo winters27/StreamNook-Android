@@ -64,3 +64,4 @@ src-tauri/.cargo/
 src-tauri/gen/android/local.properties
 src-tauri/gen/android/.gradle/
 src-tauri/gen/android/**/build/
+badge-assets-r2/

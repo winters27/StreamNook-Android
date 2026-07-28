@@ -1,3 +1,91 @@
+## [8.3.9] - 2026-07-28
+
+## 🎉 Big update rolling through
+> A lot landed in this one. Badge drops now run on our own live feed, FrankerFaceZ modifier emotes finally do their thing in chat, any font you like can drive the whole interface, and mod rooms picked up presence, unread counts and a much better composer. Underneath all that is a long list of fixes, including the 7TV channel emotes that had gone missing.
+
+---
+
+### ✨ Features
+- Badge drops arrive in seconds. StreamNook holds a live connection to our own badge feed instead of scanning on a timer, so a new Twitch badge appears in your gallery seconds after it is spotted, while the app is open, with no refresh. Anything that dropped while StreamNook was closed is caught up at launch, and each badge announces itself exactly once.
+- Badge writeups are ours end to end. What you read on a badge page is the same writeup the Penrose bot posts in our Discord: written the moment a drop is spotted, then edited in place as more details surface. Those edits ride the same feed into the app, so a badge page fills itself in and corrects itself while you are looking at it, rather than depending on an outside source for the details.
+- Get pinged the moment a badge drops, even with StreamNook closed. Join the [StreamNook Discord](https://discord.gg/2xvuF9TES7) and pick up the Badges role, and the Penrose bot will post every new drop as it is spotted, then edit that post as more details firm up.
+- Badge pages read like a page about the badge instead of a table of fields. How to earn it, when the event runs in your local time, the exact Twitch category with its cover art, cards for the channels involved that take you straight to the stream, and the other badges in the same event. Ids and URLs moved into a Technical details drop-down.
+- FrankerFaceZ modifier emotes now do what they do on FFZ. Stack ffzW, ffzX, ffzRainbow, ffzShake and the rest onto an emote and it stretches, flips, tints or animates in chat instead of sitting there as a plain overlay. There is a toggle in Chat settings if you prefer the old look, and the emote picker previews each effect and marks the ones that need an FFZ subscription.
+- Use any font you like for the whole interface. Theme > Font has a new Custom option: type a name like Poppins or Bebas Neue and it downloads on the spot, or name a font already installed on your PC and it loads with no download at all. Eight popular picks are one click away.
+- Mod Rooms stay with you. Rooms keep running in the background, so the Mods tab carries an unread count, red when someone pinged you, without your having to open it. Moderation settings shows which account rooms are connected as, with Connect and Disconnect.
+- Writing in a mod room got a lot better. Messages send instantly and can be retried if they fail, @mentions autocomplete and highlight, images paste straight in and open full size, links are clickable, day and New dividers break up the history, and pressing Up edits your last message.
+- Clicking someone in chat opens straight to their messages. That history stays live while the card is open, renders emotes properly, and stays pinned to the newest message until you scroll up. If you would rather land on the profile with their badges and stats, there is a toggle under Chat > User Cards.
+
+### 🐛 Bug Fixes
+- 7TV channel emotes came back. 7TV changed the shape of its channel response and stopped including the emote set inline, and channel emotes silently vanished. StreamNook now fetches the set properly on both Twitch and Kick, and the trending tab works again.
+- Chat no longer looks dead just after joining a channel. New messages could stop appearing for the first stretch after a join.
+- Drops you had already claimed could show as unclaimed when an old progress record still carried watch minutes.
+- A badge queued before its earn window opened now reads as available instead of coming soon.
+- The player's LIVE indicator stopped turning into a clock counting up from when you joined.
+- The window comes back on the same monitor at the same size after an update restart.
+- Mod rooms recover from a dropped connection instead of giving up. A brief network problem no longer asks an already connected account to reconnect, stalled connections are detected and replaced, and reconnecting no longer shows every message twice.
+- Emotes typed with extra spaces between them no longer break modifier and zero-width stacking.
+- Reply previews show emotes instead of raw emote codes.
+- Usernames sit on the same line as the message again instead of floating slightly above it.
+- Accent tinting works across the whole app again. Hundreds of surfaces meant to pick up your theme colour were rendering with no tint at all.
+- Seasonal and cake-day badges are granted against the server's clock now, so they land on the right day regardless of your PC's date.
+
+### ⚡ Performance
+- Chat, the sidebar, the title bar, the player and the Multi Nook grid no longer re-render on unrelated activity. Every toast, mod-log entry and drops poll used to wake the whole app.
+- Typing in the chat box no longer re-renders the visible messages.
+- Hype train banners, tooltips and Multi Nook tiles stopped doing repaint work on every frame, which shows up most on busy channels and multi-stream layouts.
+- 7TV's trending and global emote sets are fetched once and shared instead of once per channel join.
+
+### 🔧 Maintenance
+- The Drops page tucks fully collected games into their own collapsible section, so the grid shows what you can still earn.
+- The loading widget is now the real StreamNook mark, retinted by your theme.
+- Remaining native browser tooltips were replaced with the app's own.
+- First-run setup installs one component instead of two.
+
+## [8.3.8] - 2026-07-20
+
+### ✨ Features
+- Watch a VOD with its chat in sync. Historical chat now replays alongside the video and scrolls in time with the playhead, so you can follow the conversation even on streams that never kept an on-screen chat box. A header toggle switches between the synced replay and the channel's current live chat.
+- See every drop, not just the ones you earn by watching. A new filter on the Drops page switches between "Watch to earn" and "All drops," so purchase and subscription drops are no longer hidden from the list.
+- Channel point redemptions now read clearly in chat, showing the reward with its cost and the channel's points icon instead of a bare number.
+- Community gift subs collapse into a single announcement that lists the recipients, so a big gift drop no longer floods chat with dozens of separate lines. This applies in both chat and the stream overlay.
+
+## [8.3.7] - 2026-07-17
+
+## 🎉 New: Subscriber milestone badges
+> As our first subscribers approach three months, we are rolling out milestone badges for the people who stick around. Reach 3, 6, 9, or 12 months and you unlock a holographic Penrose badge to wear anywhere in StreamNook.
+
+![Subscriber milestone badges](https://cdn.streamnook.app/badges/tenure-lineup.webp)
+
+### ✨ Features
+- Prediction outcomes now show emotes in their titles.
+- Real-time badge drop alerts, so new Twitch badge drops surface the moment they go live.
+
+### 🐛 Bug Fixes
+- Mass gift-sub announcements collapse into a single card that lists the recipients, instead of flooding chat.
+- Gift-sub recipients show in their own name color instead of the gifter's.
+- Drops automation fixes so mining tracks the correct drop and channel and resumes cleanly.
+- The what's-new popup renders release images and keeps descriptions in order.
+
+## [8.3.6] - 2026-07-15
+
+### 🐛 Bug Fixes
+- Fixed YouTube live chat not showing up for some streams. When a creator was genuinely live but YouTube's live shortcut returned their channel page instead of the stream, the chat would silently never load. StreamNook now finds the live stream and connects to its chat directly, and it won't attach to an old stream's replay chat by mistake.
+
+## [8.3.5] - 2026-07-12
+
+### ✨ Features
+- Overlay: Added a "Restore chat on reload" option. By default the overlay comes back cleared when you reopen OBS or start a stream; turn it on to bring the last messages back instead.
+
+### 🐛 Bug Fixes
+- Overlay: YouTube chat now uses YouTube's own badges and colors instead of Twitch ones. Moderators show the blue shield with a blue name, members show the channel's tier badge with a green name, verified users get the check, and the channel owner appears in a gold name tag, with badges in YouTube's order and at full resolution.
+- Drops: Watch time now reports on two paths at once, so drop progress keeps crediting reliably through long sessions.
+- Drops: The Drops panel's per-tier bars and "next reward" countdown update live now, instead of only after reopening the panel.
+- Updates: The updater no longer gets stuck on the old version when a leftover StreamNook process is still running. It closes any stragglers and completes the swap.
+
+### ⚡ Performance
+- Cologne event: The animated backdrop stays smooth in the browser-based overlay view.
+
 ## [8.3.4] - 2026-07-12
 
 ## Overlay update

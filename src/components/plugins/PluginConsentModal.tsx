@@ -3,8 +3,8 @@ import { Puzzle } from 'lucide-react';
 import { capabilityLines, GrantedCaps, PluginTier } from '../../types/plugins';
 import TierBadge from './TierBadge';
 
-const TILE_BEVEL =
-  'inset 1px 1px 0 0 rgba(255,255,255,0.10), inset -1px -1px 0 0 rgba(0,0,0,0.18)';
+// Canonical bevel recipe lives in globals.css as --bevel-tile.
+const TILE_BEVEL = 'var(--bevel-tile)';
 
 export interface ConsentSubject {
   name: string;
@@ -114,14 +114,14 @@ const PluginConsentModal = ({ subject, onConfirm, onCancel }: Props) => {
               <button
                 type="button"
                 onClick={onCancel}
-                className="rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-[13px] text-textSecondary transition-colors hover:bg-white/10 hover:text-textPrimary"
+                className="glass-button-secondary px-4 py-2 text-[13px] text-textSecondary hover:text-textPrimary"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={onConfirm}
-                className="rounded-lg border border-accent/25 bg-accent/15 px-4 py-2 text-[13px] font-medium text-textPrimary transition-colors hover:bg-accent/25"
+                className="glass-button-secondary !bg-accent/15 px-4 py-2 text-[13px] font-medium text-textPrimary hover:!bg-accent/25"
               >
                 {subject.action}
               </button>

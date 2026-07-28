@@ -25,17 +25,10 @@ export function ProviderChatPane({ channel, provider, channelName }: ProviderCha
   const snapshot = useChannelChat(makeKey(provider, channel));
   const meta = PROVIDERS[provider];
 
-  // The store appends messages in place (stable array ref) for perf, so a fresh
-  // reference is needed each new message to defeat ChatMessageList's memo and
-  // render live. Keyed on liveMessageCount (bumps every message) + the array ref
-  // (changes on buffer trim) so unrelated channels don't trigger a re-slice.
-  const messages = useMemo(
-    () => snapshot.messages.slice(),
-    // liveMessageCount is an intentional trigger: the store appends in place
-    // (stable array ref), so the count is what signals a new message arrived.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [snapshot.messages, snapshot.liveMessageCount],
-  );
+  // The store appends messages in place (stable array ref) for perf, so array
+  // identity is not a usable change signal. `renderToken` is that signal now, so
+  // the defensive copy this used to make on every message is gone.
+  const messages = snapshot.messages;
 
   const getMessageId = useCallback(
     (m: string | BackendChatMessage) => (typeof m === 'string' ? null : m.id),
@@ -60,6 +53,7 @@ export function ProviderChatPane({ channel, provider, channelName }: ProviderCha
       <div className="min-h-0 flex-1 overflow-hidden">
         <ChatMessageList
           messages={messages}
+          renderToken={snapshot.renderToken}
           isPaused={false}
           onScroll={noop}
           onUsernameClick={noop}

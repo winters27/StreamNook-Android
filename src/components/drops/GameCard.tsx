@@ -264,26 +264,26 @@ export default function GameCard({
                 <div className="absolute top-2 left-2 z-10 flex flex-col gap-1.5">
                     {/* Claimable badge */}
                     {claimableCount > 0 && (
-                        <div className="drops-badge-glass-lg !bg-green-600/50 !border-green-500/70">
-                            <Check size={14} className="text-green-200" />
-                            <span className="text-green-200">{claimableCount} READY</span>
+                        <div className="drops-badge-glass-lg !bg-success/50 !border-success/70">
+                            <Check size={14} className="text-white" />
+                            <span className="text-white">{claimableCount} READY</span>
                         </div>
                     )}
                     {/* Done badge — every drop for this game is already earned. Marks
                         the card so it's not re-opened expecting something to collect.
                         Suppressed while anything is claimable or actively collecting. */}
                     {game.all_drops_claimed && claimableCount === 0 && !isDropProgressing && (
-                        <div className="drops-badge-glass-lg !bg-black/45 !border-green-500/50">
-                            <Check size={14} className="text-green-300" />
-                            <span className="text-green-300">DONE</span>
+                        <div className="drops-badge-glass-lg !bg-black/45 !border-success/50">
+                            <Check size={14} className="text-success" />
+                            <span className="text-success">DONE</span>
                         </div>
                     )}
                 </div>
 
                 {/* Top-Right: Inventory badge */}
                 {game.inventory_items.length > 0 && (
-                    <div className="absolute top-2 right-2 z-10 w-7 h-7 rounded-full glass-panel flex items-center justify-center border border-purple-500/40 bg-purple-500/30">
-                        <Package size={14} className="text-purple-200" />
+                    <div className="absolute top-2 right-2 z-10 w-7 h-7 rounded-full glass-panel flex items-center justify-center border border-highlight-purple/40 bg-highlight-purple/30">
+                        <Package size={14} className="text-white" />
                     </div>
                 )}
 
@@ -318,7 +318,7 @@ export default function GameCard({
                                 fill={isFavorite ? 'url(#drops-glass-heart-fill)' : 'none'}
                                 stroke={isFavorite ? 'url(#drops-glass-heart-stroke)' : 'currentColor'}
                                 strokeWidth={isFavorite ? 1.5 : 2}
-                                className={`transition-all duration-300 ${isFavorite ? 'drop-shadow-[0_2px_6px_rgba(236,72,153,0.5)]' : 'text-textSecondary opacity-0 group-hover:opacity-100 hover:text-textPrimary'}`}
+                                className={`transition-all duration-300 ${isFavorite ? 'drop-shadow-[0_2px_6px_color-mix(in_srgb,var(--color-highlight-pink)_50%,transparent)]' : 'text-textSecondary opacity-0 group-hover:opacity-100 hover:text-textPrimary'}`}
                             />
                         </button>
                     </Tooltip>
@@ -360,9 +360,9 @@ export default function GameCard({
                                                 e.stopPropagation();
                                                 if (onStopAutomation) onStopAutomation();
                                             }}
-                                            className="w-5 h-5 flex items-center justify-center rounded bg-red-500/20 hover:bg-red-500/40 border border-red-500/40 hover:border-red-500/60 transition-all shrink-0"
+                                            className="w-5 h-5 flex items-center justify-center rounded bg-error/20 hover:bg-error/40 border border-transparent shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-error)_40%,transparent)] transition-all shrink-0"
                                         >
-                                            <Square size={10} className="text-red-400" fill="currentColor" />
+                                            <Square size={10} className="text-error" fill="currentColor" />
                                         </button>
                                     </Tooltip>
                                     )}
@@ -387,7 +387,7 @@ export default function GameCard({
                         {game.all_drops_claimed ? (
                             /* Fully earned — show the finished state instead of the
                                (now misleading) live campaign/drop counts. */
-                            <span className="flex items-center gap-1 text-green-400 text-xs font-medium min-w-0">
+                            <span className="flex items-center gap-1 text-success text-xs font-medium min-w-0">
                                 <Check size={12} className="shrink-0" />
                                 All rewards collected
                             </span>
@@ -411,7 +411,7 @@ export default function GameCard({
                             {/* In Progress indicator (time-based drops with progress) */}
                             {inProgressCount > 0 && (
                                 <Tooltip content="Drops in progress" delay={200} side="bottom">
-                                    <span className="flex items-center gap-0.5 text-yellow-400">
+                                    <span className="flex items-center gap-0.5 text-warning">
                                         <Clock size={10} />
                                         {inProgressCount}
                                     </span>
@@ -421,7 +421,7 @@ export default function GameCard({
                             {/* Time-based drops indicator (only show if not showing in-progress) */}
                             {inProgressCount === 0 && timeBasedDropCount > 0 && (
                                 <Tooltip content={`${timeBasedDropCount} time-based drop${timeBasedDropCount !== 1 ? 's' : ''}`} delay={200} side="bottom">
-                                    <span className="flex items-center gap-0.5 text-blue-400">
+                                    <span className="flex items-center gap-0.5 text-info">
                                         <Clock size={10} />
                                         {timeBasedDropCount}
                                     </span>
@@ -431,7 +431,7 @@ export default function GameCard({
                             {/* Paid/subscription drops indicator */}
                             {paidDropCount > 0 && (
                                 <Tooltip content={`${paidDropCount} subscription/paid drop${paidDropCount !== 1 ? 's' : ''}`} delay={200} side="bottom">
-                                    <span className="flex items-center gap-0.5 text-green-400">
+                                    <span className="flex items-center gap-0.5 text-success">
                                         <DollarSign size={10} />
                                         {paidDropCount}
                                     </span>
@@ -440,7 +440,7 @@ export default function GameCard({
 
                             {/* Claimed count (only show if no active drops) */}
                             {game.total_claimed > 0 && !totalActiveDrops && (
-                                <span className="text-purple-400">
+                                <span className="text-highlight-purple">
                                     {game.total_claimed} collected
                                 </span>
                             )}

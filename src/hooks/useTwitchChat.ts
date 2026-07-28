@@ -54,6 +54,9 @@ export interface UseTwitchChatReturn {
    *  baseline for the "N new since paused" badge (unlike `messages.length`,
    *  which is capped and trimmed). */
   liveMessageCount: number;
+  /** Re-render signal for the memoized message list. See ChannelChatSnapshot —
+   *  `messages` identity is NOT a reliable change signal. */
+  renderToken: number;
 }
 
 export const useTwitchChat = (): UseTwitchChatReturn => {
@@ -144,5 +147,6 @@ export const useTwitchChat = (): UseTwitchChatReturn => {
     roomState: snapshot.roomState,
     userBadges: snapshot.userBadges,
     liveMessageCount: snapshot.liveMessageCount,
+    renderToken: snapshot.renderToken,
   };
 };

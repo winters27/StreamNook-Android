@@ -35,8 +35,8 @@ import {
 } from '../../types/plugins';
 import { Logger } from '../../utils/logger';
 
-const TILE_BEVEL =
-  'inset 1px 1px 0 0 rgba(255,255,255,0.10), inset -1px -1px 0 0 rgba(0,0,0,0.18)';
+// Canonical bevel recipe lives in globals.css as --bevel-tile.
+const TILE_BEVEL = 'var(--bevel-tile)';
 
 const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
   <button

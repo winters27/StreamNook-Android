@@ -36,9 +36,11 @@ export const SongCard = memo(function SongCard({ card }: { card: SongMatch }) {
       )}
 
       <div className="min-w-0 flex flex-col gap-0.5">
-        <div className="text-sm font-semibold text-white truncate" title={card.title}>
-          {card.title}
-        </div>
+        <Tooltip content={card.title}>
+          <div className="text-sm font-semibold text-white truncate">
+            {card.title}
+          </div>
+        </Tooltip>
         <div className="text-xs text-white/60 truncate">
           {card.artist}
           {card.album ? ` · ${card.album}` : ''}

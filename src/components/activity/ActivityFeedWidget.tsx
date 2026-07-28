@@ -777,7 +777,7 @@ export const ActivityFeedWidget = memo(function ActivityFeedWidget({
           <div
             className="glass-panel fixed z-[1001] max-h-[60vh] w-28 overflow-y-auto rounded-lg border border-borderLight p-1 shadow-xl scrollbar-thin"
             // Opaque themed surface: a live backdrop-blur flickers over the feed.
-            style={{ right: currencyPos.right, bottom: currencyPos.bottom, backgroundColor: 'var(--color-background-tertiary)' }}
+            style={{ right: currencyPos.right, bottom: currencyPos.bottom, backgroundColor: 'var(--color-background-tertiary)', backdropFilter: 'none', WebkitBackdropFilter: 'none' }}
           >
             {['', ...CURRENCY_OPTIONS].map((c) => {
               const selected = targetCurrency === c;
@@ -813,7 +813,7 @@ export const ActivityFeedWidget = memo(function ActivityFeedWidget({
           <div
             className="glass-panel fixed z-[1001] max-h-[60vh] w-56 overflow-y-auto rounded-lg border border-borderLight p-2 shadow-xl scrollbar-thin"
             // Opaque themed surface: a live backdrop-blur flickers over the feed.
-            style={{ right: filterPos.right, bottom: filterPos.bottom, backgroundColor: 'var(--color-background-tertiary)' }}
+            style={{ right: filterPos.right, bottom: filterPos.bottom, backgroundColor: 'var(--color-background-tertiary)', backdropFilter: 'none', WebkitBackdropFilter: 'none' }}
           >
             <div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wide text-textMuted">
               Show in activity

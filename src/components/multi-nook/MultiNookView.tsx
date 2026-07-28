@@ -35,7 +35,14 @@ const UNDOCK_DROP_ID = 'undock-drop-zone';
 const DOCKED_PREFIX = 'docked::';
 
 export const MultiNookView: React.FC = () => {
-  const { slots, reorderSlots, dockSlot, undockSlot, batchLoadMissingStreams, maximizedSlotId, setMaximizedSlot } = usemultiNookStore();
+  // Subscribe to the two pieces of state actually rendered here; take the
+  // actions without subscribing (they never change identity). A bare
+  // `usemultiNookStore()` re-rendered this grid, and therefore every tile, on
+  // any store mutation at all.
+  const slots = usemultiNookStore((s) => s.slots);
+  const maximizedSlotId = usemultiNookStore((s) => s.maximizedSlotId);
+  const { reorderSlots, dockSlot, undockSlot, batchLoadMissingStreams, setMaximizedSlot } =
+    usemultiNookStore.getState();
   const visibleSlots = useMemo(() => slots.filter((s) => !s.isMinimized), [slots]);
   const minimizedSlots = useMemo(() => slots.filter((s) => s.isMinimized), [slots]);
 
@@ -388,9 +395,9 @@ const UndockDropZone: React.FC<{ dropId: string }> = ({ dropId }) => {
       ref={setNodeRef}
       className={`
         absolute inset-0 z-20 flex items-center justify-center rounded-xl pointer-events-auto
-        transition-all duration-300 ease-out backdrop-blur-sm
+        transition-[background-color,border-color,transform] duration-300 ease-out backdrop-blur-sm
         ${isOver
-          ? 'bg-transparent border-2 border-accent/60 shadow-[0_0_20px_rgba(167,139,250,0.1)_inset]'
+          ? 'bg-transparent border-2 border-accent/60 shadow-[0_0_20px_rgba(var(--color-accent-rgb),0.1)_inset]'
           : 'bg-transparent border-2 border-dashed border-white/10'
         }
       `}

@@ -108,7 +108,7 @@ const ModeratorMenu: React.FC<ModeratorMenuProps> = ({ broadcasterId, roomState 
             ${isOpen ? 'bg-green-500/10 text-green-400' : 'text-green-500/60 hover:text-green-400 hover:bg-green-500/10'}
           `}
         >
-          <Shield size={18} strokeWidth={isOpen ? 2.5 : 2} className="transition-all duration-200 group-hover:drop-shadow-[0_0_6px_rgba(74,222,128,0.5)]" />
+          <Shield size={18} strokeWidth={isOpen ? 2.5 : 2} className="transition-all duration-200 group-hover:drop-shadow-[0_0_6px_color-mix(in_srgb,var(--color-success)_50%,transparent)]" />
         </button>
       </Tooltip>
 
@@ -119,8 +119,7 @@ const ModeratorMenu: React.FC<ModeratorMenuProps> = ({ broadcasterId, roomState 
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 10, scale: 0.95 }}
             transition={{ duration: 0.15, ease: "easeOut" }}
-            className="absolute z-[60] bottom-full left-0 right-0 mb-2 h-[520px] max-h-[calc(100vh-120px)] flex flex-col overflow-hidden rounded-xl border border-borderSubtle shadow-[0_16px_48px_rgba(0,0,0,0.8)] bg-background/[0.45] glass-panel origin-bottom"
-            style={{ backdropFilter: 'blur(64px) saturate(300%)', WebkitBackdropFilter: 'blur(64px) saturate(300%)' }}
+            className="sn-popover absolute z-[60] bottom-full left-0 right-0 mb-2 h-[520px] max-h-[calc(100vh-120px)] flex flex-col overflow-hidden origin-bottom"
           >
             <div className="px-4 py-3 border-b border-white/5 flex items-center bg-background/[0.5] backdrop-blur-md shadow-sm z-10 relative">
               <span className="text-[11px] font-semibold text-white/50 tracking-wider uppercase">Stream Moderator Settings</span>

@@ -1341,6 +1341,7 @@ fn parse_segments(content: &str, slug: &str) -> (Vec<MessageSegment>, String) {
                     emote_id: Some(id.to_string()),
                     emote_url: format!("https://files.kick.com/emotes/{}/fullsize", id),
                     is_zero_width: None,
+                    modifier_flags: None,
                 });
                 plain.push_str(name);
             } else {
@@ -1389,6 +1390,7 @@ fn push_text_run(segments: &mut Vec<MessageSegment>, plain: &mut String, text: &
                     emote_id: Some(e.id),
                     emote_url: e.url,
                     is_zero_width: Some(e.zero_width),
+                    modifier_flags: None,
                 });
             }
             None => buf.push_str(&word),

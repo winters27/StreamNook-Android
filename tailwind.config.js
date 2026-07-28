@@ -1,3 +1,11 @@
+// CSS-variable color that supports opacity modifiers (bg-accent/20). A plain
+// 'var(...)' string silently generates NO css for modifier classes, which left
+// 300+ authored token tints dead until 2026-07-26.
+const varColor = (cssVar) => ({ opacityValue }) =>
+  opacityValue === undefined
+    ? `var(${cssVar})`
+    : `color-mix(in srgb, var(${cssVar}) calc(${opacityValue} * 100%), transparent)`;
+
 /** @type {import('tailwindcss').Config} */
 module.exports = {
   content: [
@@ -10,43 +18,45 @@ module.exports = {
       },
       colors: {
         // Theme-aware colors using CSS variables
-        background: 'var(--color-background)',
-        secondary: 'var(--color-background-secondary)',
-        tertiary: 'var(--color-background-tertiary)',
-        accent: 'var(--color-accent)',
-        'accent-hover': 'var(--color-accent-hover)',
-        'accent-muted': 'var(--color-accent-muted)',
-        'accent-neon': 'var(--color-accent-neon)',
-        textPrimary: 'var(--color-text-primary)',
-        textSecondary: 'var(--color-text-secondary)',
-        textMuted: 'var(--color-text-muted)',
-        border: 'var(--color-border)',
-        borderLight: 'var(--color-border-light)',
-        borderSubtle: 'var(--color-border-subtle)',
-        surface: 'var(--color-surface)',
-        'surface-hover': 'var(--color-surface-hover)',
-        'surface-active': 'var(--color-surface-active)',
+        background: varColor('--color-background'),
+        secondary: varColor('--color-background-secondary'),
+        tertiary: varColor('--color-background-tertiary'),
+        accent: varColor('--color-accent'),
+        'accent-hover': varColor('--color-accent-hover'),
+        'accent-muted': varColor('--color-accent-muted'),
+        'accent-neon': varColor('--color-accent-neon'),
+        textPrimary: varColor('--color-text-primary'),
+        textSecondary: varColor('--color-text-secondary'),
+        textMuted: varColor('--color-text-muted'),
+        border: varColor('--color-border'),
+        borderLight: varColor('--color-border-light'),
+        borderSubtle: varColor('--color-border-subtle'),
+        surface: varColor('--color-surface'),
+        'surface-hover': varColor('--color-surface-hover'),
+        'surface-active': varColor('--color-surface-active'),
         // Semantic colors
-        success: 'var(--color-success)',
-        warning: 'var(--color-warning)',
-        error: 'var(--color-error)',
-        info: 'var(--color-info)',
+        success: varColor('--color-success'),
+        warning: varColor('--color-warning'),
+        error: varColor('--color-error'),
+        info: varColor('--color-info'),
+        // LIVE indicator red: pinned in globals.css, deliberately not themed
+        live: varColor('--color-live'),
         // Glass utility
         glass: {
-          DEFAULT: 'var(--color-surface)',
-          hover: 'var(--color-surface-hover)',
-          active: 'var(--color-surface-active)',
+          DEFAULT: varColor('--color-surface'),
+          hover: varColor('--color-surface-hover'),
+          active: varColor('--color-surface-active'),
         },
         // Highlight colors
         highlight: {
-          pink: 'var(--color-highlight-pink)',
-          purple: 'var(--color-highlight-purple)',
-          blue: 'var(--color-highlight-blue)',
-          cyan: 'var(--color-highlight-cyan)',
-          green: 'var(--color-highlight-green)',
-          yellow: 'var(--color-highlight-yellow)',
-          orange: 'var(--color-highlight-orange)',
-          red: 'var(--color-highlight-red)',
+          pink: varColor('--color-highlight-pink'),
+          purple: varColor('--color-highlight-purple'),
+          blue: varColor('--color-highlight-blue'),
+          cyan: varColor('--color-highlight-cyan'),
+          green: varColor('--color-highlight-green'),
+          yellow: varColor('--color-highlight-yellow'),
+          orange: varColor('--color-highlight-orange'),
+          red: varColor('--color-highlight-red'),
         },
       },
       fontFamily: {

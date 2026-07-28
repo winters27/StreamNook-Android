@@ -7,6 +7,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Keyboard, RotateCcw, Plus, X as XIcon, Lock } from 'lucide-react';
+import { Tooltip } from '../ui/Tooltip';
 import { useAppStore } from '../../stores/AppStore';
 import {
   getBindableCommands,
@@ -111,7 +112,7 @@ export default function KeybindingsSettings() {
         if (!list || list.length === 0) return null;
         return (
           <SettingsSection key={id} label={id} description={description} bare>
-            <div className="settings-card divide-y divide-white/5 px-0">
+            <div className="settings-card hairline-y px-0">
               {list.map((cmd) => (
                 <CommandRow
                   key={cmd.id}
@@ -159,7 +160,7 @@ function Hero({ customizedCount }: { customizedCount: number }) {
             }
           }}
           disabled={customizedCount === 0}
-          className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm font-medium text-textSecondary transition-colors enabled:hover:bg-white/[0.06] enabled:hover:text-textPrimary disabled:opacity-40"
+          className="glass-button-secondary inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-textSecondary transition-colors enabled:hover:text-textPrimary disabled:opacity-40"
         >
           <RotateCcw size={14} /> Reset all to defaults
         </button>
@@ -242,15 +243,15 @@ function CommandRow({
                   <Plus size={11} /> Add
                 </button>
                 {customized && (
-                  <button
-                    type="button"
-                    onClick={() => void resetBinding(cmd.id)}
-                    className="rounded p-1 text-textMuted hover:text-textPrimary"
-                    aria-label="Reset to default"
-                    title="Reset to default"
-                  >
-                    <RotateCcw size={12} />
-                  </button>
+                  <Tooltip content="Reset to default">
+                    <button
+                      type="button"
+                      onClick={() => void resetBinding(cmd.id)}
+                      className="rounded p-1 text-textMuted hover:text-textPrimary"
+                    >
+                      <RotateCcw size={12} />
+                    </button>
+                  </Tooltip>
                 )}
               </>
             )}
@@ -328,7 +329,7 @@ function Recorder({ cmd, onDone }: { cmd: BindableCommand; onDone: () => void })
         <button
           type="button"
           onClick={onDone}
-          className="rounded-md border border-white/10 px-2.5 py-1.5 text-[11px] font-medium text-textSecondary hover:text-textPrimary"
+          className="glass-button-secondary px-2.5 py-1.5 text-[11px] font-medium text-textSecondary hover:text-textPrimary"
         >
           Cancel
         </button>

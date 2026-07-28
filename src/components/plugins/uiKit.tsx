@@ -84,7 +84,7 @@ export const ChipList = ({
           type="button"
           onClick={add}
           disabled={!input.trim()}
-          className="flex items-center gap-1 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-[13px] text-textSecondary transition-colors hover:bg-white/10 hover:text-textPrimary disabled:opacity-50"
+          className="glass-button-secondary flex items-center gap-1 px-3 py-1.5 text-[13px] text-textSecondary hover:text-textPrimary disabled:opacity-50"
         >
           <Plus size={14} />
           Add
@@ -126,7 +126,7 @@ export const FolderPicker = ({
       <button
         type="button"
         onClick={browse}
-        className="flex-shrink-0 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-[13px] text-textSecondary transition-colors hover:bg-white/10 hover:text-textPrimary"
+        className="glass-button-secondary flex-shrink-0 px-3 py-1.5 text-[13px] text-textSecondary hover:text-textPrimary"
       >
         Browse
       </button>

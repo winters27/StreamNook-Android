@@ -119,7 +119,7 @@ export default function ViewerCounter({ channels }: { channels: ViewerSource[] }
             className="glass-panel fixed z-[300] min-w-[190px] rounded-lg border border-borderLight p-1.5 shadow-xl"
             // Opaque themed surface (not the translucent glass default): over the
             // scrolling chat a live backdrop-blur flickers in WebView2.
-            style={{ top: anchor.top, left: anchor.left, backgroundColor: 'var(--color-background-tertiary)' }}
+            style={{ top: anchor.top, left: anchor.left, backgroundColor: 'var(--color-background-tertiary)', backdropFilter: 'none', WebkitBackdropFilter: 'none' }}
           >
             <div className="px-1.5 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-wide text-textMuted">
               Viewers{liveCount > 0 ? ` · ${total.toLocaleString()} watching` : ''}

@@ -244,19 +244,19 @@ export default function DropsInventoryTab({
         switch (status) {
             case 'Active':
                 return (
-                    <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-green-500/20 text-green-400 border border-green-500/30">
+                    <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-success/20 text-success border border-success/30">
                         Active
                     </span>
                 );
             case 'Upcoming':
                 return (
-                    <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30">
+                    <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-info/20 text-info border border-info/30">
                         Upcoming
                     </span>
                 );
             case 'Expired':
                 return (
-                    <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-gray-500/20 text-gray-400 border border-gray-500/30">
+                    <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-surface text-textMuted border border-borderLight">
                         Expired
                     </span>
                 );
@@ -280,18 +280,18 @@ export default function DropsInventoryTab({
     return (
         <div className="h-full flex flex-col">
             {/* Header Stats */}
-            <div className="px-4 pt-4 pb-3 border-b border-borderLight bg-backgroundSecondary/50">
+            <div className="px-4 pt-4 pb-3 border-b border-borderSubtle bg-backgroundSecondary/50">
                 <div className="grid grid-cols-4 gap-3 mb-4">
                     <div className="glass-panel p-3 text-center">
                         <div className="text-2xl font-bold text-textPrimary">{totals.total}</div>
                         <div className="text-xs text-textSecondary">Total Drops</div>
                     </div>
-                    <div className="glass-panel p-3 text-center border-green-500/20">
-                        <div className="text-2xl font-bold text-green-400">{totals.claimed}</div>
+                    <div className="glass-panel p-3 text-center border-success/20">
+                        <div className="text-2xl font-bold text-success">{totals.claimed}</div>
                         <div className="text-xs text-textSecondary">Claimed</div>
                     </div>
-                    <div className="glass-panel p-3 text-center border-yellow-500/20">
-                        <div className="text-2xl font-bold text-yellow-400">{totals.claimable}</div>
+                    <div className="glass-panel p-3 text-center border-warning/20">
+                        <div className="text-2xl font-bold text-warning">{totals.claimable}</div>
                         <div className="text-xs text-textSecondary">Ready to Claim</div>
                     </div>
                     <div className="glass-panel p-3 text-center border-accent/20">
@@ -333,14 +333,14 @@ export default function DropsInventoryTab({
             <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-3">
                 {/* Completed Drops Section */}
                 {completedDrops.length > 0 && (
-                    <div className="glass-panel border border-green-500/30 overflow-hidden">
+                    <div className="glass-panel border border-success/30 overflow-hidden">
                         <button
                             onClick={() => setShowCompletedDrops(!showCompletedDrops)}
                             className="w-full flex items-center justify-between gap-3 p-3 hover:bg-surface/50 transition-colors"
                         >
                             <div className="flex items-center gap-3">
-                                <div className="p-2 rounded-lg bg-green-500/20 border border-green-500/30">
-                                    <Check size={20} className="text-green-400" />
+                                <div className="p-2 rounded-lg bg-success/20 border border-success/30">
+                                    <Check size={20} className="text-success" />
                                 </div>
                                 <div className="text-left">
                                     <h3 className="font-bold text-textPrimary">Completed Drops</h3>
@@ -350,7 +350,7 @@ export default function DropsInventoryTab({
                                 </div>
                             </div>
                             <div className="flex items-center gap-2">
-                                <span className="px-2 py-1 text-xs font-bold rounded-lg bg-green-500/20 text-green-400 border border-green-500/30">
+                                <span className="px-2 py-1 text-xs font-bold rounded-lg bg-success/20 text-success border border-success/30">
                                     {completedDrops.length} total
                                 </span>
                                 {showCompletedDrops ? (
@@ -362,12 +362,12 @@ export default function DropsInventoryTab({
                         </button>
                         
                         {showCompletedDrops && (
-                            <div className="border-t border-green-500/20 bg-background/50 p-3">
+                            <div className="border-t border-success/20 bg-background/50 p-3">
                                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
                                     {completedDrops.map(drop => (
                                         <Tooltip key={drop.id} content={`${drop.name}${drop.game_name ? ` - ${drop.game_name}` : ''}${drop.total_count > 1 ? ` (x${drop.total_count})` : ''}`} delay={200} side="top">
                                         <div
-                                            className="group glass-panel border border-green-500/20 hover:border-green-500/40 rounded-lg overflow-hidden transition-all hover:scale-105"
+                                            className="group glass-panel border border-success/20 hover:border-success/40 rounded-lg overflow-hidden transition-all hover:scale-105"
                                         >
                                             {/* Drop Image */}
                                             <div className="relative aspect-square bg-backgroundSecondary">
@@ -378,14 +378,14 @@ export default function DropsInventoryTab({
                                                     loading="lazy"
                                                 />
                                                 {/* Completed Overlay */}
-                                                <div className="absolute inset-0 bg-green-500/20 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                                                    <div className="w-10 h-10 rounded-full bg-green-500 flex items-center justify-center">
+                                                <div className="absolute inset-0 bg-success/20 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                                                    <div className="w-10 h-10 rounded-full bg-success flex items-center justify-center">
                                                         <Check size={20} className="text-white" />
                                                     </div>
                                                 </div>
                                                 {/* Count Badge */}
                                                 {drop.total_count > 1 && (
-                                                    <div className="absolute top-1 right-1 px-1.5 py-0.5 rounded-full bg-green-500 text-white text-[10px] font-bold shadow-lg">
+                                                    <div className="absolute top-1 right-1 px-1.5 py-0.5 rounded-full bg-success text-white text-[10px] font-bold shadow-lg">
                                                         x{drop.total_count}
                                                     </div>
                                                 )}
@@ -465,7 +465,7 @@ export default function DropsInventoryTab({
                                     <div className="flex items-center gap-2 shrink-0">
                                         {group.claimableDrops > 0 && (
                                             <>
-                                                <span className="px-2 py-1 text-xs font-bold rounded-lg bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 animate-pulse">
+                                                <span className="px-2 py-1 text-xs font-bold rounded-lg bg-warning/20 text-warning border border-warning/30 animate-pulse">
                                                     {group.claimableDrops} to claim
                                                 </span>
                                                 {/* Claim All Button */}
@@ -478,8 +478,8 @@ export default function DropsInventoryTab({
                                                     disabled={claimingGameId === group.gameId}
                                                     className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-md shrink-0
                                                         ${claimingGameId === group.gameId
-                                                            ? 'bg-green-600/50 text-green-200 cursor-wait'
-                                                            : 'bg-green-500 hover:bg-green-400 active:bg-green-600 text-white hover:shadow-lg hover:shadow-green-500/20 transform hover:scale-105 active:scale-95'
+                                                            ? 'bg-success/50 text-white cursor-wait'
+                                                            : 'bg-success hover:bg-success/80 active:bg-success/70 text-white hover:shadow-lg hover:shadow-green-500/20 transform hover:scale-105 active:scale-95'
                                                         }`}
                                                 >
                                                     {claimingGameId === group.gameId ? (
@@ -512,7 +512,7 @@ export default function DropsInventoryTab({
 
                                 {/* Expanded Content */}
                                 {isExpanded && (
-                                    <div className="border-t border-borderLight bg-background/50 p-3 space-y-4">
+                                    <div className="border-t border-borderSubtle bg-background/50 p-3 space-y-4">
                                         {group.items.map(item => (
                                             <CampaignSection
                                                 key={item.campaign.id}
@@ -551,7 +551,7 @@ function CampaignSection({ item, progress, onClaimDrop, getStatusBadge }: Campai
     };
 
     return (
-        <div className={`rounded-lg border ${isExpired ? 'border-gray-500/20 bg-gray-500/5' : 'border-borderLight bg-surface/30'} p-3`}>
+        <div className={`rounded-lg border ${isExpired ? 'border-borderSubtle bg-surface/20' : 'border-borderLight bg-surface/30'} p-3`}>
             {/* Campaign Header */}
             <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2 min-w-0">
@@ -576,7 +576,7 @@ function CampaignSection({ item, progress, onClaimDrop, getStatusBadge }: Campai
                 </div>
                 <div className="h-1.5 w-full bg-background rounded-full overflow-hidden border border-borderLight">
                     <div
-                        className={`h-full rounded-full transition-all ${isExpired ? 'bg-gray-500' : 'bg-green-500'}`}
+                        className={`h-full rounded-full transition-all ${isExpired ? 'bg-textMuted' : 'bg-success'}`}
                         style={{ width: `${item.progress_percentage}%` }}
                     />
                 </div>
@@ -607,11 +607,11 @@ function CampaignSection({ item, progress, onClaimDrop, getStatusBadge }: Campai
                         <div
                             key={drop.id}
                             className={`flex items-center gap-3 p-2 rounded-lg transition-all ${isClaimed
-                                ? 'bg-green-500/10 border border-green-500/20'
+                                ? 'bg-success/10 border border-success/20'
                                 : isClaimable
-                                    ? 'bg-yellow-500/10 border border-yellow-500/30'
+                                    ? 'bg-warning/10 border border-warning/30'
                                     : !collectible
-                                        ? 'bg-purple-500/5 border border-purple-500/20'
+                                        ? 'bg-highlight-purple/5 border border-highlight-purple/20'
                                         : 'bg-background/50 border border-borderLight'
                                 }`}
                         >
@@ -630,18 +630,18 @@ function CampaignSection({ item, progress, onClaimDrop, getStatusBadge }: Campai
                                     </div>
                                 )}
                                 {isClaimed && (
-                                    <div className="absolute inset-0 bg-green-500/40 flex items-center justify-center">
+                                    <div className="absolute inset-0 bg-success/40 flex items-center justify-center">
                                         <Check size={14} className="text-white" />
                                     </div>
                                 )}
                                 {isClaimable && (
-                                    <div className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-yellow-500 flex items-center justify-center shadow-lg animate-pulse">
+                                    <div className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-warning flex items-center justify-center shadow-lg animate-pulse">
                                         <span className="text-[8px] font-bold text-black">!</span>
                                     </div>
                                 )}
                                 {/* Special indicator for non-collectible drops */}
                                 {!collectible && !isClaimed && (
-                                    <div className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-purple-500 flex items-center justify-center shadow-lg">
+                                    <div className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-highlight-purple flex items-center justify-center shadow-lg">
                                         <Star size={8} className="text-white" />
                                     </div>
                                 )}
@@ -656,12 +656,12 @@ function CampaignSection({ item, progress, onClaimDrop, getStatusBadge }: Campai
                                 </Tooltip>
                                 <div className="flex items-center gap-2 mt-0.5">
                                     {isClaimed ? (
-                                        <span className="text-[10px] text-green-400 font-medium">Claimed</span>
+                                        <span className="text-[10px] text-success font-medium">Claimed</span>
                                     ) : isClaimable ? (
-                                        <span className="text-[10px] text-yellow-400 font-semibold animate-pulse">Ready to claim!</span>
+                                        <span className="text-[10px] text-warning font-semibold animate-pulse">Ready to claim!</span>
                                     ) : !collectible ? (
                                         // Non-collectible drop: show what's required
-                                        <span className="text-[10px] text-purple-400 font-medium flex items-center gap-1">
+                                        <span className="text-[10px] text-highlight-purple font-medium flex items-center gap-1">
                                             <Ban size={10} />
                                             Requires gift/sub or special action
                                         </span>
@@ -689,7 +689,7 @@ function CampaignSection({ item, progress, onClaimDrop, getStatusBadge }: Campai
                                         e.stopPropagation();
                                         onClaimDrop(drop.id, dropProgress?.drop_instance_id);
                                     }}
-                                    className="px-3 py-1.5 bg-green-500 hover:bg-green-400 text-white text-xs font-bold rounded-lg transition-all shadow-lg animate-pulse shrink-0"
+                                    className="px-3 py-1.5 bg-success hover:bg-success/80 text-white text-xs font-bold rounded-lg transition-all shadow-lg animate-pulse shrink-0"
                                 >
                                     Claim
                                 </button>
@@ -697,7 +697,7 @@ function CampaignSection({ item, progress, onClaimDrop, getStatusBadge }: Campai
 
                             {/* Event/Special Badge for non-collectible drops */}
                             {!collectible && !isClaimed && (
-                                <span className="px-2 py-1 text-[9px] font-semibold rounded bg-purple-500/20 text-purple-400 border border-purple-500/30 shrink-0 whitespace-nowrap">
+                                <span className="px-2 py-1 text-[9px] font-semibold rounded bg-highlight-purple/20 text-highlight-purple border border-highlight-purple/30 shrink-0 whitespace-nowrap">
                                     Event Only
                                 </span>
                             )}
@@ -705,7 +705,7 @@ function CampaignSection({ item, progress, onClaimDrop, getStatusBadge }: Campai
                             {/* Expired Warning for Claimable */}
                             {isExpired && isClaimable && (
                                 <Tooltip content="Campaign expired - claim before it's gone!" delay={200} side="top">
-                                    <div className="flex items-center gap-1 text-orange-400">
+                                    <div className="flex items-center gap-1 text-highlight-orange">
                                         <AlertCircle size={14} />
                                     </div>
                                 </Tooltip>

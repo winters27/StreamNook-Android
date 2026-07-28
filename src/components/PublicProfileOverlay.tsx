@@ -5,6 +5,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
 import { Logger } from '../utils/logger';
 import ProfileOverview from './settings/ProfileOverview';
+import { RelicStrip } from './profile/RelicStrip';
+import { ProfileFrame } from './profile/ProfileFrame';
 import { StreamNookBadge, getTierAccent, getTier } from './StreamNookBadge';
 import { ProfileAccentContext, ProfileCompactContext } from './settings/profileAccentContext';
 import { getFullProfileWithFallback } from '../services/cosmeticsCache';
@@ -512,6 +514,8 @@ const PublicProfileOverlay = () => {
             <div className="pointer-events-none absolute inset-x-0 top-0 z-[2] h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
             <div className="pointer-events-none absolute inset-x-0 bottom-0 z-[2] h-px bg-gradient-to-r from-transparent via-white/[0.12] to-transparent" />
 
+            {/* The member's equipped Frame, bordering the hero band. */}
+            <ProfileFrame userId={userId} />
             {/* Identity — seated and vertically centered in the hero. */}
             <div className="relative z-10 flex items-center gap-3 p-4">
               <div className="flex min-w-0 flex-1 items-center gap-3.5">
@@ -685,6 +689,7 @@ const PublicProfileOverlay = () => {
             ) : (
               <ProfileCompactContext.Provider value={true}>
               <ProfileAccentContext.Provider value={themeRgb}>
+                <RelicStrip userId={userId} />
                 <ProfileOverview
                   isOwnProfile={false}
                   userId={userId}

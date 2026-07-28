@@ -33,6 +33,9 @@ import { BlendedChatPane } from './BlendedChatPane';
 import ModRoomPane from '../modroom/ModRoomPane';
 import { useChannelEmotes } from '../../stores/chatConnectionStore';
 import { isCachedModerator, loadModeratedChannelIds, subscribeModeratedChannels } from '../../services/modRoomService';
+import type { ModRoomMember } from '../../services/modRoomService';
+import { ensureRoom, releaseRoom } from '../../services/modRoomManager';
+import { useModRoomStore } from '../../stores/modRoomStore';
 import { getCachedAvatar, resolveAvatar } from '../../utils/avatarCache';
 import ErrorBoundary from '../ErrorBoundary';
 import ChatOnlySettingsModal from './ChatOnlySettingsModal';
@@ -551,10 +554,16 @@ export default function MultiChatWindow() {
   // rooms are Twitch-only and per-channel, so they don't fit the blended feed).
   const [modsMode, setModsMode] = useState(false);
   const [modChannel, setModChannel] = useState<string | null>(null);
-  const [modStatus, setModStatus] = useState<{ memberCount: number; encrypted: boolean; connected: boolean }>({
+  const [modStatus, setModStatus] = useState<{
+    memberCount: number;
+    encrypted: boolean;
+    connected: boolean;
+    members: ModRoomMember[];
+  }>({
     memberCount: 0,
     encrypted: false,
     connected: false,
+    members: [],
   });
   const [pickerOpen, setPickerOpen] = useState(false);
   const [moderatedSet, setModeratedSet] = useState<Set<string>>(new Set());
@@ -597,6 +606,33 @@ export default function MultiChatWindow() {
   useEffect(() => {
     if (modsMode && moderatedTwitch.length === 0) setModsMode(false);
   }, [modsMode, moderatedTwitch.length]);
+  // Keep every open moderated channel's room connected in the background so the
+  // Mods toggle and the picker can show per-channel unread without opening them.
+  const moderatedIdsKey = useMemo(
+    () =>
+      moderatedTwitch
+        .map((c) => c.channelId)
+        .filter((id): id is string => !!id)
+        .sort()
+        .join(','),
+    [moderatedTwitch],
+  );
+  useEffect(() => {
+    const ids = moderatedIdsKey ? moderatedIdsKey.split(',') : [];
+    ids.forEach((id) => ensureRoom(id));
+    return () => ids.forEach((id) => releaseRoom(id));
+  }, [moderatedIdsKey]);
+  const modSessions = useModRoomStore((s) => s.sessions);
+  const modUnreadTotal = useMemo(() => {
+    let unread = 0;
+    let mentions = 0;
+    for (const c of moderatedTwitch) {
+      if (!c.channelId) continue;
+      unread += modSessions[c.channelId]?.unread ?? 0;
+      mentions += modSessions[c.channelId]?.mentions ?? 0;
+    }
+    return { unread, mentions };
+  }, [moderatedTwitch, modSessions]);
   // Channel avatars for the picker (resolved once, cached).
   const [avatarMap, setAvatarMap] = useState<Record<string, string>>({});
   useEffect(() => {
@@ -680,12 +716,13 @@ export default function MultiChatWindow() {
           getThemeById(DEFAULT_THEME_ID);
     if (theme) applyTheme(theme);
     applyGlassStrength(settings.glass_transparency ?? DEFAULT_GLASS_TRANSPARENCY);
-    applyFont(settings.font ?? DEFAULT_FONT_ID);
+    applyFont(settings.font ?? DEFAULT_FONT_ID, settings.font_custom);
   }, [
     settings.theme,
     settings.custom_themes,
     settings.glass_transparency,
     settings.font,
+    settings.font_custom,
     settings.oled_accent,
   ]);
 
@@ -1960,6 +1997,16 @@ export default function MultiChatWindow() {
                     />
                   )}
                   <span className="relative z-10">{seg.label}</span>
+                  {/* Aggregate unread across every moderated room; mentions turn it red. */}
+                  {seg.key === true && !modsMode && modUnreadTotal.unread > 0 && (
+                    <span
+                      className={`relative z-10 ml-1 inline-flex min-w-[14px] items-center justify-center rounded-full px-1 text-[8px] font-bold leading-[14px] ${
+                        modUnreadTotal.mentions > 0 ? 'bg-red-500/85 text-white' : 'bg-accent/25 text-accent'
+                      }`}
+                    >
+                      {modUnreadTotal.unread > 9 ? '9+' : modUnreadTotal.unread}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
@@ -2012,6 +2059,19 @@ export default function MultiChatWindow() {
                               <span className="h-5 w-5 shrink-0 rounded-full bg-white/10" />
                             )}
                             <span className="flex-1 truncate">{c.channelName}</span>
+                            {(() => {
+                              const u = c.channelId ? modSessions[c.channelId]?.unread ?? 0 : 0;
+                              const mn = c.channelId ? modSessions[c.channelId]?.mentions ?? 0 : 0;
+                              return u > 0 ? (
+                                <span
+                                  className={`inline-flex min-w-[14px] shrink-0 items-center justify-center rounded-full px-1 text-[8px] font-bold leading-[14px] ${
+                                    mn > 0 ? 'bg-red-500/85 text-white' : 'bg-accent/25 text-accent'
+                                  }`}
+                                >
+                                  {u > 9 ? '9+' : u}
+                                </span>
+                              ) : null;
+                            })()}
                             {active && (
                               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="shrink-0">
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
@@ -2028,9 +2088,31 @@ export default function MultiChatWindow() {
             {modsMode && (
               <span className="ml-auto flex items-center gap-2">
                 {modStatus.connected && (
-                  <span className="text-[11px] text-textSecondary">
-                    <span className="font-semibold text-textPrimary">{modStatus.memberCount || 1}</span> in the room
-                  </span>
+                  <Tooltip
+                    side="bottom"
+                    content={
+                      modStatus.members.length > 0 ? (
+                        <div className="flex flex-col gap-1 py-0.5">
+                          {modStatus.members.map((mm) => (
+                            <span key={mm.userId} className="flex items-center gap-1.5 text-xs">
+                              <span
+                                className={`h-1.5 w-1.5 shrink-0 rounded-full ${mm.active !== false ? 'bg-accent' : 'bg-white/25'}`}
+                              />
+                              <span className={mm.role === 'broadcaster' ? 'text-[#f0c674]' : 'text-textPrimary'}>
+                                {mm.login}
+                              </span>
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        'Just you'
+                      )
+                    }
+                  >
+                    <span className="cursor-default text-[11px] text-textSecondary">
+                      <span className="font-semibold text-textPrimary">{modStatus.memberCount || 1}</span> in the room
+                    </span>
+                  </Tooltip>
                 )}
                 {modStatus.encrypted && (
                   <span
