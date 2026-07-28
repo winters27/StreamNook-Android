@@ -22,6 +22,7 @@ import {
     X,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
+import { IS_MOBILE } from '../utils/platform';
 import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../stores/AppStore';
 import streamnookLogo from '../assets/streamnook-logo.png';
@@ -830,7 +831,29 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
             />
 
             <div className="relative h-full w-full flex flex-col">
-                <div className="flex-1 flex items-center justify-center px-8 py-16 min-h-0">
+                {/* Mobile back control. Pinned to the top-left the way onboarding
+                    flows normally do, so it never competes with the primary action
+                    for the bottom row and the CTA keeps a clean full-width block. */}
+                {IS_MOBILE && canGoBack && (
+                    <button
+                        onClick={() => setCurrentStep(Math.max(0, currentStep - 1))}
+                        aria-label="Back"
+                        className="absolute left-2 z-20 flex items-center gap-1 rounded-lg px-3 py-2 text-sm text-textSecondary"
+                        style={{ top: 'calc(0.5rem + var(--sn-safe-top))' }}
+                    >
+                        <ChevronLeft size={18} />
+                        Back
+                    </button>
+                )}
+                {/* px-8 py-16 is desktop breathing room. On a 360px-wide phone that
+                    padding is a third of the width, and py-16 pushes taller steps
+                    (the theme grid) off-screen. Tighten it and let the step scroll. */}
+                <div
+                    className={`flex-1 flex items-center justify-center min-h-0 ${
+                        IS_MOBILE ? 'px-5 py-6 overflow-y-auto' : 'px-8 py-16'
+                    }`}
+                    style={IS_MOBILE ? { paddingTop: 'calc(1.5rem + var(--sn-safe-top))' } : undefined}
+                >
                     <AnimatePresence mode="wait">
                         <motion.div
                             key={currentStep}
@@ -845,8 +868,29 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                     </AnimatePresence>
                 </div>
 
-                <div className="relative z-10 flex items-center justify-between px-8 py-6">
-                    <div className="flex items-center gap-2">
+                {/* Footer. On desktop this is one row: step dots on the left, Back +
+                    primary action on the right. That does not fit a phone. The dots
+                    alone run ~160px, and with px-8 padding plus both buttons the row
+                    needs ~410px against a 360px viewport, so justify-between pushed
+                    the primary button clean off the right edge. Mobile stacks it:
+                    centred dots above a full-width action row. */}
+                <div
+                    className={`relative z-10 ${
+                        IS_MOBILE
+                            ? 'flex flex-col gap-4 px-5 pt-4 pb-5'
+                            : 'flex items-center justify-between px-8 py-6'
+                    }`}
+                    style={
+                        IS_MOBILE
+                            ? { paddingBottom: 'calc(1.25rem + var(--sn-safe-bottom))' }
+                            : undefined
+                    }
+                >
+                    <div
+                        className={`flex items-center gap-2 ${
+                            IS_MOBILE ? 'justify-center' : ''
+                        }`}
+                    >
                         {Array.from({ length: STEP_COUNT }).map((_, idx) => {
                             const isActive = idx === currentStep;
                             const isPast = idx < currentStep;
@@ -868,8 +912,14 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                         })}
                     </div>
 
-                    <div className="flex items-center gap-2">
-                        {canGoBack && (
+                    <div className={`flex items-center gap-2 ${IS_MOBILE ? 'w-full' : ''}`}>
+                        {/* Back is NOT in this row on mobile. Sharing the row with the
+                            primary action made the CTA start wherever Back happened to
+                            end, so it had no consistent left margin and read as
+                            lopsided. On mobile it lives in the header instead (see the
+                            top-left control above), leaving the CTA a clean full-width
+                            block. */}
+                        {canGoBack && !IS_MOBILE && (
                             <button
                                 onClick={() => setCurrentStep(Math.max(0, currentStep - 1))}
                                 className="flex items-center gap-1 px-3 py-2 text-sm text-textSecondary hover:text-textPrimary transition-colors rounded-lg"
@@ -882,7 +932,9 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                             <button
                                 onClick={primaryAction.onClick}
                                 disabled={primaryAction.disabled}
-                                className="glass-button px-5 py-2.5 text-textPrimary rounded-lg text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                                className={`glass-button text-textPrimary rounded-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed ${
+                                    IS_MOBILE ? 'w-full py-4 text-base' : 'px-5 py-2.5 text-sm'
+                                }`}
                             >
                                 {primaryAction.label}
                             </button>
