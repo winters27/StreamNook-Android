@@ -27,6 +27,7 @@ import { MultiNookView } from './components/multi-nook/MultiNookView';
 import MultiNookChatSwitcher from './components/multi-nook/MultiNookChatSwitcher';
 import LoadingWidget from './components/LoadingWidget';
 import ToastManager from './components/ToastManager';
+import DeviceLoginOverlay from './components/DeviceLoginOverlay';
 import SemiquincentennialShow from './components/SemiquincentennialShow';
 import EntitlementUnlockNote from './components/EntitlementUnlockNote';
 import AnnouncementsBanner from './components/AnnouncementsBanner';
@@ -1905,6 +1906,7 @@ function App() {
       {settings.setup_complete && !showSetupWizard && <AnnouncementsBanner />}
       <SemiquincentennialShow />
       <ToastManager />
+      <DeviceLoginOverlay />
       <EntitlementUnlockNote />
       <TooltipManager />
       <CommandPalette />

@@ -211,6 +211,9 @@ interface AppState {
   setCurrentStream: (stream: TwitchStream | null) => void;
   chatPlacement: string;
   isLoading: boolean;
+  /** Mobile device-code login: the code + verify URL to show while the backend
+   * polls for authorization; null when no login is in progress. */
+  deviceCodeInfo: { userCode: string; verificationUri: string } | null;
   isSettingsOpen: boolean;
   settingsInitialTab: SettingsTab | null;
   // DOM id of a settings section to scroll to when the dialog opens (e.g. from a
@@ -491,6 +494,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setCurrentStream: (stream: TwitchStream | null) => set({ currentStream: stream }),
   chatPlacement: 'right',
   isLoading: false,
+  deviceCodeInfo: null,
   isSettingsOpen: false,
   settingsInitialTab: null,
   settingsInitialSection: null,
@@ -2329,16 +2333,31 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Show the user code to the user
       get().addToast(`Enter code ${userCode} at twitch.tv/activate`, 'info');
 
-      // Open the verification URL in an in-app WebView window, isolated to the
-      // active account's Twitch web profile. A per-account profile means each
-      // account keeps its own browser session, so a re-login lands on the same
-      // account and can't silently inherit a different account's web session.
-      try {
-        await invoke('open_twitch_login_window', { url: verificationUri });
-        Logger.debug('In-app login window opened successfully');
-      } catch (e) {
-        Logger.error('Failed to open login window:', e);
-        get().addToast(`Please visit ${verificationUri} and enter code: ${userCode}`, 'warning');
+      const isMobile = /android|iphone|ipad|ipod/i.test(navigator.userAgent);
+      if (isMobile) {
+        // Android: present Twitch's login page in a native in-app WebView overlay
+        // (Kotlin plugin) so the user signs in INSIDE the app, not an external
+        // browser. The backend keeps polling and emits `twitch-login-complete`;
+        // the handler below dismisses the overlay. Falls back to the device-code
+        // panel if the plugin isn't available.
+        try {
+          await invoke('open_mobile_login', { url: verificationUri });
+          set({ isLoading: false });
+        } catch (e) {
+          Logger.error('[TwitchLogin] In-app login WebView unavailable, falling back to device code:', e);
+          set({ deviceCodeInfo: { userCode, verificationUri }, isLoading: false });
+        }
+      } else {
+        // Desktop: open the verification URL in an in-app WebView window, isolated
+        // to the active account's Twitch web profile so each account keeps its own
+        // browser session and a re-login can't inherit a different account's.
+        try {
+          await invoke('open_twitch_login_window', { url: verificationUri });
+          Logger.debug('In-app login window opened successfully');
+        } catch (e) {
+          Logger.error('Failed to open login window:', e);
+          get().addToast(`Please visit ${verificationUri} and enter code: ${userCode}`, 'warning');
+        }
       }
 
       // Listen for login completion event from backend
@@ -2349,7 +2368,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
         // Dismiss the in-app login overlay
         try {
-          await invoke('close_login_overlay', { label: 'twitch-login' });
+          if (isMobile) {
+            await invoke('close_mobile_login');
+          } else {
+            await invoke('close_login_overlay', { label: 'twitch-login' });
+          }
         } catch (e) {
           Logger.warn('[TwitchLogin] Failed to close login overlay:', e);
         }
@@ -2361,7 +2384,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         get().addToast('Login successful! You are now authenticated with Twitch.', 'success');
         await get().loadFollowedStreams();
 
-        set({ isLoading: false });
+        set({ isLoading: false, deviceCodeInfo: null });
 
         // Bring the app window to focus after successful login
         try {
@@ -2379,11 +2402,15 @@ export const useAppStore = create<AppState>((set, get) => ({
         Logger.error('Login error event received:', event.payload);
         const errorMessage = String(event.payload);
         get().addToast(`Login failed: ${errorMessage}`, 'error');
-        set({ isLoading: false });
+        set({ isLoading: false, deviceCodeInfo: null });
 
         // Also dismiss the login overlay on error
         try {
-          await invoke('close_login_overlay', { label: 'twitch-login' });
+          if (isMobile) {
+            await invoke('close_mobile_login');
+          } else {
+            await invoke('close_login_overlay', { label: 'twitch-login' });
+          }
         } catch (e) {
           Logger.warn('[TwitchLogin] Failed to close login overlay on error:', e);
         }
