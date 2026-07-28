@@ -431,6 +431,10 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_os::init())
+        // Native OS notifications. Cross-platform: on Android this is the system
+        // notification shade, which is where live alerts belong on a phone rather
+        // than the in-app Dynamic Island the desktop uses.
+        .plugin(tauri_plugin_notification::init())
         .manage(live_notification_service.clone())
         .manage(whisper_service.clone())
         .manage(layout_service.clone())

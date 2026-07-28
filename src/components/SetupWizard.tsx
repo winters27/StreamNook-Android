@@ -343,7 +343,46 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
         { id: 'disabled', icon: X, label: 'Off', desc: 'No sidebar at all.' },
     ];
 
-    // ── Notification-style step ────────────────────────────────────────────
+    // ── Native notification permission (mobile) ────────────────────────────
+    // Android 13+ requires an explicit runtime grant for POST_NOTIFICATIONS, so
+    // the wizard asks for it rather than silently failing to notify later.
+    const [notifPermission, setNotifPermission] = useState<'default' | 'granted' | 'denied'>('default');
+    // NOTE: we deliberately do NOT use @tauri-apps/plugin-notification's JS wrapper
+    // here. Its dist-js reads `window.Notification.permission` unconditionally, and
+    // Android System WebView does not implement the Web Notifications API, so
+    // `window.Notification` is undefined and the wrapper throws
+    // ("Cannot read properties of undefined") before it ever reaches Rust.
+    // Invoking the plugin command directly skips that broken web path.
+    useEffect(() => {
+        if (!IS_MOBILE) return;
+        let cancelled = false;
+        (async () => {
+            try {
+                const granted = await invoke<boolean>('plugin:notification|is_permission_granted');
+                if (!cancelled && granted) setNotifPermission('granted');
+            } catch (e) {
+                console.error('[SetupWizard] notification permission probe failed:', e);
+            }
+        })();
+        return () => { cancelled = true; };
+    }, []);
+    const handleRequestNativeNotifications = useCallback(async () => {
+        try {
+            if (await invoke<boolean>('plugin:notification|is_permission_granted')) {
+                setNotifPermission('granted');
+                return;
+            }
+            const result = await invoke<string>('plugin:notification|request_permission');
+            setNotifPermission(result === 'granted' ? 'granted' : 'denied');
+        } catch (e) {
+            // Surface it: silently mapping every failure to "denied" makes a broken
+            // plugin registration indistinguishable from the user saying no.
+            console.error('[SetupWizard] notification permission request failed:', e);
+            setNotifPermission('denied');
+        }
+    }, []);
+
+    // ── Notification-style step (desktop) ──────────────────────────────────
     const liveNotifications = settings.live_notifications;
     const islandOn = liveNotifications?.use_dynamic_island ?? true;
     const toastOn = liveNotifications?.use_toast ?? true;
@@ -380,13 +419,33 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
             case 5:
             case 6:
             case 7:
-                return { label: 'Continue', onClick: () => setCurrentStep(currentStep + 1) };
+                return { label: 'Continue', onClick: () => setCurrentStep(stepAfter(currentStep)) };
             case 8:
                 return { label: 'Start watching', onClick: handleCompleteSetup };
             default:
                 return null;
         }
     })();
+
+    // Steps that configure something a phone does not have. Step 6 picks a sidebar
+    // mode (expanded/compact/hidden/off) but the Sidebar is gated off entirely on
+    // mobile, so the step would be asking about a surface that never renders.
+    const MOBILE_SKIPPED_STEPS = new Set([6]);
+    const stepAfter = (s: number) => {
+        let n = s + 1;
+        if (IS_MOBILE) while (MOBILE_SKIPPED_STEPS.has(n)) n += 1;
+        return n;
+    };
+    const stepBefore = (s: number) => {
+        let n = s - 1;
+        if (IS_MOBILE) while (MOBILE_SKIPPED_STEPS.has(n)) n -= 1;
+        return n;
+    };
+    // Dots must reflect the steps this platform actually shows, otherwise mobile
+    // renders an indicator for a page it can never land on.
+    const visibleSteps = Array.from({ length: STEP_COUNT }, (_, i) => i).filter(
+        (i) => !(IS_MOBILE && MOBILE_SKIPPED_STEPS.has(i)),
+    );
 
     const canGoBack = currentStep > 1 && currentStep < 8;
 
@@ -716,6 +775,43 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                 );
 
             case 7:
+                // Mobile gets a real system-notification prompt instead of the
+                // desktop's in-app presentation picker. Dynamic Island vs toast is a
+                // question about surfaces that only exist inside a desktop window;
+                // on a phone the answer is simply the Android notification shade,
+                // which works when the app is backgrounded and the others do not.
+                if (IS_MOBILE) {
+                    return (
+                        <>
+                            <Bell size={56} strokeWidth={1.4} className="text-accent mb-8" />
+                            <h1 className="text-4xl font-medium text-textPrimary tracking-tight mb-4">
+                                Stay in the loop
+                            </h1>
+                            <p className="text-textSecondary text-base max-w-md mb-8">
+                                Get a notification when a followed streamer goes live, a whisper
+                                lands, or a drop is claimed. You can fine-tune each type in
+                                Settings.
+                            </p>
+                            <button
+                                onClick={handleRequestNativeNotifications}
+                                disabled={notifPermission === 'granted'}
+                                className={`glass-button w-full max-w-md rounded-xl py-4 text-base font-medium text-textPrimary ${
+                                    notifPermission === 'granted' ? 'opacity-60' : ''
+                                }`}
+                            >
+                                {notifPermission === 'granted'
+                                    ? 'Notifications enabled'
+                                    : 'Enable notifications'}
+                            </button>
+                            {notifPermission === 'denied' && (
+                                <p className="mt-4 max-w-md text-sm text-textMuted">
+                                    Notifications are turned off for StreamNook. You can turn them
+                                    back on in Android Settings whenever you like.
+                                </p>
+                            )}
+                        </>
+                    );
+                }
                 return (
                     <>
                         <Bell size={56} strokeWidth={1.4} className="text-accent mb-8" />
@@ -851,7 +947,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                     for the bottom row and the CTA keeps a clean full-width block. */}
                 {IS_MOBILE && canGoBack && (
                     <button
-                        onClick={() => setCurrentStep(Math.max(0, currentStep - 1))}
+                        onClick={() => setCurrentStep(Math.max(0, stepBefore(currentStep)))}
                         aria-label="Back"
                         className="absolute left-2 z-20 flex items-center gap-1 rounded-lg px-3 py-2 text-sm text-textSecondary"
                         style={{ top: 'calc(0.5rem + var(--sn-safe-top))' }}
@@ -897,10 +993,10 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                                 const THRESHOLD = 70;
                                 if (info.offset.x < -THRESHOLD && canSwipeForward) {
                                     lastStepChangeRef.current = now;
-                                    setCurrentStep(currentStep + 1);
+                                    setCurrentStep(stepAfter(currentStep));
                                 } else if (info.offset.x > THRESHOLD && canGoBack) {
                                     lastStepChangeRef.current = now;
-                                    setCurrentStep(currentStep - 1);
+                                    setCurrentStep(stepBefore(currentStep));
                                 }
                             }}
                             className="w-full max-w-2xl flex flex-col items-center text-center"
@@ -933,7 +1029,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                             IS_MOBILE ? 'justify-center' : ''
                         }`}
                     >
-                        {Array.from({ length: STEP_COUNT }).map((_, idx) => {
+                        {visibleSteps.map((idx) => {
                             const isActive = idx === currentStep;
                             const isPast = idx < currentStep;
                             return (
@@ -963,7 +1059,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                             block. */}
                         {canGoBack && !IS_MOBILE && (
                             <button
-                                onClick={() => setCurrentStep(Math.max(0, currentStep - 1))}
+                                onClick={() => setCurrentStep(Math.max(0, stepBefore(currentStep)))}
                                 className="flex items-center gap-1 px-3 py-2 text-sm text-textSecondary hover:text-textPrimary transition-colors rounded-lg"
                             >
                                 <ChevronLeft size={15} />

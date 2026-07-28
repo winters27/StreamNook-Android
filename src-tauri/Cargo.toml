@@ -99,6 +99,12 @@ tauri-plugin-clipboard-manager = "2.3.2"
 # Platform detection (frontend `@tauri-apps/plugin-os` platform() + backend cfg).
 # Mobile-supported; used to pick the desktop vs mobile shell at runtime.
 tauri-plugin-os = "2"
+# Native OS notifications. On Android this posts real system notifications rather
+# than the in-app Dynamic Island / toast surfaces the desktop uses.
+# POST_NOTIFICATIONS was already declared in the manifest and the npm package was
+# already a dependency, but nothing registered the Rust plugin, so the frontend
+# had no way to request permission or actually post one.
+tauri-plugin-notification = "2"
 
 # Desktop-only native crates — gated off Android/iOS, which have no backend for
 # them and would fail the mobile link. On desktop this cfg is true, so they build
