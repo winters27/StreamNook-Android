@@ -30,11 +30,11 @@ android {
             isDebuggable = true
             isJniDebuggable = true
             isMinifyEnabled = false
-            packaging {                jniLibs.keepDebugSymbols.add("*/arm64-v8a/*.so")
-                jniLibs.keepDebugSymbols.add("*/armeabi-v7a/*.so")
-                jniLibs.keepDebugSymbols.add("*/x86/*.so")
-                jniLibs.keepDebugSymbols.add("*/x86_64/*.so")
-            }
+            // Tauri generates keepDebugSymbols for every ABI here. Removing it does
+            // NOT shrink anything on its own: Tauri symlinks the prebuilt .so into
+            // jniLibs and the AGP strip task skips symlinked libraries. The actual
+            // fix is -C strip=debuginfo, applied in src-tauri/.cargo/config.toml.
+            // Keeping this block empty simply avoids implying AGP handles it.
         }
         getByName("release") {
             isMinifyEnabled = true
