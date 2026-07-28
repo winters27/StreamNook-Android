@@ -12,17 +12,15 @@ import { useKeyboardInsets } from './ui/useKeyboardInsets';
 import { installBackHandler, useMobileNavStore } from './navStore';
 import { MobileTabBar } from './MobileTabBar';
 import { MobileOnboarding } from './MobileOnboarding';
+import { FollowingScreen } from './screens/FollowingScreen';
+import { BrowseScreen } from './screens/BrowseScreen';
+import { YouScreen } from './screens/YouScreen';
+import { WatchScreen } from './screens/WatchScreen';
+import { SettingsScreen } from './screens/SettingsScreen';
 import { PlaceholderScreen } from './screens/PlaceholderScreen';
 import LoadingWidget from '../components/LoadingWidget';
 import DeviceLoginOverlay from '../components/DeviceLoginOverlay';
 import ToastManager from '../components/ToastManager';
-
-const SCREEN_TITLES = {
-  following: 'Following',
-  browse: 'Browse',
-  activity: 'Activity',
-  you: 'You',
-} as const;
 
 const MobileApp: React.FC = () => {
   useThemeBoot();
@@ -49,12 +47,18 @@ const MobileApp: React.FC = () => {
       ) : (
         <>
           <div
-            className="flex-1 min-h-0 flex flex-col"
+            className="flex-1 min-h-0 flex flex-col relative"
             style={{ paddingTop: 'var(--sn-safe-t, 0px)' }}
           >
-            <PlaceholderScreen title={SCREEN_TITLES[activeTab]} />
+            {activeTab === 'following' && <FollowingScreen />}
+            {activeTab === 'browse' && <BrowseScreen />}
+            {activeTab === 'activity' && <PlaceholderScreen title="Activity" />}
+            {activeTab === 'you' && <YouScreen />}
           </div>
           <MobileTabBar />
+          {/* Full-screen layers above the tab shell. */}
+          <WatchScreen />
+          <SettingsScreen />
         </>
       )}
 

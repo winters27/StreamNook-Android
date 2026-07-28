@@ -77,11 +77,11 @@ const isProfileCard = hash.startsWith('#/profile');
 const isMultiChat = hash.startsWith('#/multichat');
 const isPluginWindow = hash.startsWith('#/plugin/');
 
-// The dedicated mobile shell (src/mobile/, bottom tabs + sheets + touch player)
-// is being built toward watch+chat parity behind this opt-in. Until it flips,
-// mobile renders the in-place adapted App (data-mobile CSS + MobileNav). Set
-// localStorage['sn-next-shell'] = '1' on a device build to preview it.
-const useNextMobileShell = IS_MOBILE && localStorage.getItem('sn-next-shell') === '1';
+// The dedicated mobile shell (src/mobile/: bottom tabs, sheets, touch player,
+// drill-in settings) is the mobile DEFAULT. The in-place adapted App
+// (data-mobile CSS + MobileNav) remains reachable as an escape hatch: set
+// localStorage['sn-legacy-shell'] = '1' on a device build to fall back.
+const useNextMobileShell = IS_MOBILE && localStorage.getItem('sn-legacy-shell') !== '1';
 
 // Create the React root ONCE per container. The lazy route imports above can make
 // React Fast Refresh re-execute this module instead of full-reloading, and a second

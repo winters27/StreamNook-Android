@@ -5,38 +5,142 @@
 // SHELL-AGNOSTIC calls here rather than extracting a shared hook, because the
 // desktop closure interleaves them with desktop-only listeners and splitting it
 // is the riskiest refactor in the repo. When a dev merge adds a new boot step
-// to App.tsx, decide whether it belongs here too (see the mobile-port plan and
-// the cross-reference comment in App.tsx).
+// to App.tsx, decide whether it belongs here too (see the cross-reference
+// comment in App.tsx).
 //
-// Phase 1 scope: settings -> auth -> boot overlay drop. Later phases add the
-// cosmetics prefetch block, 7TV listeners, badge feed, drops cache, deep links,
-// presence, registries, and the periodic auth recheck.
+// Deliberately NOT replicated (desktop-only surfaces): session resume, whisper
+// import, eventsub://channel-moderate (mod tools), drop-progress automation,
+// snippet sync, window sizing, universal-cache disk sync (features.assetDiskCache).
 import { useEffect } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../../stores/AppStore';
+import {
+  handleSeventvCosmeticUpdate,
+  handleSeventvEmoteSetUpdate,
+  type CosmeticUpdatePayload,
+  type EmoteSetUpdatePayload,
+} from '../../services/seventvEventApi';
+import { incrementStat, isSupabaseConfigured } from '../../services/supabaseService';
+import { Logger } from '../../utils/logger';
 
 export function useMobileBoot(): void {
-  const loadSettings = useAppStore((s) => s.loadSettings);
-  const checkAuthStatus = useAppStore((s) => s.checkAuthStatus);
-
   useEffect(() => {
-    let cancelled = false;
+    let isMounted = true;
+    const cleanupFunctions: (() => void)[] = [];
+
+    const addListener = async <T,>(event: string, handler: (event: { payload: T }) => void) => {
+      try {
+        const unlistenFn = await listen<T>(event, handler);
+        if (isMounted) cleanupFunctions.push(unlistenFn);
+        else unlistenFn();
+      } catch (e) {
+        Logger.warn(`[MobileBoot] Failed to set up listener for ${event}:`, e);
+      }
+    };
 
     const initialize = async () => {
+      const store = useAppStore.getState();
       try {
-        await loadSettings();
-        await checkAuthStatus();
+        await store.loadSettings();
+        await store.checkAuthStatus();
       } finally {
         // Auth resolved (logged in or confirmed logged out) or a boot step
         // failed; either way drop the boot overlay.
-        if (!cancelled) useAppStore.setState({ isBooting: false });
+        if (isMounted) useAppStore.setState({ isBooting: false });
       }
+
+      // Active drops cache (1h TTL); powers the Activity surface.
+      useAppStore.getState().loadActiveDropsCache();
+
+      // Real-time badge-drop feed (WebSocket + latest.json fallback).
+      void import('../../services/badgeSocketService').then(({ startBadgeFeed }) => {
+        startBadgeFeed();
+      });
+
+      // Pre-fetch cosmetics for the signed-in account(s) so chat and profile
+      // paint on frame one. Mirrors the desktop block in App.tsx.
+      const { currentUser, isAuthenticated } = useAppStore.getState();
+      if (isAuthenticated && currentUser?.user_id) {
+        const { registerOwnCosmeticAccounts, revalidateOwnCosmetics, getFullProfileWithFallback } =
+          await import('../../services/cosmeticsCache');
+        const { seedOwnIdentitiesFromCache, getResolvedIdentity, getIdentityWithCache } =
+          await import('../../services/identityService');
+        const { registerOwnAtmospheres } = await import('../../stores/chatUserStore');
+        const { listAccounts } = await import('../../services/accountService');
+        const selfId = currentUser.user_id;
+        const selfLogin = currentUser.login || currentUser.username;
+
+        let accountIds = [selfId];
+        try {
+          const ids = (await listAccounts()).map((a) => a.user_id).filter(Boolean);
+          if (ids.length) accountIds = ids.includes(selfId) ? ids : [...ids, selfId];
+        } catch {
+          /* account registry not ready yet — fall back to the active account */
+        }
+
+        registerOwnCosmeticAccounts(accountIds);
+        seedOwnIdentitiesFromCache(accountIds);
+        registerOwnAtmospheres(accountIds);
+
+        revalidateOwnCosmetics(selfId)
+          .then(() => getFullProfileWithFallback(selfId, selfLogin, selfId, selfLogin))
+          .catch((err: Error) =>
+            Logger.error('[MobileBoot] Failed to pre-fetch user profile:', err),
+          );
+        getResolvedIdentity(selfId).catch(() => {});
+        getIdentityWithCache(selfId).catch(() => {});
+        for (const id of accountIds) {
+          if (id === selfId) continue;
+          revalidateOwnCosmetics(id).catch(() => {});
+          getResolvedIdentity(id).catch(() => {});
+          getIdentityWithCache(id).catch(() => {});
+        }
+      }
+
+      // Live 7TV emote-set updates + cosmetics pushed from the Rust EventAPI socket.
+      await addListener<EmoteSetUpdatePayload>('7tv://emote-set-update', (event) => {
+        void handleSeventvEmoteSetUpdate(event.payload);
+      });
+      await addListener<CosmeticUpdatePayload>('7tv://cosmetic-update', (event) => {
+        void handleSeventvCosmeticUpdate(event.payload);
+      });
+
+      // Channel points auto-claims from the Rust watcher.
+      await addListener<{ points_earned: number }>('channel-points-claimed', (event) => {
+        const claim = event.payload;
+        useAppStore.getState().addToast(`Claimed ${claim.points_earned} channel points!`, 'success');
+        if (isSupabaseConfigured()) {
+          const { currentUser: user, isAuthenticated: authed } = useAppStore.getState();
+          if (authed && user?.user_id) {
+            void incrementStat(user.user_id, 'channel_points_collected', claim.points_earned);
+          }
+        }
+      });
+
+      // Ad auto-pivot: backend re-resolved a clean player URL; applying it
+      // changes streamUrl, which the mobile hls engine reloads from.
+      await addListener<{ url: string; region?: string; channel?: string }>('ad-pivot', (event) => {
+        const { url, region } = event.payload;
+        if (url) useAppStore.getState().applyAdPivot(url, region);
+      });
+
+      // Follow/unfollow actions elsewhere ask the shell to refresh the list.
+      await addListener<void>('refresh-following-list', () => {
+        void useAppStore.getState().loadFollowedStreams();
+      });
     };
     void initialize();
 
+    // Periodic auth recheck: keeps tokens fresh across long sessions.
+    const authInterval = setInterval(() => {
+      void useAppStore.getState().checkAuthStatus();
+    }, 5 * 60 * 1000);
+    cleanupFunctions.push(() => clearInterval(authInterval));
+
     return () => {
-      cancelled = true;
+      isMounted = false;
+      for (const fn of cleanupFunctions) fn();
     };
-    // Boot runs once; the store functions are stable references.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Boot runs once; everything is read through getState().
   }, []);
 }
