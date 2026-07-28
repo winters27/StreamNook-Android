@@ -653,10 +653,15 @@ pub async fn restart_to_apply_update(app_handle: tauri::AppHandle) -> Result<(),
         // plugin never auto-saves and the relaunch forgets which monitor/size
         // the window had. Flush geometry ourselves first, matching the flags the
         // plugin is built with (position/size/maximized only).
-        use tauri_plugin_window_state::{AppHandleExt, StateFlags};
-        let _ = app_handle.save_window_state(
-            StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED,
-        );
+        // The window-state plugin is desktop-only, and this exe-swap path never
+        // runs on mobile (Android updates via the package installer intent).
+        #[cfg(desktop)]
+        {
+            use tauri_plugin_window_state::{AppHandleExt, StateFlags};
+            let _ = app_handle.save_window_state(
+                StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED,
+            );
+        }
         std::process::exit(0);
     }
 
