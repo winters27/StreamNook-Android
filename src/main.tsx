@@ -53,6 +53,11 @@ if (IS_MOBILE) {
   // Android back-button chain for the in-place shell (MainActivity calls
   // window.__SN_BACK__). MobileApp overrides this with navStore on mount.
   void import('./mobile/inPlaceBack').then((m) => m.installInPlaceBackHandler());
+  // Pull the native WindowInsets into --sn-inset-* CSS vars. The push from
+  // MainActivity fires on inset CHANGES, which a fresh page load missed, and
+  // env(safe-area-inset-*) reads 0 in this WebView, so without this pull the
+  // UI draws under the status bar and camera cutout on every boot.
+  void import('./mobile/nativeInsets').then((m) => m.applyNativeInsetsOnce());
 }
 
 import { Logger } from './utils/logger';
