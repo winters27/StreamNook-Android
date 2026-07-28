@@ -1,0 +1,44 @@
+/* Mobile shell scope. Everything here is namespaced under .sn-mobile so the
+   desktop shell is untouched.
+
+   Insets: the native bridge (MainActivity WindowInsets listener) writes
+   --sn-inset-t/r/b/l and --sn-kb (IME height) onto <html>. env() values are the
+   fallback only: Android WebView reports 0 for the top inset on devices without
+   a display cutout and 0 for the bottom with button navigation, so env() alone
+   cannot be trusted. */
+
+.sn-mobile {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  font-size: 14px;
+  --sn-tabbar-h: 56px;
+  --sn-safe-t: var(--sn-inset-t, env(safe-area-inset-top, 0px));
+  --sn-safe-r: var(--sn-inset-r, env(safe-area-inset-right, 0px));
+  --sn-safe-b: var(--sn-inset-b, env(safe-area-inset-bottom, 0px));
+  --sn-safe-l: var(--sn-inset-l, env(safe-area-inset-left, 0px));
+}
+
+/* Touch surfaces scroll with overlay scrolling; the 8px hover-styled desktop
+   scrollbar is noise on a phone. */
+.sn-mobile ::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* Screen container between the safe top and the tab bar. */
+.sn-mobile-screen {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-left: var(--sn-safe-l);
+  padding-right: var(--sn-safe-r);
+}
+
+/* Minimum touch target for interactive rows/buttons in the mobile tree. */
+.sn-touch {
+  min-height: 44px;
+  min-width: 44px;
+}

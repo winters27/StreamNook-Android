@@ -6,10 +6,11 @@
   <link rel="icon" type="image/svg+xml" href="/vite.svg" />
   <!-- viewport-fit=cover is required on Android: targetSdk 36 enforces edge-to-edge
        with no opt-out, and without this opt-in every env(safe-area-inset-*) resolves
-       to 0, so the UI draws under the status bar and the gesture pill. No effect on
-       desktop. -->
+       to 0, so the UI draws under the status bar and the gesture pill.
+       interactive-widget=resizes-content is the soft-keyboard resize hint where the
+       engine supports it. No effect on desktop. -->
   <meta name="viewport"
-    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
   <title>StreamNook</title>
   <!-- React DevTools connection - dev builds only. `tauri.localhost` is the
        PRODUCTION origin on Android, so testing the hostname alone would fire this

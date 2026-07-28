@@ -16,11 +16,14 @@
 
 html[data-mobile='true'] {
   /* Safe-area values as variables so components can consume them without
-     repeating the env() fallback dance. */
-  --sn-safe-top: env(safe-area-inset-top, 0px);
-  --sn-safe-bottom: env(safe-area-inset-bottom, 0px);
-  --sn-safe-left: env(safe-area-inset-left, 0px);
-  --sn-safe-right: env(safe-area-inset-right, 0px);
+     repeating the env() fallback dance. The native inset bridge (MainActivity
+     WindowInsets listener) writes --sn-inset-* and takes priority: Android
+     WebView's env() reports 0 for the top without a display cutout and 0 for
+     the bottom with button navigation, so env() is only the fallback. */
+  --sn-safe-top: var(--sn-inset-t, env(safe-area-inset-top, 0px));
+  --sn-safe-bottom: var(--sn-inset-b, env(safe-area-inset-bottom, 0px));
+  --sn-safe-left: var(--sn-inset-l, env(safe-area-inset-left, 0px));
+  --sn-safe-right: var(--sn-inset-r, env(safe-area-inset-right, 0px));
 
   /* Height of the bottom tab bar, so scroll containers can reserve room. */
   --sn-bottomnav-h: 56px;

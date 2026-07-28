@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useId } from "react";
 import { useTooltipStore } from "../../stores/TooltipStore";
+import { IS_MOBILE } from "../../utils/platform";
 
 export interface TooltipProps {
   content: React.ReactNode | string;
@@ -40,7 +41,9 @@ export const Tooltip: React.FC<TooltipProps> = ({
     }
   }, [disabled, content, hideTooltip, tooltipId]);
 
-  if (disabled || !content) {
+  // Touch has no hover: on mobile every tooltip site renders its child
+  // untouched (a synthesized mouseenter on tap would otherwise pop tooltips).
+  if (IS_MOBILE || disabled || !content) {
     return children;
   }
 

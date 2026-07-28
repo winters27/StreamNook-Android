@@ -7,6 +7,7 @@ import { MotionScope } from './components/MotionScope.tsx';
 // App's whole tree (video player + hls.js/plyr, browse, settings) — a real
 // footprint + startup cut for the chat-only popout.
 const App = lazy(() => import('./App.tsx'));
+const MobileApp = lazy(() => import('./mobile/MobileApp.tsx'));
 const ProfileCardPage = lazy(() => import('./pages/ProfileCardPage.tsx'));
 const MultiChatWindow = lazy(() => import('./components/multichat/MultiChatWindow.tsx'));
 const PluginWindowHost = lazy(() => import('./plugins-ui/PluginWindowHost.tsx'));
@@ -49,6 +50,9 @@ if (IS_MOBILE) {
   };
   applyOrientation();
   onOrientationChange(applyOrientation);
+  // Android back-button chain for the in-place shell (MainActivity calls
+  // window.__SN_BACK__). MobileApp overrides this with navStore on mount.
+  void import('./mobile/inPlaceBack').then((m) => m.installInPlaceBackHandler());
 }
 
 import { Logger } from './utils/logger';
@@ -68,6 +72,12 @@ const isProfileCard = hash.startsWith('#/profile');
 const isMultiChat = hash.startsWith('#/multichat');
 const isPluginWindow = hash.startsWith('#/plugin/');
 
+// The dedicated mobile shell (src/mobile/, bottom tabs + sheets + touch player)
+// is being built toward watch+chat parity behind this opt-in. Until it flips,
+// mobile renders the in-place adapted App (data-mobile CSS + MobileNav). Set
+// localStorage['sn-next-shell'] = '1' on a device build to preview it.
+const useNextMobileShell = IS_MOBILE && localStorage.getItem('sn-next-shell') === '1';
+
 // Create the React root ONCE per container. The lazy route imports above can make
 // React Fast Refresh re-execute this module instead of full-reloading, and a second
 // createRoot() on the same #root mounts a competing React tree — which manifests as
@@ -82,7 +92,7 @@ root.render(
   <React.StrictMode>
     <MotionScope>
       <Suspense fallback={null}>
-        {isMultiChat ? <MultiChatWindow /> : isPluginWindow ? <PluginWindowHost /> : isProfileCard ? <ProfileCardPage /> : <App />}
+        {isMultiChat ? <MultiChatWindow /> : isPluginWindow ? <PluginWindowHost /> : isProfileCard ? <ProfileCardPage /> : useNextMobileShell ? <MobileApp /> : <App />}
       </Suspense>
     </MotionScope>
   </React.StrictMode>,
