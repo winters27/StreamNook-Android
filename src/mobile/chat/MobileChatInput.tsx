@@ -161,18 +161,27 @@ export const MobileChatInput: React.FC<Props> = ({
               setPointsOpen(false);
               setEmotesOpen((v) => !v);
             }}
-            className="shrink-0 w-9 h-9 flex items-center justify-center text-[20px] leading-none active:opacity-70"
-            aria-label="Emotes and emoji"
+            className={`shrink-0 w-9 h-9 flex items-center justify-center text-[20px] leading-none active:opacity-70 ${
+              emotesOpen ? 'text-accent' : ''
+            }`}
+            aria-label={emotesOpen ? 'Close emotes' : 'Emotes and emoji'}
           >
-            <span
-              className="transition-[opacity,transform] duration-100"
-              style={{
-                opacity: isSmileyTransitioning ? 0 : 1,
-                transform: isSmileyTransitioning ? 'scale(0.8)' : 'scale(1)',
-              }}
-            >
-              {currentSmiley}
-            </span>
+            {/* Becomes an X while open, so the button that opened the panel is
+                visibly the one that closes it. Same swap the desktop composer
+                does. */}
+            {emotesOpen ? (
+              <X size={19} weight="bold" />
+            ) : (
+              <span
+                className="transition-[opacity,transform] duration-100"
+                style={{
+                  opacity: isSmileyTransitioning ? 0 : 1,
+                  transform: isSmileyTransitioning ? 'scale(0.8)' : 'scale(1)',
+                }}
+              >
+                {currentSmiley}
+              </span>
+            )}
           </button>
           <textarea
             ref={inputRef}
@@ -200,9 +209,11 @@ export const MobileChatInput: React.FC<Props> = ({
               className={`shrink-0 w-9 h-9 flex items-center justify-center active:opacity-70 ${
                 pointsOpen ? 'text-accent' : 'text-textSecondary'
               }`}
-              aria-label={points.name || 'Channel points'}
+              aria-label={pointsOpen ? 'Close channel points' : points.name || 'Channel points'}
             >
-              {points.iconUrl ? (
+              {pointsOpen ? (
+                <X size={19} weight="bold" />
+              ) : points.iconUrl ? (
                 <img
                   src={points.iconUrl}
                   alt=""

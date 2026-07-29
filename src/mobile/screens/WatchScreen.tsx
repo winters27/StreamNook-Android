@@ -20,6 +20,7 @@ import { usePinStore } from '../../stores/pinStore';
 import { useOrientation } from '../ui/useOrientation';
 import { MobilePlayer } from '../player/MobilePlayer';
 import { MobileChatPane } from '../chat/MobileChatPane';
+import { CHAT_TAB_STRIP_H, useChatTabsVisible } from '../chat/ChatTabStrip';
 import { MobileSheet } from '../ui/MobileSheet';
 import { DropProgressBar } from '../watch/DropProgressBar';
 import HypeTrainBanner from '../../components/HypeTrainBanner';
@@ -60,6 +61,7 @@ export const WatchScreen: React.FC = () => {
   const [pinned, setPinned] = useState<PinnedMessage[]>([]);
   const [pinsOpen, setPinsOpen] = useState(false);
   const [dropActive, setDropActive] = useState(false);
+  const chatTabsVisible = useChatTabsVisible();
   const [viewport, setViewport] = useState(() => ({
     w: window.innerWidth,
     h: window.innerHeight,
@@ -344,11 +346,15 @@ export const WatchScreen: React.FC = () => {
             <div
               className={
                 currentHypeTrain || pinned.length > 0 || dropActive
-                  ? 'absolute top-0 left-0 right-0 px-3.5 py-1.5 border-b border-borderSubtle backdrop-blur-ultra z-10 pointer-events-none shadow-lg overflow-hidden flex flex-col-reverse'
+                  ? 'absolute left-0 right-0 px-3.5 py-1.5 border-b border-borderSubtle backdrop-blur-ultra z-10 pointer-events-none shadow-lg overflow-hidden flex flex-col-reverse'
                   : 'hidden'
               }
               style={{
                 backgroundColor: 'color-mix(in srgb, var(--color-background) 90%, transparent)',
+                // Sits BELOW the chat tab strip when several rooms are open.
+                // This header is absolutely positioned over the top of the chat
+                // column, so at top:0 it covered the tabs completely.
+                top: chatTabsVisible ? CHAT_TAB_STRIP_H : 0,
               }}
             >
               {currentHypeTrain && (

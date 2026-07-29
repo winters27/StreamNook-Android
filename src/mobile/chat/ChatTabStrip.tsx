@@ -4,6 +4,16 @@ import React from 'react';
 import { X, Broadcast } from 'phosphor-react';
 import { useChatTabsStore } from './chatTabsStore';
 
+/** Fixed so the chat header, which is absolutely positioned over the top of the
+ *  chat column, can offset itself by exactly this much and stop covering the
+ *  tabs. Keep in sync with the strip's own style below. */
+export const CHAT_TAB_STRIP_H = 45;
+
+/** Whether the strip is currently taking up space. */
+export function useChatTabsVisible(): boolean {
+  return useChatTabsStore((s) => s.tabs.length >= 2);
+}
+
 export const ChatTabStrip: React.FC = () => {
   const tabs = useChatTabsStore((s) => s.tabs);
   const activeChannel = useChatTabsStore((s) => s.activeChannel);
@@ -13,7 +23,10 @@ export const ChatTabStrip: React.FC = () => {
   if (tabs.length < 2) return null;
 
   return (
-    <div className="shrink-0 flex gap-1 px-2 py-1.5 overflow-x-auto border-b border-borderSubtle">
+    <div
+      className="shrink-0 flex items-center gap-1 px-2 overflow-x-auto border-b border-borderSubtle"
+      style={{ height: CHAT_TAB_STRIP_H }}
+    >
       {tabs.map((tab) => {
         const active = tab.channel === activeChannel;
         return (
