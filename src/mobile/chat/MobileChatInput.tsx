@@ -2,7 +2,7 @@
 // desktop input's slash commands, user-command expansion, resub/streak modes,
 // send-as switching, and arrow history; those are desktop affordances.
 import React, { useRef, useState } from 'react';
-import { Smiley } from 'phosphor-react';
+import { Smiley, X } from 'phosphor-react';
 import { useAppStore } from '../../stores/AppStore';
 import { incrementStat } from '../../services/supabaseService';
 import type { UseTwitchChatReturn } from '../../hooks/useTwitchChat';
@@ -13,7 +13,9 @@ import { EmoteSheet } from './EmoteSheet';
 export const MobileChatInput: React.FC<{
   chat: UseTwitchChatReturn;
   emotes: EmoteSet | null;
-}> = ({ chat, emotes }) => {
+  replyTo?: { messageId: string; username: string } | null;
+  onCancelReply?: () => void;
+}> = ({ chat, emotes, replyTo, onCancelReply }) => {
   const currentUser = useAppStore((s) => s.currentUser);
   const [text, setText] = useState('');
   const [emotesOpen, setEmotesOpen] = useState(false);
@@ -25,14 +27,19 @@ export const MobileChatInput: React.FC<{
     if (!message || !currentUser || sending) return;
     setSending(true);
     try {
-      await chat.sendMessage(message, {
-        username: currentUser.login || currentUser.username,
-        displayName: currentUser.display_name || currentUser.username,
-        userId: currentUser.user_id,
-        color: undefined,
-        badges: '',
-      });
+      await chat.sendMessage(
+        message,
+        {
+          username: currentUser.login || currentUser.username,
+          displayName: currentUser.display_name || currentUser.username,
+          userId: currentUser.user_id,
+          color: undefined,
+          badges: '',
+        },
+        replyTo?.messageId,
+      );
       setText('');
+      onCancelReply?.();
       incrementStat(currentUser.user_id, 'messages_sent', 1).catch((err) => {
         Logger.warn('[MobileChatInput] messages_sent stat failed:', err);
       });
@@ -56,12 +63,27 @@ export const MobileChatInput: React.FC<{
     // lift above the keyboard is kb + safe-b (max left the input clipped by
     // exactly the gesture-bar height).
     <div
-      className="shrink-0 flex items-end gap-1.5 px-2.5 pt-2 border-t border-borderSubtle"
+      className="shrink-0 border-t border-borderSubtle"
       style={{
         paddingBottom: 'calc(var(--sn-kb, 0px) + var(--sn-safe-b, 0px) + 10px)',
         transition: 'padding-bottom 0.15s ease-out',
       }}
     >
+      {replyTo && (
+        <div className="flex items-center gap-1.5 px-3 pt-1.5 text-[12.5px] text-textSecondary">
+          <span className="truncate">
+            Replying to <span className="font-semibold">@{replyTo.username}</span>
+          </span>
+          <button
+            onClick={onCancelReply}
+            className="ml-auto p-1.5 text-textMuted active:text-textPrimary"
+            aria-label="Cancel reply"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+      <div className="flex items-end gap-1.5 px-2.5 pt-2">
       <button
         onClick={() => setEmotesOpen(true)}
         className="sn-touch flex items-center justify-center text-textSecondary active:text-textPrimary"
@@ -102,6 +124,7 @@ export const MobileChatInput: React.FC<{
         emotes={emotes}
         onPick={insertEmote}
       />
+      </div>
     </div>
   );
 };

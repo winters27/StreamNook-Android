@@ -41,7 +41,15 @@ export const ActivityScreen: React.FC = () => {
     try {
       const info = await invoke<DropsDeviceCodeInfo>('start_drops_device_flow');
       setDeviceCode(info);
-      void invoke('open_browser_url', { url: info.verification_uri }).catch(() => {});
+      // Copy the code up front, then authorize in the SAME in-app WebView the
+      // main Twitch login uses (no external browser). The overlay covers the
+      // app, so the code must already be on the clipboard when it opens.
+      try {
+        await navigator.clipboard.writeText(info.user_code);
+      } catch {
+        /* the code card stays visible behind the overlay regardless */
+      }
+      await invoke('open_mobile_login', { url: info.verification_uri }).catch(() => {});
       await invoke('poll_drops_token', {
         deviceCode: info.device_code,
         interval: info.interval,
@@ -55,6 +63,7 @@ export const ActivityScreen: React.FC = () => {
       addToast('Drops connection failed. Try again.', 'error');
       setDeviceCode(null);
     } finally {
+      await invoke('close_mobile_login').catch(() => {});
       setConnecting(false);
     }
   };
@@ -100,7 +109,7 @@ export const ActivityScreen: React.FC = () => {
                     {deviceCode.user_code}
                   </button>
                   <div className="text-[12px] text-textMuted mt-1.5 min-h-[16px]">
-                    {copied ? 'Copied' : 'Tap the code to copy, then authorize in the browser.'}
+                    {copied ? 'Copied' : 'Code copied. Paste it on the Twitch page that opens.'}
                   </div>
                   <div className="flex items-center justify-center gap-1.5 text-[12.5px] text-textMuted mt-2">
                     <span className="w-2 h-2 rounded-full bg-accent animate-pulse" />

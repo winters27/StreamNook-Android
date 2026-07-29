@@ -13,6 +13,7 @@ import type { BackendChatMessage } from '../../services/twitchChat';
 import { Logger } from '../../utils/logger';
 import { MobileChatInput } from './MobileChatInput';
 import { UserSheet, type SheetUser } from './UserSheet';
+import { MobileSheet } from '../ui/MobileSheet';
 
 export const MobileChatPane: React.FC = () => {
   const currentStream = useAppStore((s) => s.currentStream);
@@ -36,6 +37,15 @@ export const MobileChatPane: React.FC = () => {
 
   const [isPaused, setIsPausedState] = useState(false);
   const [sheetUser, setSheetUser] = useState<SheetUser | null>(null);
+  // Long-press a message (Android synthesizes contextmenu -> the RightClick
+  // callbacks) to open the action sheet; Reply threads through the input.
+  const [actionTarget, setActionTarget] = useState<{
+    messageId: string;
+    username: string;
+    userId: string;
+    content: string;
+  } | null>(null);
+  const [replyTo, setReplyTo] = useState<{ messageId: string; username: string } | null>(null);
   const processedIds = useRef(new Set<string>());
 
   // Connect chat for the watched channel.
@@ -151,6 +161,26 @@ export const MobileChatPane: React.FC = () => {
     [],
   );
 
+  const openMessageActions = useCallback(
+    (messageId: string, username: string) => {
+      let content = '';
+      let userId = '';
+      for (const message of messages) {
+        if (getMessageId(message) !== messageId) continue;
+        try {
+          const parsed = parseMessage(message as string | BackendChatMessage);
+          content = parsed.content ?? '';
+          userId = parsed.tags.get('user-id') ?? '';
+        } catch {
+          content = '';
+        }
+        break;
+      }
+      setActionTarget({ messageId, username, userId, content });
+    },
+    [messages, getMessageId],
+  );
+
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       <div className="flex-1 min-h-0 relative">
@@ -163,7 +193,7 @@ export const MobileChatPane: React.FC = () => {
           onUsernameClick={onUsernameClick}
           onReplyClick={() => {}}
           onEmoteRightClick={() => {}}
-          onUsernameRightClick={() => {}}
+          onUsernameRightClick={openMessageActions}
           onBadgeClick={() => {}}
           highlightedMessageId={null}
           deletedMessageIds={deletedMessageIds}
@@ -180,8 +210,63 @@ export const MobileChatPane: React.FC = () => {
           </button>
         )}
       </div>
-      <MobileChatInput chat={chat} emotes={emotes} />
+      <MobileChatInput
+        chat={chat}
+        emotes={emotes}
+        replyTo={replyTo}
+        onCancelReply={() => setReplyTo(null)}
+      />
       <UserSheet user={sheetUser} onClose={() => setSheetUser(null)} />
+
+      {/* Message action sheet (long-press a chatter's name). */}
+      <MobileSheet
+        open={!!actionTarget}
+        onClose={() => setActionTarget(null)}
+        maxHeightFraction={0.4}
+      >
+        {actionTarget && (
+          <div className="flex flex-col">
+            <div className="px-2 pb-2 text-[13px] text-textMuted truncate">
+              {actionTarget.username}
+              {actionTarget.content ? `: ${actionTarget.content}` : ''}
+            </div>
+            <button
+              onClick={() => {
+                setReplyTo({ messageId: actionTarget.messageId, username: actionTarget.username });
+                setActionTarget(null);
+              }}
+              className="sn-touch flex items-center px-2 text-[15px] text-textPrimary active:opacity-70"
+            >
+              Reply
+            </button>
+            <button
+              onClick={() => {
+                void navigator.clipboard.writeText(actionTarget.content).catch(() => {});
+                setActionTarget(null);
+              }}
+              disabled={!actionTarget.content}
+              className="sn-touch flex items-center px-2 text-[15px] text-textPrimary active:opacity-70 disabled:opacity-50"
+            >
+              Copy message
+            </button>
+            <button
+              onClick={() => {
+                const target = actionTarget;
+                setActionTarget(null);
+                setSheetUser({
+                  userId: target.userId,
+                  username: target.username,
+                  displayName: target.username,
+                  color: '#9147FF',
+                });
+              }}
+              className="sn-touch flex items-center px-2 text-[15px] text-textPrimary active:opacity-70"
+            >
+              View profile
+            </button>
+          </div>
+        )}
+      </MobileSheet>
     </div>
   );
 };

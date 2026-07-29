@@ -95,8 +95,11 @@ export const MobileStreamCard: React.FC<{
             draggable={false}
           />
           {/* Bare live dot instead of the pill: rows are too small for chrome.
-              Small and quiet, with a faint dark ring for bright thumbnails. */}
-          <span className="absolute top-1.5 left-1.5 w-1.5 h-1.5 rounded-full bg-live animate-pulse ring-1 ring-black/40" />
+              A ping halo keeps it visible without adding chrome. */}
+          <span className="absolute top-1.5 left-1.5 flex w-2 h-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-live opacity-60" />
+            <span className="relative inline-flex w-2 h-2 rounded-full bg-live ring-1 ring-black/40" />
+          </span>
           {hypeTrain && (
             <div
               className={hypeTrain.isGolden ? 'hype-train-badge-glass-golden' : 'hype-train-badge-glass'}
@@ -122,7 +125,7 @@ export const MobileStreamCard: React.FC<{
           )}
         </div>
         <div className="flex-1 min-w-0 flex flex-col justify-center gap-0.5">
-          <h3 className="text-textPrimary font-medium text-[13.5px] leading-snug line-clamp-2">
+          <h3 className="text-textPrimary font-medium text-[13px] leading-snug line-clamp-2">
             <StreamTitleWithEmojis title={stream.title} />
           </h3>
           <div className="flex items-center gap-1 text-textSecondary text-[12px]">
@@ -187,7 +190,7 @@ export const MobileStreamCard: React.FC<{
         )}
       </div>
       <div className="space-y-0.5 px-0.5 pb-0.5">
-        <h3 className="text-textPrimary font-medium text-[13.5px] leading-snug line-clamp-2">
+        <h3 className="text-textPrimary font-medium text-[13px] leading-snug line-clamp-2">
           <StreamTitleWithEmojis title={stream.title} />
         </h3>
         <div className="flex items-center gap-1 text-textSecondary text-[13px]">
