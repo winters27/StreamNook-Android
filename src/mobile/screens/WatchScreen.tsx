@@ -222,63 +222,60 @@ export const WatchScreen: React.FC = () => {
     );
   }
 
-  // System PiP: the OS window is tiny; show the bare player only.
-  if (pip) {
-    return (
-      <div className="absolute inset-0 z-50 bg-black">
-        <MobilePlayer immersive compact />
-      </div>
-    );
-  }
+  // ONE TREE FOR EVERY MODE. This used to be three separate `return`s (PiP,
+  // landscape, portrait) and that was the reason rotating or entering PiP
+  // reloaded the stream: React reconciles by position and type, so swapping the
+  // root subtree unmounted MobilePlayer, and with it the <video> element and the
+  // hls.js instance, then built a fresh one. Portrait full <-> mini was always
+  // smooth for the opposite reason, and now every mode gets that property.
+  //
+  // The rule this render has to keep: the ancestor chain from the root down to
+  // <MobilePlayer> is IDENTICAL in all four modes. Modes may change classes,
+  // styles and geometry, never structure. Conditional SIBLINGS are fine.
+  const isLandscape = orientation === 'landscape' && !mini && !pip;
 
-  if (orientation === 'landscape' && !mini) {
-    return (
-      <div className="absolute inset-0 z-40 bg-black flex">
-        <div className="flex-1 min-w-0">
-          <MobilePlayer
-            immersive
-            onToggleFullscreen={() => setLandscapeChat((v) => !v)}
-            onEnterPip={enterPip}
-          />
-        </div>
-        {landscapeChat && (
-          <div className="w-[320px] shrink-0 bg-background flex flex-col relative">
-            {currentStream && (
-              <>
-                <PredictionOverlay
-                  channelId={currentStream.user_id}
-                  channelLogin={currentStream.user_login}
-                  isHypeTrainActive={!!currentHypeTrain}
-                />
-                <PollOverlay
-                  channelId={currentStream.user_id}
-                  channelLogin={currentStream.user_login}
-                  isHypeTrainActive={!!currentHypeTrain}
-                />
-              </>
-            )}
-            <MobileChatPane />
-          </div>
-        )}
-      </div>
-    );
-  }
+  // Geometry of the whole layer. PiP and landscape fill the screen; mini is a
+  // draggable box; portrait is the viewport.
+  const layerGeometry =
+    pip || isLandscape
+      ? { top: 0, left: 0, width: viewport.w, height: viewport.h, borderRadius: 0 }
+      : mini
+        ? { top: miniPos.y, left: miniPos.x, width: MINI_W, height: MINI_H, borderRadius: 12 }
+        : { top: 0, left: 0, width: viewport.w, height: viewport.h, borderRadius: 0 };
+
+  // The player fills the layer in every mode except portrait, where it is a
+  // 16:9 band above chat.
+  const playerBandClass =
+    pip || mini
+      ? 'w-full h-full relative'
+      : isLandscape
+        ? 'flex-1 min-w-0 h-full relative'
+        : 'w-full aspect-video relative shrink-0';
+
+  // Chat is a column below in portrait, a side panel in landscape, and hidden
+  // (but still MOUNTED) in mini and PiP. Hidden rather than unmounted so
+  // rotating or popping into PiP does not tear down the chat connection either.
+  const chatClass = pip
+    ? 'hidden'
+    : isLandscape
+      ? landscapeChat
+        ? 'w-[320px] shrink-0 relative flex flex-col bg-background'
+        : 'hidden'
+      : mini
+        ? 'hidden'
+        : 'flex-1 min-h-0 relative flex flex-col';
 
   return (
     <motion.div
-      className={`fixed z-40 overflow-hidden ${
+      className={`fixed overflow-hidden ${pip ? 'z-50' : 'z-40'} ${
         mini ? 'shadow-[0_12px_32px_-8px_rgba(0,0,0,0.65)]' : ''
       }`}
       style={{
-        backgroundColor: 'var(--color-background)',
+        backgroundColor: pip || isLandscape ? '#000' : 'var(--color-background)',
         touchAction: mini ? 'none' : undefined,
       }}
       initial={false}
-      animate={
-        mini
-          ? { top: miniPos.y, left: miniPos.x, width: MINI_W, height: MINI_H, borderRadius: 12 }
-          : { top: 0, left: 0, width: viewport.w, height: viewport.h, borderRadius: 0 }
-      }
+      animate={layerGeometry}
       transition={
         dragging ? { duration: 0 } : { type: 'spring', stiffness: 420, damping: 36, mass: 0.7 }
       }
@@ -295,18 +292,27 @@ export const WatchScreen: React.FC = () => {
       }
     >
       <div
-        className="w-full h-full flex flex-col"
-        style={{ paddingTop: mini ? 0 : 'var(--sn-safe-t, 0px)' }}
+        className={`w-full h-full flex ${isLandscape ? 'flex-row' : 'flex-col'}`}
+        style={{
+          // Only portrait-full needs to clear the status bar; landscape draws
+          // under it deliberately and mini/PiP have no bar over them.
+          paddingTop: mini || pip || isLandscape ? 0 : 'var(--sn-safe-t, 0px)',
+        }}
       >
-        {/* The player keeps this exact tree position in both modes, so the
-            video element never remounts while the layer resizes. */}
+        {/* The player keeps this exact tree position in EVERY mode, so the video
+            element and the hls.js instance survive rotation, PiP and minimize. */}
         <div
-          className="w-full aspect-video relative shrink-0"
-          onTouchStart={mini ? undefined : onBandTouchStart}
-          onTouchMove={mini ? undefined : onBandTouchMove}
-          onTouchEnd={mini ? undefined : onBandTouchEnd}
+          className={playerBandClass}
+          onTouchStart={mini || isLandscape ? undefined : onBandTouchStart}
+          onTouchMove={mini || isLandscape ? undefined : onBandTouchMove}
+          onTouchEnd={mini || isLandscape ? undefined : onBandTouchEnd}
         >
-          <MobilePlayer onEnterPip={mini ? undefined : enterPip} compact={mini} />
+          <MobilePlayer
+            immersive={isLandscape || pip}
+            compact={mini || pip}
+            onEnterPip={mini || pip ? undefined : enterPip}
+            onToggleFullscreen={isLandscape ? () => setLandscapeChat((v) => !v) : undefined}
+          />
           {mini && (
             <>
               {/* Swallow player taps so the whole box reads as one control. */}
@@ -326,7 +332,7 @@ export const WatchScreen: React.FC = () => {
           )}
         </div>
 
-        <div className={mini ? 'hidden' : 'flex-1 min-h-0 relative flex flex-col'}>
+        <div className={chatClass}>
           {/* Chat header carries only live, transient signal now: the hype
               train and the pinned message. The persistent stream info lives in
               the player overlay, so chat keeps its full height. */}
