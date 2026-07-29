@@ -1,15 +1,18 @@
 // The watch layer.
 //
-// Portrait: 16:9 player band + the desktop-identity chat header (blurred
+// Portrait full: 16:9 player band + the desktop-identity chat header (blurred
 // overlay with stream info, pinned strip, HypeTrainBanner) + chat, with the
 // poll and prediction cards mounted over the chat like desktop.
-// Landscape: immersive full-bleed player (system bars hidden via the native
-// bridge) with a chat side panel toggle.
-// TRUE system PiP: drag the player down, tap the player's PiP control, or
-// leave the app while playing; the OS window is draggable/resizable and the
-// shell strips to the bare player (sn:pip event from MainActivity).
+// Mini: drag the player down (or press back) and the whole layer ANIMATES into
+// a small floating window you can drag anywhere; it snaps to the nearest edge
+// and the tab shell stays live behind it, so browsing continues with the
+// stream playing. Tap to expand, X to close.
+// Landscape: immersive full-bleed player (system bars hidden) + chat toggle.
+// System PiP: the PiP control or leaving the app hands the whole activity to
+// the OS window (draggable/resizable by the system, floats over every app).
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Eye, PushPin } from 'phosphor-react';
+import { motion } from 'framer-motion';
+import { Eye, PushPin, X } from 'phosphor-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileNavStore } from '../navStore';
@@ -43,13 +46,22 @@ interface PinnedMessage {
   sender_color: string;
 }
 
-const MINI_DRAG_THRESHOLD_PX = 70;
+const MINIMIZE_DRAG_PX = 70;
+const MINI_W = 200;
+const MINI_H = Math.round((MINI_W * 9) / 16);
+const EDGE_GAP = 12;
+// Clearance so the resting mini player never sits under the floating pill bar.
+const BOTTOM_GAP = 104;
+const TAP_SLOP_PX = 8;
 
 export const WatchScreen: React.FC = () => {
   const isLoading = useAppStore((s) => s.isLoading);
   const streamUrl = useAppStore((s) => s.streamUrl);
   const currentStream = useAppStore((s) => s.currentStream);
   const currentHypeTrain = useAppStore((s) => s.currentHypeTrain);
+  const exitStream = useAppStore((s) => s.exitStream);
+  const playerMode = useMobileNavStore((s) => s.playerMode);
+  const setPlayerMode = useMobileNavStore((s) => s.setPlayerMode);
   const refreshNonce = usePinStore((s) => s.refreshNonce);
   const orientation = useOrientation();
   const [landscapeChat, setLandscapeChat] = useState(false);
@@ -57,14 +69,30 @@ export const WatchScreen: React.FC = () => {
   const [pip, setPip] = useState(false);
   const [pinned, setPinned] = useState<PinnedMessage[]>([]);
   const [pinsOpen, setPinsOpen] = useState(false);
-  const dragStart = useRef<{ x: number; y: number } | null>(null);
+  const [viewport, setViewport] = useState(() => ({
+    w: window.innerWidth,
+    h: window.innerHeight,
+  }));
+  const [miniPos, setMiniPos] = useState(() => ({
+    x: window.innerWidth - MINI_W - EDGE_GAP,
+    y: window.innerHeight - MINI_H - BOTTOM_GAP,
+  }));
+  const [dragging, setDragging] = useState(false);
+  const dragStart = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
+  const movedRef = useRef(false);
 
+  const mini = playerMode === 'mini';
   const watching = !!streamUrl && streamUrl !== 'offline';
   const channelId = currentStream?.user_id;
 
   useEffect(() => {
     const t = setInterval(() => setNowMs(Date.now()), 60_000);
-    return () => clearInterval(t);
+    const onResize = () => setViewport({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener('resize', onResize);
+    return () => {
+      clearInterval(t);
+      window.removeEventListener('resize', onResize);
+    };
   }, []);
 
   // System PiP strip-down flag from MainActivity.
@@ -86,15 +114,21 @@ export const WatchScreen: React.FC = () => {
   }, [watching]);
 
   useEffect(() => {
-    const immersive = watching && orientation === 'landscape' && !pip;
+    const immersive = watching && orientation === 'landscape' && !mini && !pip;
     setImmersive(immersive);
     return () => setImmersive(false);
-  }, [watching, orientation, pip]);
+  }, [watching, orientation, mini, pip]);
+
+  // A newly started stream always opens full (external store sync).
+  useEffect(() => {
+    if (channelId) setPlayerMode('full');
+  }, [channelId, setPlayerMode]);
 
   // Pinned messages: 30s poll + instant refresh on pin/unpin actions.
   useEffect(() => {
     if (!channelId || !watching) {
-      // External-store sync: clearing stale pins when the channel goes away.
+      // Clearing on channel change is part of syncing server state into local
+      // state, which is what this effect exists for.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setPinned([]);
       return;
@@ -123,23 +157,63 @@ export const WatchScreen: React.FC = () => {
     };
   }, [channelId, watching, refreshNonce]);
 
-  // Drag the portrait player downward to enter TRUE system PiP.
-  const onPlayerTouchStart = useCallback((e: React.TouchEvent) => {
-    dragStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  // Drag the full-size player band downward to shrink into the mini player.
+  const onBandTouchStart = useCallback((e: React.TouchEvent) => {
+    dragStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, px: 0, py: 0 };
   }, []);
-  const onPlayerTouchMove = useCallback((e: React.TouchEvent) => {
-    const start = dragStart.current;
-    if (!start) return;
-    const dy = e.touches[0].clientY - start.y;
-    const dx = Math.abs(e.touches[0].clientX - start.x);
-    if (dy > MINI_DRAG_THRESHOLD_PX && dy > dx * 1.5) {
-      dragStart.current = null;
-      enterPip();
-    }
-  }, []);
-  const onPlayerTouchEnd = useCallback(() => {
+  const onBandTouchMove = useCallback(
+    (e: React.TouchEvent) => {
+      const start = dragStart.current;
+      if (!start) return;
+      const dy = e.touches[0].clientY - start.y;
+      const dx = Math.abs(e.touches[0].clientX - start.x);
+      if (dy > MINIMIZE_DRAG_PX && dy > dx * 1.5) {
+        dragStart.current = null;
+        setPlayerMode('mini');
+      }
+    },
+    [setPlayerMode],
+  );
+  const onBandTouchEnd = useCallback(() => {
     dragStart.current = null;
   }, []);
+
+  // Free-drag the mini player anywhere; release snaps it to the nearest side.
+  const onMiniPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      dragStart.current = { x: e.clientX, y: e.clientY, px: miniPos.x, py: miniPos.y };
+      movedRef.current = false;
+      setDragging(true);
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    },
+    [miniPos.x, miniPos.y],
+  );
+
+  const onMiniPointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      const start = dragStart.current;
+      if (!start) return;
+      const dx = e.clientX - start.x;
+      const dy = e.clientY - start.y;
+      if (Math.abs(dx) > TAP_SLOP_PX || Math.abs(dy) > TAP_SLOP_PX) movedRef.current = true;
+      setMiniPos({
+        x: Math.max(EDGE_GAP, Math.min(viewport.w - MINI_W - EDGE_GAP, start.px + dx)),
+        y: Math.max(EDGE_GAP, Math.min(viewport.h - MINI_H - EDGE_GAP, start.py + dy)),
+      });
+    },
+    [viewport.w, viewport.h],
+  );
+
+  const onMiniPointerUp = useCallback(() => {
+    if (!dragStart.current) return;
+    dragStart.current = null;
+    setDragging(false);
+    // Snap to whichever side the player ended up closest to.
+    setMiniPos((pos) => ({
+      x: pos.x + MINI_W / 2 < viewport.w / 2 ? EDGE_GAP : viewport.w - MINI_W - EDGE_GAP,
+      y: Math.min(pos.y, viewport.h - MINI_H - BOTTOM_GAP),
+    }));
+  }, [viewport.w, viewport.h]);
 
   if (!streamUrl && !isLoading) return null;
 
@@ -160,11 +234,15 @@ export const WatchScreen: React.FC = () => {
     );
   }
 
-  if (orientation === 'landscape') {
+  if (orientation === 'landscape' && !mini) {
     return (
       <div className="absolute inset-0 z-40 bg-black flex">
         <div className="flex-1 min-w-0">
-          <MobilePlayer immersive onToggleFullscreen={() => setLandscapeChat((v) => !v)} />
+          <MobilePlayer
+            immersive
+            onToggleFullscreen={() => setLandscapeChat((v) => !v)}
+            onEnterPip={enterPip}
+          />
         </div>
         {landscapeChat && (
           <div className="w-[320px] shrink-0 bg-background flex flex-col relative">
@@ -190,22 +268,68 @@ export const WatchScreen: React.FC = () => {
   }
 
   return (
-    <div
-      className="absolute inset-0 z-40 bg-background flex flex-col"
-      style={{ paddingTop: 'var(--sn-safe-t, 0px)' }}
+    <motion.div
+      className={`fixed z-40 overflow-hidden ${
+        mini ? 'shadow-[0_12px_32px_-8px_rgba(0,0,0,0.65)]' : ''
+      }`}
+      style={{
+        backgroundColor: 'var(--color-background)',
+        touchAction: mini ? 'none' : undefined,
+      }}
+      initial={false}
+      animate={
+        mini
+          ? { top: miniPos.y, left: miniPos.x, width: MINI_W, height: MINI_H, borderRadius: 12 }
+          : { top: 0, left: 0, width: viewport.w, height: viewport.h, borderRadius: 0 }
+      }
+      transition={
+        dragging ? { duration: 0 } : { type: 'spring', stiffness: 420, damping: 36, mass: 0.7 }
+      }
+      onPointerDown={mini ? onMiniPointerDown : undefined}
+      onPointerMove={mini ? onMiniPointerMove : undefined}
+      onPointerUp={mini ? onMiniPointerUp : undefined}
+      onPointerCancel={mini ? onMiniPointerUp : undefined}
+      onClick={
+        mini
+          ? () => {
+              if (!movedRef.current) setPlayerMode('full');
+            }
+          : undefined
+      }
     >
-      {/* Drag the player band down to hand playback to the OS PiP window. */}
       <div
-        className="w-full aspect-video relative shrink-0"
-        onTouchStart={onPlayerTouchStart}
-        onTouchMove={onPlayerTouchMove}
-        onTouchEnd={onPlayerTouchEnd}
+        className="w-full h-full flex flex-col"
+        style={{ paddingTop: mini ? 0 : 'var(--sn-safe-t, 0px)' }}
       >
-        <MobilePlayer onEnterPip={enterPip} />
-      </div>
+        {/* The player keeps this exact tree position in both modes, so the
+            video element never remounts while the layer resizes. */}
+        <div
+          className="w-full aspect-video relative shrink-0"
+          onTouchStart={mini ? undefined : onBandTouchStart}
+          onTouchMove={mini ? undefined : onBandTouchMove}
+          onTouchEnd={mini ? undefined : onBandTouchEnd}
+        >
+          <MobilePlayer onEnterPip={mini ? undefined : enterPip} />
+          {mini && (
+            <>
+              {/* Swallow player taps so the whole box reads as one control. */}
+              <div className="absolute inset-0 z-10" />
+              <button
+                className="absolute top-1 right-1 z-20 w-7 h-7 rounded-full bg-black/60 flex items-center justify-center text-white"
+                aria-label="Close stream"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void exitStream();
+                }}
+              >
+                <X size={14} weight="bold" />
+              </button>
+            </>
+          )}
+        </div>
 
-      {(
-        <div className="flex-1 min-h-0 relative flex flex-col">
+        <div className={mini ? 'hidden' : 'flex-1 min-h-0 relative flex flex-col'}>
           {currentStream && (
             <div
               className="absolute top-0 left-0 right-0 px-3.5 py-2 border-b border-borderSubtle backdrop-blur-ultra z-10 pointer-events-none shadow-lg overflow-hidden flex flex-col-reverse"
@@ -278,17 +402,14 @@ export const WatchScreen: React.FC = () => {
 
           <MobileChatPane />
         </div>
-      )}
+      </div>
 
       {/* Pinned messages, expanded. */}
       <MobileSheet open={pinsOpen} onClose={() => setPinsOpen(false)} title="Pinned">
         <div className="flex flex-col gap-3">
           {pinned.map((pin) => (
             <div key={pin.id} className="text-[14px] leading-relaxed">
-              <span
-                className="font-semibold"
-                style={{ color: pin.sender_color || undefined }}
-              >
+              <span className="font-semibold" style={{ color: pin.sender_color || undefined }}>
                 {pin.sender_name}
               </span>
               <span className="text-textPrimary">: {pin.message_text}</span>
@@ -296,6 +417,6 @@ export const WatchScreen: React.FC = () => {
           ))}
         </div>
       </MobileSheet>
-    </div>
+    </motion.div>
   );
 };

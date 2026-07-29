@@ -21,6 +21,10 @@ interface MobileNavState {
   browseCategory: TwitchCategory | null;
   /** The cosmetics (equip) screen. */
   cosmeticsOpen: boolean;
+  /** Watch presentation: full screen, or the draggable in-app mini player
+   *  (the tab shell stays live behind it). System PiP is separate: that hands
+   *  the whole activity to the OS window. */
+  playerMode: 'full' | 'mini';
   setTab: (tab: MobileTab) => void;
   pushSheet: (id: string) => void;
   popSheet: (id?: string) => void;
@@ -28,8 +32,10 @@ interface MobileNavState {
   closeSettings: () => void;
   openBrowseCategory: (category: TwitchCategory | null) => void;
   setCosmeticsOpen: (open: boolean) => void;
-  /** Back chain: top sheet -> settings tab -> settings list -> exit stream ->
-   *  non-default tab -> not consumed (native backgrounds the task). */
+  setPlayerMode: (mode: 'full' | 'mini') => void;
+  /** Back chain: top sheet -> settings -> cosmetics -> minimize the watch layer
+   *  -> category drill -> non-default tab -> not consumed (native backgrounds
+   *  the task). */
   handleBack: () => boolean;
 }
 
@@ -39,6 +45,7 @@ export const useMobileNavStore = create<MobileNavState>((set, get) => ({
   settingsView: null,
   browseCategory: null,
   cosmeticsOpen: false,
+  playerMode: 'full',
 
   setTab: (tab) => set({ activeTab: tab }),
 
@@ -54,9 +61,11 @@ export const useMobileNavStore = create<MobileNavState>((set, get) => ({
   closeSettings: () => set({ settingsView: null }),
   openBrowseCategory: (category) => set({ browseCategory: category }),
   setCosmeticsOpen: (open) => set({ cosmeticsOpen: open }),
+  setPlayerMode: (mode) => set({ playerMode: mode }),
 
   handleBack: () => {
-    const { sheetStack, activeTab, settingsView, browseCategory, cosmeticsOpen } = get();
+    const { sheetStack, activeTab, settingsView, browseCategory, cosmeticsOpen, playerMode } =
+      get();
     if (sheetStack.length > 0) {
       const top = sheetStack[sheetStack.length - 1];
       window.dispatchEvent(new CustomEvent('sn:close-sheet', { detail: top }));
@@ -70,9 +79,11 @@ export const useMobileNavStore = create<MobileNavState>((set, get) => ({
       set({ cosmeticsOpen: false });
       return true;
     }
+    // Back from the full watch view shrinks into the in-app mini player, so
+    // browsing continues with the stream alive. Closing is the mini player's X.
     const app = useAppStore.getState();
-    if (app.streamUrl || app.isLoading) {
-      void app.exitStream();
+    if ((app.streamUrl || app.isLoading) && playerMode === 'full') {
+      set({ playerMode: 'mini' });
       return true;
     }
     if (browseCategory) {
