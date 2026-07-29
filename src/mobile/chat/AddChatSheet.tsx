@@ -1,11 +1,14 @@
 // Pick another channel's chat to open in a tab.
 //
 // Live follows come first because that is where moderating usually happens, and
-// they need no network call. Search covers everyone else, including channels
-// that are offline (chat works regardless of whether they are streaming).
+// they need no network call. Search covers everyone else, and deliberately
+// includes offline channels: chat is joinable whether or not the channel is
+// streaming, which is exactly the case for moderating a friend's quiet room.
+// `search_channels` already passes `live_only=false` and returns `is_live` plus
+// `profile_image_url`, so offline results need no extra call.
 import React, { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { MagnifyingGlass } from 'phosphor-react';
+import { Eye, MagnifyingGlass } from 'phosphor-react';
 import { MobileSheet } from '../ui/MobileSheet';
 import { useAppStore } from '../../stores/AppStore';
 import { useChatTabsStore } from './chatTabsStore';
@@ -69,7 +72,7 @@ export const AddChatSheet: React.FC<{ open: boolean; onClose: () => void }> = ({
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search channels"
+          placeholder="Search any channel, live or not"
           className="flex-1 bg-transparent py-2.5 text-[15px] text-textPrimary placeholder:text-textMuted outline-none"
           autoCapitalize="off"
           autoCorrect="off"
@@ -86,40 +89,69 @@ export const AddChatSheet: React.FC<{ open: boolean; onClose: () => void }> = ({
         <div className="py-6 text-center text-sm text-textMuted">Searching…</div>
       ) : list.length === 0 ? (
         <div className="py-6 text-center text-sm text-textMuted">
-          {query.trim().length >= 2 ? 'No channels found.' : 'Nobody you follow is live.'}
+          {query.trim().length >= 2
+            ? 'No channels found.'
+            : 'Nobody you follow is live. Search above to open any channel.'}
         </div>
       ) : (
         <div className="flex flex-col">
           {list.map((stream) => {
             const already = openSet.has(stream.user_login.toLowerCase());
+            // Followed streams come from the live query, so absent `is_live`
+            // there still means live. Search sets it explicitly.
+            const live = stream.is_live ?? true;
+            const avatar = stream.profile_image_url;
             return (
               <button
                 key={stream.user_login}
                 onClick={() => !already && pick(stream)}
                 disabled={already}
-                className="flex items-center gap-2.5 py-2 px-1 text-left active:opacity-70 disabled:opacity-45"
+                className="flex items-center gap-3 py-2 px-1 text-left active:opacity-70 disabled:opacity-45"
               >
+                <div className="relative shrink-0">
+                  {avatar ? (
+                    <img
+                      src={avatar}
+                      alt=""
+                      className="w-9 h-9 rounded-full object-cover"
+                      draggable={false}
+                    />
+                  ) : (
+                    <div className="w-9 h-9 rounded-full bg-surface flex items-center justify-center text-[13px] font-semibold text-textMuted">
+                      {(stream.user_name || stream.user_login).charAt(0).toUpperCase()}
+                    </div>
+                  )}
+                  {/* Live state rides the avatar rather than sitting in the
+                      metadata column, so it reads at a glance. NOT `.live-dot`:
+                      that class is the whole LIVE badge (padded pill, gradient,
+                      border, dot via ::before) and renders as an empty pill when
+                      used bare. The ring is the row background so the dot stays
+                      legible against a busy avatar. */}
+                  {live && (
+                    <span
+                      className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2"
+                      style={{
+                        backgroundColor: 'var(--color-live)',
+                        borderColor: 'var(--color-background)',
+                      }}
+                    />
+                  )}
+                </div>
                 <div className="flex-1 min-w-0">
                   <div className="text-[15px] text-textPrimary truncate">
                     {stream.user_name || stream.user_login}
                   </div>
-                  {stream.game_name && (
-                    <div className="text-[12.5px] text-textMuted truncate">{stream.game_name}</div>
-                  )}
+                  <div className="text-[12.5px] text-textMuted truncate">
+                    {live ? stream.game_name || 'Live' : 'Offline'}
+                  </div>
                 </div>
                 {already ? (
                   <span className="text-[12px] text-textMuted shrink-0">Open</span>
                 ) : (
+                  live &&
                   stream.viewer_count > 0 && (
-                    <span className="flex items-center gap-1.5 shrink-0 text-[12px] text-textMuted">
-                      {/* NOT `.live-dot`: that class is the whole LIVE badge
-                          (padded pill, gradient, border, dot via ::before), so
-                          an empty span renders as an empty pill. A row this
-                          compact wants just the dot, in the same token colour. */}
-                      <span
-                        className="w-1.5 h-1.5 rounded-full"
-                        style={{ backgroundColor: 'var(--color-live)' }}
-                      />
+                    <span className="flex items-center gap-1 shrink-0 text-[12px] text-textMuted tabular-nums">
+                      <Eye size={13} />
                       {stream.viewer_count.toLocaleString()}
                     </span>
                   )
