@@ -57,7 +57,7 @@ export const MobileStreamCard: React.FC<{
         onClick={() => onPress(stream)}
         className="w-full text-left glass-panel media-card p-2 flex gap-2.5 active:opacity-80 transition-opacity"
       >
-        <div className="relative w-[136px] shrink-0 overflow-hidden rounded">
+        <div className="w-[136px] shrink-0 overflow-hidden rounded self-center">
           <img
             loading="lazy"
             src={thumbUrl(stream)}
@@ -65,10 +65,6 @@ export const MobileStreamCard: React.FC<{
             className="w-full aspect-video object-cover"
             draggable={false}
           />
-          <div className="absolute top-1 left-1 live-dot text-[10px] px-1 py-0.5">LIVE</div>
-          <div className="absolute bottom-1 left-1 px-1 py-0.5 glass-badge text-white text-[10px] font-medium rounded">
-            {stream.viewer_count.toLocaleString()}
-          </div>
         </div>
         <div className="flex-1 min-w-0 flex flex-col justify-center gap-0.5">
           <h3 className="text-textPrimary font-medium text-[13.5px] leading-snug line-clamp-2">
@@ -92,6 +88,12 @@ export const MobileStreamCard: React.FC<{
               {hasDrops && <Gift size={10} className="text-accent flex-shrink-0" />}
             </div>
           )}
+          <div className="flex items-center gap-1.5">
+            <span className="live-dot text-[9px] px-1 py-px leading-none">LIVE</span>
+            <span className="text-[11.5px] text-textMuted">
+              {stream.viewer_count.toLocaleString()} viewers
+            </span>
+          </div>
         </div>
       </button>
     );
