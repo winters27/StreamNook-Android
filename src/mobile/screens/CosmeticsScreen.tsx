@@ -16,7 +16,6 @@ import {
   setProfileTheme,
 } from '../../services/supabaseService';
 import { listAtmospheres, type Atmosphere } from '../../services/atmospheres';
-import { isCologneTheme } from '../../services/cologneEvent';
 import { isSubscriber } from '../../services/subscriberService';
 import { resolveCosmeticAsset } from '../../components/cosmeticAssets';
 import { Logger } from '../../utils/logger';
@@ -102,12 +101,11 @@ export const CosmeticsScreen: React.FC = () => {
       ? earnedAccolades.has(atm.unlock.accoladeId)
       : ownedSlugs.has(atm.id) || subscribed;
 
-  // Accolade-gated atmospheres stay hidden until earned, and Cologne renders
-  // through its own event chrome rather than as a plain swatch.
+  // Accolade-gated atmospheres stay hidden until earned. Event atmospheres
+  // (Cologne) ARE included: excluding them here is what hid the CS2 one from
+  // the picker entirely, so an owner could not equip it at all.
   const visibleAtmospheres = atmospheres.filter(
-    (a) =>
-      !isCologneTheme(a.id) &&
-      (a.unlock?.kind !== 'accolade' || earnedAccolades.has(a.unlock.accoladeId)),
+    (a) => a.unlock?.kind !== 'accolade' || earnedAccolades.has(a.unlock.accoladeId),
   );
 
   const equipTheme = async (theme: string) => {

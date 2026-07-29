@@ -7,17 +7,26 @@ import { ArrowSquareOut, CheckCircle, Gift } from 'phosphor-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import { PullToRefresh } from '../ui/PullToRefresh';
-import { getAllUserBadgesWithEarned, type TwitchBadge } from '../../services/badgeService';
+import { getAllUserBadgesWithEarned } from '../../services/badgeService';
 import { Logger } from '../../utils/logger';
 import type { DropsDeviceCodeInfo, InventoryItem, InventoryResponse } from '../../types';
 
 type ActivityTab = 'drops' | 'badges';
 
+interface GlobalBadge {
+  title: string;
+  image: string;
+}
+interface GlobalBadgeResponse {
+  data?: { versions?: { title?: string; image_url_2x?: string }[] }[];
+}
+
 export const ActivityScreen: React.FC = () => {
   const addToast = useAppStore((s) => s.addToast);
   const currentUser = useAppStore((s) => s.currentUser);
   const [tab, setTab] = useState<ActivityTab>('drops');
-  const [badges, setBadges] = useState<TwitchBadge[]>([]);
+  const [globalBadges, setGlobalBadges] = useState<GlobalBadge[]>([]);
+  const [ownedTitles, setOwnedTitles] = useState<Set<string>>(new Set());
   const [badgesLoading, setBadgesLoading] = useState(false);
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [inventory, setInventory] = useState<InventoryResponse | null>(null);
@@ -44,16 +53,37 @@ export const ActivityScreen: React.FC = () => {
     void load();
   }, [load]);
 
-  // Your earned Twitch badge collection (the same unified badge engine the
-  // desktop badge wall uses).
+  // The GLOBAL Twitch badge collection (every badge currently available),
+  // with the ones you already own marked. Same sources the desktop badge wall
+  // uses: the cached global badge set, plus your earned set for ownership.
   const loadBadges = useCallback(async () => {
-    const uid = currentUser?.user_id;
-    const login = currentUser?.login || currentUser?.username;
-    if (!uid || !login) return;
     setBadgesLoading(true);
     try {
-      const res = await getAllUserBadgesWithEarned(uid, login, uid, login);
-      setBadges(res.earnedBadges ?? []);
+      let global = await invoke<GlobalBadgeResponse | null>('get_cached_global_badges');
+      if (!global?.data?.length) {
+        await invoke('prefetch_global_badges').catch(() => {});
+        global = await invoke<GlobalBadgeResponse | null>('get_cached_global_badges');
+      }
+      const all: GlobalBadge[] = [];
+      for (const set of global?.data ?? []) {
+        for (const v of set.versions ?? []) {
+          if (v.title && v.image_url_2x) {
+            all.push({ title: v.title, image: v.image_url_2x });
+          }
+        }
+      }
+      // Dedupe by title: many sets repeat the same badge across versions.
+      const seen = new Set<string>();
+      const unique = all.filter((b) => (seen.has(b.title) ? false : (seen.add(b.title), true)));
+      unique.sort((a, b) => a.title.localeCompare(b.title));
+      setGlobalBadges(unique);
+
+      const uid = currentUser?.user_id;
+      const login = currentUser?.login || currentUser?.username;
+      if (uid && login) {
+        const mine = await getAllUserBadgesWithEarned(uid, login, uid, login);
+        setOwnedTitles(new Set((mine.earnedBadges ?? []).map((b) => b.title)));
+      }
     } catch (err) {
       Logger.warn('[Activity] badge load failed:', err);
     } finally {
@@ -62,8 +92,8 @@ export const ActivityScreen: React.FC = () => {
   }, [currentUser?.user_id, currentUser?.login, currentUser?.username]);
 
   useEffect(() => {
-    if (tab === 'badges' && badges.length === 0) void loadBadges();
-  }, [tab, badges.length, loadBadges]);
+    if (tab === 'badges' && globalBadges.length === 0) void loadBadges();
+  }, [tab, globalBadges.length, loadBadges]);
 
   const connect = async () => {
     setConnecting(true);
@@ -141,32 +171,46 @@ export const ActivityScreen: React.FC = () => {
       </div>
       <PullToRefresh onRefresh={tab === 'drops' ? load : loadBadges}>
         <div className={`px-4 sn-tabbar-clearance ${tab === 'badges' ? '' : 'hidden'}`}>
-          {badgesLoading && badges.length === 0 ? (
+          {badgesLoading && globalBadges.length === 0 ? (
             <div className="py-10 text-center text-sm text-textMuted">Loading badges…</div>
-          ) : badges.length === 0 ? (
+          ) : globalBadges.length === 0 ? (
             <div className="py-10 text-center text-sm text-textMuted">
-              No badges earned yet.
+              No badges available right now.
             </div>
           ) : (
-            <div className="grid grid-cols-4 gap-2 pt-1">
-              {badges.map((badge) => (
-                <div
-                  key={`${badge.setID}-${badge.version}`}
-                  className="glass-panel p-2 flex flex-col items-center gap-1.5"
-                >
-                  <img
-                    src={badge.localUrl || badge.image4x || badge.image2x}
-                    alt=""
-                    loading="lazy"
-                    className="w-10 h-10 object-contain"
-                    draggable={false}
-                  />
-                  <span className="text-[10.5px] text-textSecondary text-center line-clamp-2 leading-tight">
-                    {badge.title}
-                  </span>
-                </div>
-              ))}
-            </div>
+            <>
+              <div className="text-[12px] text-textMuted pt-1 pb-2">
+                {ownedTitles.size} of {globalBadges.length} collected
+              </div>
+              <div className="grid grid-cols-4 gap-2">
+                {globalBadges.map((badge) => {
+                  const owned = ownedTitles.has(badge.title);
+                  return (
+                    <div
+                      key={badge.title}
+                      className={`glass-panel p-2 flex flex-col items-center gap-1.5 ${
+                        owned ? 'ring-1 ring-accent/60' : ''
+                      }`}
+                    >
+                      <img
+                        src={badge.image}
+                        alt=""
+                        loading="lazy"
+                        className={`w-10 h-10 object-contain ${owned ? '' : 'opacity-40 grayscale'}`}
+                        draggable={false}
+                      />
+                      <span
+                        className={`text-[10.5px] text-center line-clamp-2 leading-tight ${
+                          owned ? 'text-textPrimary' : 'text-textMuted'
+                        }`}
+                      >
+                        {badge.title}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
           )}
         </div>
         <div className={`px-4 sn-tabbar-clearance ${tab === 'drops' ? '' : 'hidden'}`}>
@@ -227,25 +271,37 @@ export const ActivityScreen: React.FC = () => {
               ) : (
                 <div className="flex flex-col gap-2">
                   {inProgress.map((item) => (
-                    <div key={item.campaign.id} className="glass-panel p-3">
-                      <div className="flex items-center justify-between gap-2 mb-1">
-                        <span className="text-[14px] font-medium text-textPrimary truncate">
-                          {item.campaign.name}
-                        </span>
-                        <span className="text-[12px] text-textMuted shrink-0">
-                          {item.claimed_drops}/{item.total_drops}
-                        </span>
-                      </div>
-                      {item.campaign.game_name && (
-                        <div className="text-[12px] text-textMuted truncate mb-1.5">
-                          {item.campaign.game_name}
-                        </div>
-                      )}
-                      <div className="h-1.5 rounded-full bg-surface overflow-hidden">
-                        <div
-                          className="h-full rounded-full bg-accent transition-[width]"
-                          style={{ width: `${Math.min(100, item.progress_percentage)}%` }}
+                    <div key={item.campaign.id} className="glass-panel p-2.5 flex gap-2.5">
+                      {/* Campaign / category art, like the desktop drop cards. */}
+                      {item.campaign.image_url && (
+                        <img
+                          src={item.campaign.image_url}
+                          alt=""
+                          loading="lazy"
+                          draggable={false}
+                          className="w-[52px] shrink-0 aspect-[3/4] object-cover rounded"
                         />
+                      )}
+                      <div className="flex-1 min-w-0 flex flex-col justify-center">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[13.5px] font-medium text-textPrimary truncate">
+                            {item.campaign.name}
+                          </span>
+                          <span className="text-[12px] text-textMuted shrink-0">
+                            {item.claimed_drops}/{item.total_drops}
+                          </span>
+                        </div>
+                        {item.campaign.game_name && (
+                          <div className="text-[12px] text-textMuted truncate mt-0.5 mb-1.5">
+                            {item.campaign.game_name}
+                          </div>
+                        )}
+                        <div className="h-1.5 rounded-full bg-surface overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-accent transition-[width]"
+                            style={{ width: `${Math.min(100, item.progress_percentage)}%` }}
+                          />
+                        </div>
                       </div>
                     </div>
                   ))}

@@ -6,9 +6,18 @@
 // stream server serves both paths fine).
 import { useEffect, useRef, useState } from 'react';
 import Hls from 'hls.js';
+import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import { setActiveVideo } from '../../utils/activeVideo';
 import { Logger } from '../../utils/logger';
+
+// The Rust watch heartbeat only emits minute-watched events (drops progress +
+// channel points) while the player reports it is actually playing. The desktop
+// VideoPlayer does this; without the mobile player doing the same, watching on
+// the phone earned nothing.
+function reportPlaying(playing: boolean): void {
+  invoke('report_player_playing', { playing }).catch(() => {});
+}
 
 export type MobilePlayerState = 'idle' | 'loading' | 'playing' | 'stalled' | 'error';
 
@@ -109,10 +118,24 @@ export function useMobileHlsEngine(videoRef: React.RefObject<HTMLVideoElement>) 
       }
     });
 
-    const onPlaying = () => seq === seqRef.current && setState('playing');
-    const onWaiting = () => seq === seqRef.current && setState('stalled');
+    const onPlaying = () => {
+      if (seq !== seqRef.current) return;
+      setState('playing');
+      reportPlaying(true);
+    };
+    const onWaiting = () => {
+      if (seq !== seqRef.current) return;
+      setState('stalled');
+      reportPlaying(false);
+    };
+    const onPauseOrEnd = () => {
+      if (seq !== seqRef.current) return;
+      reportPlaying(false);
+    };
     video.addEventListener('playing', onPlaying);
     video.addEventListener('waiting', onWaiting);
+    video.addEventListener('pause', onPauseOrEnd);
+    video.addEventListener('ended', onPauseOrEnd);
 
     hls.loadSource(streamUrl);
     hls.attachMedia(video);
@@ -123,6 +146,9 @@ export function useMobileHlsEngine(videoRef: React.RefObject<HTMLVideoElement>) 
     return () => {
       video.removeEventListener('playing', onPlaying);
       video.removeEventListener('waiting', onWaiting);
+      video.removeEventListener('pause', onPauseOrEnd);
+      video.removeEventListener('ended', onPauseOrEnd);
+      reportPlaying(false);
       if (seq === seqRef.current) setActiveVideo(null);
       destroy();
     };
