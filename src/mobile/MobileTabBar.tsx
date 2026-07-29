@@ -1,5 +1,9 @@
+// Floating glass pill tab bar: detached from the bottom edge, transparent
+// glass with the canonical inset bevel (--bevel-tile), riding above the
+// gesture inset. The You tab becomes your avatar once signed in.
 import React from 'react';
 import { Compass, Gift, Heart, UserCircle } from 'phosphor-react';
+import { useAppStore } from '../stores/AppStore';
 import { useMobileNavStore, type MobileTab } from './navStore';
 
 const TABS: { id: MobileTab; label: string; Icon: typeof Heart }[] = [
@@ -12,21 +16,25 @@ const TABS: { id: MobileTab; label: string; Icon: typeof Heart }[] = [
 export const MobileTabBar: React.FC = () => {
   const activeTab = useMobileNavStore((s) => s.activeTab);
   const setTab = useMobileNavStore((s) => s.setTab);
+  const avatarUrl = useAppStore((s) => s.currentUser?.profile_image_url);
 
   return (
     <nav
-      className="shrink-0 border-t border-borderSubtle bg-background-secondary/95"
+      className="fixed z-30 rounded-full"
       style={{
-        backdropFilter: 'blur(16px)',
-        WebkitBackdropFilter: 'blur(16px)',
-        paddingBottom: 'var(--sn-safe-b, 0px)',
-        paddingLeft: 'var(--sn-safe-l, 0px)',
-        paddingRight: 'var(--sn-safe-r, 0px)',
+        left: 'calc(var(--sn-safe-l, 0px) + 20px)',
+        right: 'calc(var(--sn-safe-r, 0px) + 20px)',
+        bottom: 'calc(var(--sn-safe-b, 0px) + 14px)',
+        background: 'color-mix(in srgb, var(--color-background-secondary) 78%, transparent)',
+        backdropFilter: 'blur(22px)',
+        WebkitBackdropFilter: 'blur(22px)',
+        boxShadow: 'var(--bevel-tile), 0 8px 24px -12px rgba(0,0,0,0.45)',
       }}
     >
       <div className="flex" style={{ height: 'var(--sn-tabbar-h, 56px)' }}>
         {TABS.map(({ id, label, Icon }) => {
           const active = id === activeTab;
+          const isYouWithAvatar = id === 'you' && !!avatarUrl;
           return (
             <button
               key={id}
@@ -36,7 +44,18 @@ export const MobileTabBar: React.FC = () => {
               }`}
               aria-current={active ? 'page' : undefined}
             >
-              <Icon size={22} weight={active ? 'fill' : 'regular'} />
+              {isYouWithAvatar ? (
+                <img
+                  src={avatarUrl}
+                  alt=""
+                  draggable={false}
+                  className={`w-[22px] h-[22px] rounded-full object-cover ${
+                    active ? 'ring-2 ring-accent' : ''
+                  }`}
+                />
+              ) : (
+                <Icon size={22} weight={active ? 'fill' : 'regular'} />
+              )}
               <span className="text-[11px] leading-none">{label}</span>
             </button>
           );

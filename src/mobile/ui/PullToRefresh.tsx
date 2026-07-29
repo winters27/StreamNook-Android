@@ -3,7 +3,7 @@
 // arms past a threshold and runs onRefresh on release. Dependency-free
 // (pointer events), styled on the design system: inset-bevel disc, no glow.
 import React, { useCallback, useRef, useState } from 'react';
-import { ArrowClockwise } from 'phosphor-react';
+import { ArrowDown, CircleNotch } from 'phosphor-react';
 
 const ARM_THRESHOLD_PX = 72;
 const MAX_PULL_PX = 120;
@@ -74,17 +74,21 @@ export const PullToRefresh: React.FC<{
           style={{ top: Math.max(6, pull - 34) }}
         >
           <div className="glass-button-static w-9 h-9 rounded-full flex items-center justify-center">
-            <ArrowClockwise
-              size={18}
-              className={`${refreshing ? 'animate-spin' : ''} ${
-                armed || refreshing ? 'text-accent' : 'text-textMuted'
-              }`}
-              style={
-                !refreshing
-                  ? { transform: `rotate(${Math.min(360, pull * 4)}deg)` }
-                  : undefined
-              }
-            />
+            {refreshing ? (
+              <CircleNotch size={18} className="animate-spin text-accent" />
+            ) : (
+              // Validating pull: the arrow fades and scales in with the drag,
+              // then flips upward once past the release threshold.
+              <ArrowDown
+                size={18}
+                className={armed ? 'text-accent' : 'text-textMuted'}
+                style={{
+                  opacity: Math.min(1, pull / (ARM_THRESHOLD_PX * 0.4)),
+                  transform: `scale(${Math.min(1, 0.6 + pull / MAX_PULL_PX)}) rotate(${armed ? 180 : 0}deg)`,
+                  transition: 'transform 0.15s ease-out',
+                }}
+              />
+            )}
           </div>
         </div>
       )}

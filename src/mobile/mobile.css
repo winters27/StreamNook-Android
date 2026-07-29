@@ -42,3 +42,9 @@
   min-height: 44px;
   min-width: 44px;
 }
+
+/* Bottom clearance for scroll content that runs behind the floating pill
+   tab bar (bar height + its 14px float + breathing room). */
+.sn-tabbar-clearance {
+  padding-bottom: calc(var(--sn-tabbar-h, 56px) + var(--sn-safe-b, 0px) + 34px);
+}

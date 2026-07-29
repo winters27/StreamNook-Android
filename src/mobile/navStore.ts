@@ -5,6 +5,7 @@
 // (background, never kill).
 import { create } from 'zustand';
 import { useAppStore } from '../stores/AppStore';
+import type { TwitchCategory } from '../types';
 
 export type MobileTab = 'following' | 'browse' | 'activity' | 'you';
 
@@ -16,11 +17,14 @@ interface MobileNavState {
   sheetStack: string[];
   /** Settings drill-in: null = closed, 'list' = tab list, else the open tab id. */
   settingsView: string | null;
+  /** Browse category drill: the open category's streams screen, or null. */
+  browseCategory: TwitchCategory | null;
   setTab: (tab: MobileTab) => void;
   pushSheet: (id: string) => void;
   popSheet: (id?: string) => void;
   openSettings: (tab?: string) => void;
   closeSettings: () => void;
+  openBrowseCategory: (category: TwitchCategory | null) => void;
   /** Back chain: top sheet -> settings tab -> settings list -> exit stream ->
    *  non-default tab -> not consumed (native backgrounds the task). */
   handleBack: () => boolean;
@@ -30,6 +34,7 @@ export const useMobileNavStore = create<MobileNavState>((set, get) => ({
   activeTab: DEFAULT_TAB,
   sheetStack: [],
   settingsView: null,
+  browseCategory: null,
 
   setTab: (tab) => set({ activeTab: tab }),
 
@@ -43,9 +48,10 @@ export const useMobileNavStore = create<MobileNavState>((set, get) => ({
 
   openSettings: (tab) => set({ settingsView: tab ?? 'list' }),
   closeSettings: () => set({ settingsView: null }),
+  openBrowseCategory: (category) => set({ browseCategory: category }),
 
   handleBack: () => {
-    const { sheetStack, activeTab, settingsView } = get();
+    const { sheetStack, activeTab, settingsView, browseCategory } = get();
     if (sheetStack.length > 0) {
       const top = sheetStack[sheetStack.length - 1];
       window.dispatchEvent(new CustomEvent('sn:close-sheet', { detail: top }));
@@ -62,6 +68,10 @@ export const useMobileNavStore = create<MobileNavState>((set, get) => ({
     const app = useAppStore.getState();
     if (app.streamUrl || app.isLoading) {
       void app.exitStream();
+      return true;
+    }
+    if (browseCategory) {
+      set({ browseCategory: null });
       return true;
     }
     if (activeTab !== DEFAULT_TAB) {

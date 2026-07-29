@@ -1,25 +1,40 @@
-// Discover: top recommended streams plus channel search, with pull-to-refresh.
+// Discover: Live streams and Categories, with search covering both modes.
 import React, { useEffect, useRef, useState } from 'react';
 import { MagnifyingGlass, X } from 'phosphor-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
+import { useMobileNavStore } from '../navStore';
 import { MobileStreamCard, useDropsGameNames } from '../ui/MobileStreamCard';
 import { PullToRefresh } from '../ui/PullToRefresh';
 import { SkeletonCards } from '../ui/SkeletonCards';
 import { Logger } from '../../utils/logger';
-import type { TwitchStream } from '../../types';
+import type { TwitchCategory, TwitchStream } from '../../types';
+
+type BrowseMode = 'live' | 'categories';
+
+function boxArt(category: TwitchCategory): string {
+  return category.box_art_url.replace('{width}', '285').replace('{height}', '380');
+}
+
+// Top categories, module-cached for the session (pull-to-refresh reloads).
+let topCategoriesCache: TwitchCategory[] | null = null;
 
 export const BrowseScreen: React.FC = () => {
   const recommendedStreams = useAppStore((s) => s.recommendedStreams);
   const loadRecommendedStreams = useAppStore((s) => s.loadRecommendedStreams);
   const startStream = useAppStore((s) => s.startStream);
+  const openBrowseCategory = useMobileNavStore((s) => s.openBrowseCategory);
+  const dropsGameNames = useDropsGameNames();
 
+  const [mode, setMode] = useState<BrowseMode>('live');
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<TwitchStream[] | null>(null);
+  const [streamResults, setStreamResults] = useState<TwitchStream[] | null>(null);
+  const [categoryResults, setCategoryResults] = useState<TwitchCategory[] | null>(null);
+  const [categories, setCategories] = useState<TwitchCategory[]>(topCategoriesCache ?? []);
   const [searching, setSearching] = useState(false);
   const [firstLoad, setFirstLoad] = useState(recommendedStreams.length === 0);
+  const [categoriesLoading, setCategoriesLoading] = useState(false);
   const searchSeq = useRef(0);
-  const dropsGameNames = useDropsGameNames();
 
   useEffect(() => {
     if (recommendedStreams.length === 0) {
@@ -30,54 +45,87 @@ export const BrowseScreen: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const runSearch = async (q: string, seq: number) => {
+  const loadCategories = async () => {
+    setCategoriesLoading(true);
     try {
-      const found = await invoke<TwitchStream[]>('search_channels', { query: q });
-      if (seq === searchSeq.current) setResults(found);
+      const [games] = await invoke<[TwitchCategory[], string | null]>(
+        'get_top_games_paginated',
+        { cursor: null, limit: 30 },
+      );
+      topCategoriesCache = games ?? [];
+      setCategories(topCategoriesCache);
+    } catch (err) {
+      Logger.warn('[BrowseScreen] categories load failed:', err);
+    } finally {
+      setCategoriesLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (mode === 'categories' && categories.length === 0) void loadCategories();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
+
+  const runSearch = async (q: string, seq: number, searchMode: BrowseMode) => {
+    try {
+      if (searchMode === 'live') {
+        const found = await invoke<TwitchStream[]>('search_channels', { query: q });
+        if (seq === searchSeq.current) setStreamResults(found);
+      } else {
+        const found = await invoke<TwitchCategory[]>('search_categories', {
+          query: q,
+          limit: 40,
+        });
+        if (seq === searchSeq.current) setCategoryResults(found);
+      }
     } catch (err) {
       Logger.warn('[BrowseScreen] search failed:', err);
-      if (seq === searchSeq.current) setResults([]);
+      if (seq === searchSeq.current) {
+        if (searchMode === 'live') setStreamResults([]);
+        else setCategoryResults([]);
+      }
     } finally {
       if (seq === searchSeq.current) setSearching(false);
     }
   };
 
-  // Debounced channel search against the same backend command Home uses.
+  // Debounced search in whichever mode is active.
   useEffect(() => {
     const trimmed = query.trim();
     if (!trimmed) {
-      setResults(null);
+      setStreamResults(null);
+      setCategoryResults(null);
       setSearching(false);
       return;
     }
     setSearching(true);
     const seq = ++searchSeq.current;
-    const t = setTimeout(() => void runSearch(trimmed, seq), 350);
+    const t = setTimeout(() => void runSearch(trimmed, seq, mode), 350);
     return () => clearTimeout(t);
-  }, [query]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, mode]);
 
   const refresh = async () => {
     const trimmed = query.trim();
     if (trimmed) {
       const seq = ++searchSeq.current;
       setSearching(true);
-      await runSearch(trimmed, seq);
-    } else {
+      await runSearch(trimmed, seq, mode);
+    } else if (mode === 'live') {
       await loadRecommendedStreams();
+    } else {
+      await loadCategories();
     }
   };
 
-  const onPress = (stream: TwitchStream) => {
-    void startStream(stream.user_login, stream);
-  };
-
-  const shown = results ?? recommendedStreams;
+  const shownStreams = streamResults ?? recommendedStreams;
+  const shownCategories = categoryResults ?? categories;
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       <div className="px-4 pt-3 pb-2 shrink-0">
         <h1 className="text-xl font-bold text-textPrimary mb-3">Browse</h1>
-        <div className="relative">
+        <div className="relative mb-2.5">
           <MagnifyingGlass
             size={17}
             className="absolute left-3 top-1/2 -translate-y-1/2 text-textMuted pointer-events-none"
@@ -85,7 +133,7 @@ export const BrowseScreen: React.FC = () => {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search channels"
+            placeholder={mode === 'live' ? 'Search channels' : 'Search categories'}
             className="glass-input w-full h-11 pl-10 pr-10 text-[15px] text-textPrimary placeholder:text-textMuted bg-transparent outline-none"
             autoCapitalize="none"
             autoCorrect="off"
@@ -101,21 +149,72 @@ export const BrowseScreen: React.FC = () => {
             </button>
           )}
         </div>
+        {/* Mode segments: borderless text buttons with the sliding active pill
+            look shared with the desktop Home nav. */}
+        <div className="flex gap-1">
+          {(['live', 'categories'] as BrowseMode[]).map((m) => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              className={`px-3.5 py-1.5 rounded-full text-sm transition-colors ${
+                mode === m
+                  ? 'glass-button-static text-textPrimary font-semibold'
+                  : 'text-textMuted'
+              }`}
+            >
+              {m === 'live' ? 'Live' : 'Categories'}
+            </button>
+          ))}
+        </div>
       </div>
       <PullToRefresh onRefresh={refresh}>
-        {firstLoad || (searching && shown.length === 0) ? (
-          <SkeletonCards />
-        ) : shown.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-20 gap-1">
-            <div className="text-sm text-textMuted">
-              {results ? 'No channels found.' : 'Nothing to recommend yet.'}
+        {mode === 'live' ? (
+          firstLoad || (searching && shownStreams.length === 0) ? (
+            <SkeletonCards />
+          ) : shownStreams.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-20 gap-1">
+              <div className="text-sm text-textMuted">
+                {streamResults ? 'No channels found.' : 'Nothing to recommend yet.'}
+              </div>
+              <div className="text-[13px] text-textMuted">Pull down to refresh.</div>
             </div>
-            <div className="text-[13px] text-textMuted">Pull down to refresh.</div>
+          ) : (
+            <div className="flex flex-col gap-3 px-4 sn-tabbar-clearance">
+              {shownStreams.map((s) => (
+                <MobileStreamCard
+                  key={s.id}
+                  stream={s}
+                  dropsGameNames={dropsGameNames}
+                  onPress={(stream) => void startStream(stream.user_login, stream)}
+                />
+              ))}
+            </div>
+          )
+        ) : categoriesLoading || (searching && shownCategories.length === 0) ? (
+          <SkeletonCards />
+        ) : shownCategories.length === 0 ? (
+          <div className="flex items-center justify-center py-20 text-sm text-textMuted">
+            {categoryResults ? 'No categories found.' : 'No categories yet, pull to refresh.'}
           </div>
         ) : (
-          <div className="flex flex-col gap-3 px-4 pb-4">
-            {shown.map((s) => (
-              <MobileStreamCard key={s.id} stream={s} dropsGameNames={dropsGameNames} onPress={onPress} />
+          <div className="grid grid-cols-3 gap-3 px-4 sn-tabbar-clearance">
+            {shownCategories.map((c) => (
+              <button
+                key={c.id}
+                onClick={() => openBrowseCategory(c)}
+                className="glass-panel media-card p-2 text-left active:opacity-80 transition-opacity"
+              >
+                <img
+                  loading="lazy"
+                  src={boxArt(c)}
+                  alt=""
+                  className="w-full aspect-[3/4] object-cover rounded mb-1.5"
+                  draggable={false}
+                />
+                <div className="text-[13px] font-medium text-textPrimary line-clamp-1">
+                  {c.name}
+                </div>
+              </button>
             ))}
           </div>
         )}

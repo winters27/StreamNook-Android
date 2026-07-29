@@ -44,7 +44,7 @@ export const FollowingScreen: React.FC = () => {
             <div className="text-[13px] text-textMuted">Pull down to refresh.</div>
           </div>
         ) : (
-          <div className="flex flex-col gap-3 px-4 pb-4">
+          <div className="flex flex-col gap-3 px-4 sn-tabbar-clearance">
             {followedStreams.map((s) => (
               <MobileStreamCard key={s.id} stream={s} dropsGameNames={dropsGameNames} onPress={onPress} />
             ))}

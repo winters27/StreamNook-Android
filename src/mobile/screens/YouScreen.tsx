@@ -12,7 +12,7 @@ export const YouScreen: React.FC = () => {
   const [confirmSignOut, setConfirmSignOut] = useState(false);
 
   return (
-    <div className="sn-mobile-screen">
+    <div className="sn-mobile-screen sn-tabbar-clearance">
       <div className="flex items-center gap-3 px-4 pt-4 pb-4">
         {currentUser?.profile_image_url ? (
           <img

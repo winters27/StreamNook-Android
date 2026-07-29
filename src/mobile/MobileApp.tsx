@@ -17,6 +17,7 @@ import { BrowseScreen } from './screens/BrowseScreen';
 import { YouScreen } from './screens/YouScreen';
 import { WatchScreen } from './screens/WatchScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
+import { CategoryStreamsScreen } from './screens/CategoryStreamsScreen';
 import { PlaceholderScreen } from './screens/PlaceholderScreen';
 import LoadingWidget from '../components/LoadingWidget';
 import DeviceLoginOverlay from '../components/DeviceLoginOverlay';
@@ -55,8 +56,9 @@ const MobileApp: React.FC = () => {
             {activeTab === 'activity' && <PlaceholderScreen title="Activity" />}
             {activeTab === 'you' && <YouScreen />}
           </div>
+          {/* Floating pill bar (fixed) and the full-screen layers above it. */}
           <MobileTabBar />
-          {/* Full-screen layers above the tab shell. */}
+          <CategoryStreamsScreen />
           <WatchScreen />
           <SettingsScreen />
         </>
