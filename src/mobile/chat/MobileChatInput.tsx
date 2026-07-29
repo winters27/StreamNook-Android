@@ -1,19 +1,22 @@
-// Lean touch chat input: text send, the shared emote/emoji picker, and channel
-// points. Deliberately drops the desktop input's slash commands, user-command
-// expansion, resub/streak modes, send-as switching, and arrow history; those
-// are desktop affordances.
+// Lean touch chat composer: text send, the shared emote/emoji picker, channel
+// points, and a menu that shares the trailing slot with Send. Deliberately drops
+// the desktop input's slash commands, user-command expansion, resub/streak
+// modes, send-as switching, and arrow history; those are desktop affordances.
 //
 // The picker and the points menu are the SAME components the desktop composer
 // uses. Both are prop-driven, carry no window/hover dependencies, and anchor
 // themselves with `absolute bottom-full` — so they only need a `relative`
 // ancestor here, and mobile gets provider tabs, favorites, emoji and search for
 // free instead of a second, worse implementation.
+//
+// Channel comes in as a prop rather than being read off `currentStream`: with
+// several chat tabs open the composer must target the tab you are looking at,
+// which is not necessarily the stream playing.
 import React, { useRef, useState } from 'react';
-import { X } from 'phosphor-react';
+import { DotsThreeVertical, X } from 'phosphor-react';
 import { useAppStore } from '../../stores/AppStore';
 import { incrementStat } from '../../services/supabaseService';
-import { refreshChannelEmotes } from '../../stores/chatConnectionStore';
-import type { UseTwitchChatReturn } from '../../hooks/useTwitchChat';
+import { refreshChannelEmotes, sendChannelMessage } from '../../stores/chatConnectionStore';
 import type { EmoteSet } from '../../services/emoteService';
 import { Logger } from '../../utils/logger';
 import { EmotePickerPanel, useSwappingSmiley } from '../../components/chat/EmotePickerPanel';
@@ -21,6 +24,7 @@ import ChannelPointsMenu from '../../components/ChannelPointsMenu';
 import { ChannelPointsIcon } from '../../components/ChannelPointsIcon';
 import { useChannelPoints } from './useChannelPoints';
 import { useEmoteOwnerNames } from './useEmoteOwnerNames';
+import { ComposerMenuSheet } from './ComposerMenuSheet';
 
 // Shorter than the desktop's 520px so the panel still clears the soft keyboard,
 // and opaque rather than the panel's own 95%. That 5% reads as solid over a
@@ -31,6 +35,7 @@ import { useEmoteOwnerNames } from './useEmoteOwnerNames';
 // Deliberately NOT solved with a backdrop blur: that gets stripped entirely
 // when Glassiness is off, so it cannot be what keeps text legible, and a large
 // blur is exactly the per-frame cost just removed from chat rows for phone GPUs.
+//
 // The height clamp is keyboard-aware on purpose. `vh` is the whole screen here
 // (edge-to-edge means the soft keyboard does not resize the viewport, the native
 // inset bridge reports it as --sn-kb instead), so a fixed 52vh panel grows
@@ -38,36 +43,56 @@ import { useEmoteOwnerNames } from './useEmoteOwnerNames';
 const PANEL_CLASS =
   'absolute bottom-full left-0 right-0 mb-2 h-[52vh] max-h-[min(420px,calc(100dvh-var(--sn-kb,0px)-var(--sn-safe-t,0px)-140px))] border border-borderSubtle rounded-xl shadow-lg flex flex-col overflow-hidden origin-bottom z-50 !bg-background';
 
-function formatPoints(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 10_000) return `${Math.round(n / 1000)}K`;
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
-  return String(n);
-}
-
-export const MobileChatInput: React.FC<{
-  chat: UseTwitchChatReturn;
+interface Props {
+  channel: string | null;
+  channelId: string | null;
+  channelLabel: string | null;
   emotes: EmoteSet | null;
   replyTo?: { messageId: string; username: string } | null;
   onCancelReply?: () => void;
-}> = ({ chat, emotes, replyTo, onCancelReply }) => {
+  isModerator: boolean;
+  modToolsOn: boolean;
+  onToggleModTools: () => void;
+  onAddChat: () => void;
+  onReload: () => void;
+  /** Absent for the stream-following tab, which is not closable. */
+  onCloseChat?: () => void;
+}
+
+export const MobileChatInput: React.FC<Props> = ({
+  channel,
+  channelId,
+  channelLabel,
+  emotes,
+  replyTo,
+  onCancelReply,
+  isModerator,
+  modToolsOn,
+  onToggleModTools,
+  onAddChat,
+  onReload,
+  onCloseChat,
+}) => {
   const currentUser = useAppStore((s) => s.currentUser);
-  const currentStream = useAppStore((s) => s.currentStream);
   const [text, setText] = useState('');
   const [emotesOpen, setEmotesOpen] = useState(false);
   const [pointsOpen, setPointsOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const { currentSmiley, isSmileyTransitioning, cycleEmoteSmiley } = useSwappingSmiley();
-  const points = useChannelPoints(currentStream?.user_login);
+  const points = useChannelPoints(channel);
   const emoteOwnerNames = useEmoteOwnerNames(emotes);
+
+  const canSend = !!text.trim();
 
   const send = async () => {
     const message = text.trim();
-    if (!message || !currentUser || sending) return;
+    if (!message || !currentUser || !channel || sending) return;
     setSending(true);
     try {
-      await chat.sendMessage(
+      await sendChannelMessage(
+        channel,
         message,
         {
           username: currentUser.login || currentUser.username,
@@ -127,112 +152,144 @@ export const MobileChatInput: React.FC<{
       )}
       {/* `relative` is the anchor both panels position against. */}
       <div className="relative flex items-end gap-1.5 px-2.5 pt-2">
-      <button
-        onClick={() => {
-          cycleEmoteSmiley();
-          setPointsOpen(false);
-          setEmotesOpen((v) => !v);
-        }}
-        className="sn-touch flex items-center justify-center text-[21px] leading-none active:opacity-70"
-        aria-label="Emotes and emoji"
-      >
-        <span
-          className="transition-[opacity,transform] duration-100"
-          style={{
-            opacity: isSmileyTransitioning ? 0 : 1,
-            transform: isSmileyTransitioning ? 'scale(0.8)' : 'scale(1)',
-          }}
-        >
-          {currentSmiley}
-        </span>
-      </button>
-      {/* Points only exist for Twitch channels with points enabled, and only
-          once the drops account is connected, so a null balance hides it
-          rather than showing a control that cannot work. */}
-      {points.balance !== null && currentStream && (
-        <button
-          onClick={() => {
-            setEmotesOpen(false);
-            setPointsOpen((v) => !v);
-          }}
-          className={`sn-touch flex items-center gap-1 px-1.5 rounded-full active:opacity-70 ${
-            pointsOpen ? 'text-accent' : 'text-textSecondary'
-          }`}
-          aria-label={`${points.name || 'Channel points'}: ${points.balance}`}
-        >
-          {points.iconUrl ? (
-            <img
-              src={points.iconUrl}
-              alt=""
-              className="w-[18px] h-[18px] object-contain"
-              draggable={false}
-            />
-          ) : (
-            <ChannelPointsIcon size={17} />
+        {/* The emote trigger and the points button live INSIDE the field so the
+            typing area keeps full width instead of being squeezed by chrome. */}
+        <div className="glass-input flex-1 min-w-0 flex items-end gap-1 pl-1 pr-2">
+          <button
+            onClick={() => {
+              cycleEmoteSmiley();
+              setPointsOpen(false);
+              setEmotesOpen((v) => !v);
+            }}
+            className="shrink-0 w-9 h-9 flex items-center justify-center text-[20px] leading-none active:opacity-70"
+            aria-label="Emotes and emoji"
+          >
+            <span
+              className="transition-[opacity,transform] duration-100"
+              style={{
+                opacity: isSmileyTransitioning ? 0 : 1,
+                transform: isSmileyTransitioning ? 'scale(0.8)' : 'scale(1)',
+              }}
+            >
+              {currentSmiley}
+            </span>
+          </button>
+          <textarea
+            ref={inputRef}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                void send();
+              }
+            }}
+            placeholder="Send a message"
+            rows={1}
+            className="flex-1 min-w-0 resize-none bg-transparent py-2 text-[15px] leading-[1.4] text-textPrimary placeholder:text-textMuted outline-none max-h-[96px]"
+            enterKeyHint="send"
+          />
+          {/* Icon only. The balance belongs in the menu that opens, where there
+              is room to show it in full rather than abbreviated. */}
+          {points.balance !== null && channel && (
+            <button
+              onClick={() => {
+                setEmotesOpen(false);
+                setPointsOpen((v) => !v);
+              }}
+              className={`shrink-0 w-9 h-9 flex items-center justify-center active:opacity-70 ${
+                pointsOpen ? 'text-accent' : 'text-textSecondary'
+              }`}
+              aria-label={points.name || 'Channel points'}
+            >
+              {points.iconUrl ? (
+                <img
+                  src={points.iconUrl}
+                  alt=""
+                  className="w-[19px] h-[19px] object-contain"
+                  draggable={false}
+                />
+              ) : (
+                <ChannelPointsIcon size={19} />
+              )}
+            </button>
           )}
-          <span className="text-[12.5px] font-semibold tabular-nums">
-            {formatPoints(points.balance)}
-          </span>
-        </button>
-      )}
-      <textarea
-        ref={inputRef}
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            void send();
-          }
-        }}
-        placeholder="Send a message"
-        rows={1}
-        className="glass-input flex-1 resize-none px-3 py-2 text-[15px] leading-[1.4] text-textPrimary placeholder:text-textMuted bg-transparent outline-none max-h-[96px]"
-        enterKeyHint="send"
-      />
-      {/* Same send control as the desktop chat: glass button + the app's own
-          send glyph. */}
-      <button
-        onClick={() => void send()}
-        disabled={!text.trim() || sending}
-        className="glass-button flex-shrink-0 flex items-center justify-center self-end w-10 h-10 text-white rounded transition-all duration-300 disabled:opacity-50"
-        aria-label="Send"
-      >
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-        </svg>
-      </button>
-      <EmotePickerPanel
-        open={emotesOpen}
-        onClose={() => setEmotesOpen(false)}
-        emotes={emotes}
-        isTwitch
-        isKick={false}
-        channelId={currentStream?.user_id}
-        channelLogin={currentStream?.user_login}
-        isLoadingEmotes={!emotes}
-        channelNameCache={emoteOwnerNames}
-        onInsert={insertEmote}
-        className={PANEL_CLASS}
-      />
-      {pointsOpen && currentStream && (
-        <ChannelPointsMenu
-          channelLogin={currentStream.user_login}
-          channelId={currentStream.user_id}
-          currentBalance={points.balance}
-          customPointsName={points.name}
-          customPointsIconUrl={points.iconUrl}
-          onClose={() => setPointsOpen(false)}
-          onBalanceUpdate={points.refresh}
-          onEmotesChange={() => {
-            // Redeeming an emote-unlock reward changes the picker's contents.
-            if (currentStream.user_id) {
-              void refreshChannelEmotes(currentStream.user_login, currentStream.user_id);
-            }
-          }}
+        </div>
+
+        {/* One slot, two jobs: Send while there is a message, otherwise the chat
+            menu. Avoids parking a permanently disabled Send on screen. */}
+        {canSend ? (
+          <button
+            onClick={() => void send()}
+            disabled={sending}
+            className="glass-button shrink-0 flex items-center justify-center self-end w-10 h-10 text-white rounded transition-all duration-300 disabled:opacity-50"
+            aria-label="Send"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
+              />
+            </svg>
+          </button>
+        ) : (
+          <button
+            onClick={() => {
+              setEmotesOpen(false);
+              setPointsOpen(false);
+              setMenuOpen(true);
+            }}
+            className="glass-button shrink-0 flex items-center justify-center self-end w-10 h-10 rounded text-textSecondary active:text-textPrimary transition-all duration-300"
+            aria-label="Chat options"
+          >
+            <DotsThreeVertical size={20} weight="bold" />
+          </button>
+        )}
+
+        <EmotePickerPanel
+          open={emotesOpen}
+          onClose={() => setEmotesOpen(false)}
+          emotes={emotes}
+          isTwitch
+          isKick={false}
+          channelId={channelId ?? undefined}
+          channelLogin={channel ?? undefined}
+          isLoadingEmotes={!emotes}
+          channelNameCache={emoteOwnerNames}
+          onInsert={insertEmote}
+          className={PANEL_CLASS}
         />
-      )}
+        {pointsOpen && channel && channelId && (
+          <ChannelPointsMenu
+            channelLogin={channel}
+            channelId={channelId}
+            currentBalance={points.balance}
+            customPointsName={points.name}
+            customPointsIconUrl={points.iconUrl}
+            onClose={() => setPointsOpen(false)}
+            onBalanceUpdate={points.refresh}
+            onEmotesChange={() => {
+              // Redeeming an emote-unlock reward changes the picker's contents.
+              void refreshChannelEmotes(channel, channelId);
+            }}
+          />
+        )}
       </div>
+
+      <ComposerMenuSheet
+        open={menuOpen}
+        onClose={() => setMenuOpen(false)}
+        activeChannel={channel}
+        activeLabel={channelLabel}
+        isModerator={isModerator}
+        modToolsOn={modToolsOn}
+        onToggleModTools={onToggleModTools}
+        onAddChat={onAddChat}
+        onReload={onReload}
+        onCloseChat={onCloseChat}
+      />
     </div>
   );
 };
