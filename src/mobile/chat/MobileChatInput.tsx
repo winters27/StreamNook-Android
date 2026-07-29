@@ -1,14 +1,37 @@
-// Lean touch chat input: text send + emote sheet. Deliberately drops the
-// desktop input's slash commands, user-command expansion, resub/streak modes,
-// send-as switching, and arrow history; those are desktop affordances.
+// Lean touch chat input: text send, the shared emote/emoji picker, and channel
+// points. Deliberately drops the desktop input's slash commands, user-command
+// expansion, resub/streak modes, send-as switching, and arrow history; those
+// are desktop affordances.
+//
+// The picker and the points menu are the SAME components the desktop composer
+// uses. Both are prop-driven, carry no window/hover dependencies, and anchor
+// themselves with `absolute bottom-full` — so they only need a `relative`
+// ancestor here, and mobile gets provider tabs, favorites, emoji and search for
+// free instead of a second, worse implementation.
 import React, { useRef, useState } from 'react';
-import { Smiley, X } from 'phosphor-react';
+import { X } from 'phosphor-react';
 import { useAppStore } from '../../stores/AppStore';
 import { incrementStat } from '../../services/supabaseService';
+import { refreshChannelEmotes } from '../../stores/chatConnectionStore';
 import type { UseTwitchChatReturn } from '../../hooks/useTwitchChat';
 import type { EmoteSet } from '../../services/emoteService';
 import { Logger } from '../../utils/logger';
-import { EmoteSheet } from './EmoteSheet';
+import { EmotePickerPanel, useSwappingSmiley } from '../../components/chat/EmotePickerPanel';
+import ChannelPointsMenu from '../../components/ChannelPointsMenu';
+import { ChannelPointsIcon } from '../../components/ChannelPointsIcon';
+import { useChannelPoints } from './useChannelPoints';
+
+// Shorter than the desktop's 520px so the panel still clears the soft keyboard
+// on a phone.
+const PANEL_CLASS =
+  'absolute bottom-full left-0 right-0 mb-2 h-[52vh] max-h-[420px] border border-borderSubtle rounded-xl shadow-lg flex flex-col overflow-hidden origin-bottom z-50';
+
+function formatPoints(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 10_000) return `${Math.round(n / 1000)}K`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+  return String(n);
+}
 
 export const MobileChatInput: React.FC<{
   chat: UseTwitchChatReturn;
@@ -17,10 +40,14 @@ export const MobileChatInput: React.FC<{
   onCancelReply?: () => void;
 }> = ({ chat, emotes, replyTo, onCancelReply }) => {
   const currentUser = useAppStore((s) => s.currentUser);
+  const currentStream = useAppStore((s) => s.currentStream);
   const [text, setText] = useState('');
   const [emotesOpen, setEmotesOpen] = useState(false);
+  const [pointsOpen, setPointsOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const { currentSmiley, isSmileyTransitioning, cycleEmoteSmiley } = useSwappingSmiley();
+  const points = useChannelPoints(currentStream?.user_login);
 
   const send = async () => {
     const message = text.trim();
@@ -50,8 +77,10 @@ export const MobileChatInput: React.FC<{
     }
   };
 
-  const insertEmote = (name: string) => {
-    setText((t) => (t.length === 0 || t.endsWith(' ') ? `${t}${name} ` : `${t} ${name} `));
+  // The shared picker hands back the literal token to insert, which is an emote
+  // name for emotes and the character itself for emoji.
+  const insertEmote = (token: string) => {
+    setText((t) => (t.length === 0 || t.endsWith(' ') ? `${t}${token} ` : `${t} ${token} `));
     inputRef.current?.focus();
   };
 
@@ -83,14 +112,56 @@ export const MobileChatInput: React.FC<{
           </button>
         </div>
       )}
-      <div className="flex items-end gap-1.5 px-2.5 pt-2">
+      {/* `relative` is the anchor both panels position against. */}
+      <div className="relative flex items-end gap-1.5 px-2.5 pt-2">
       <button
-        onClick={() => setEmotesOpen(true)}
-        className="sn-touch flex items-center justify-center text-textSecondary active:text-textPrimary"
-        aria-label="Emotes"
+        onClick={() => {
+          cycleEmoteSmiley();
+          setPointsOpen(false);
+          setEmotesOpen((v) => !v);
+        }}
+        className="sn-touch flex items-center justify-center text-[21px] leading-none active:opacity-70"
+        aria-label="Emotes and emoji"
       >
-        <Smiley size={22} />
+        <span
+          className="transition-[opacity,transform] duration-100"
+          style={{
+            opacity: isSmileyTransitioning ? 0 : 1,
+            transform: isSmileyTransitioning ? 'scale(0.8)' : 'scale(1)',
+          }}
+        >
+          {currentSmiley}
+        </span>
       </button>
+      {/* Points only exist for Twitch channels with points enabled, and only
+          once the drops account is connected, so a null balance hides it
+          rather than showing a control that cannot work. */}
+      {points.balance !== null && currentStream && (
+        <button
+          onClick={() => {
+            setEmotesOpen(false);
+            setPointsOpen((v) => !v);
+          }}
+          className={`sn-touch flex items-center gap-1 px-1.5 rounded-full active:opacity-70 ${
+            pointsOpen ? 'text-accent' : 'text-textSecondary'
+          }`}
+          aria-label={`${points.name || 'Channel points'}: ${points.balance}`}
+        >
+          {points.iconUrl ? (
+            <img
+              src={points.iconUrl}
+              alt=""
+              className="w-[18px] h-[18px] object-contain"
+              draggable={false}
+            />
+          ) : (
+            <ChannelPointsIcon size={17} />
+          )}
+          <span className="text-[12.5px] font-semibold tabular-nums">
+            {formatPoints(points.balance)}
+          </span>
+        </button>
+      )}
       <textarea
         ref={inputRef}
         value={text}
@@ -118,12 +189,35 @@ export const MobileChatInput: React.FC<{
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
         </svg>
       </button>
-      <EmoteSheet
+      <EmotePickerPanel
         open={emotesOpen}
         onClose={() => setEmotesOpen(false)}
         emotes={emotes}
-        onPick={insertEmote}
+        isTwitch
+        isKick={false}
+        channelId={currentStream?.user_id}
+        channelLogin={currentStream?.user_login}
+        isLoadingEmotes={!emotes}
+        onInsert={insertEmote}
+        className={PANEL_CLASS}
       />
+      {pointsOpen && currentStream && (
+        <ChannelPointsMenu
+          channelLogin={currentStream.user_login}
+          channelId={currentStream.user_id}
+          currentBalance={points.balance}
+          customPointsName={points.name}
+          customPointsIconUrl={points.iconUrl}
+          onClose={() => setPointsOpen(false)}
+          onBalanceUpdate={points.refresh}
+          onEmotesChange={() => {
+            // Redeeming an emote-unlock reward changes the picker's contents.
+            if (currentStream.user_id) {
+              void refreshChannelEmotes(currentStream.user_login, currentStream.user_id);
+            }
+          }}
+        />
+      )}
       </div>
     </div>
   );

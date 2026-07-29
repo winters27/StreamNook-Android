@@ -2,7 +2,7 @@
 // services, same theme system, phone-shaped chrome (bottom tabs, sheets,
 // safe-area frame). Boot orchestration is deliberately replicated, not shared;
 // see boot/useMobileBoot.ts for the contract with App.tsx.
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import './mobile.css';
 import { useAppStore } from '../stores/AppStore';
