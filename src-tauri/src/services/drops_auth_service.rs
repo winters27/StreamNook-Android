@@ -419,9 +419,15 @@ impl DropsAuthService {
         }
     }
 
-    /// Check if the user is authenticated for drops
+    /// Check if the user is authenticated for drops.
+    ///
+    /// Uses get_token() (file, then the cookie-jar fallback) rather than the
+    /// file alone: the device-code flow stores the fresh token in the cookie
+    /// jar, so a file-only check reports "not authenticated" immediately after
+    /// a successful connect. Desktop never noticed (its UI trusts the poll
+    /// result); the mobile Activity screen re-checks and exposed it.
     pub async fn is_authenticated() -> bool {
-        Self::load_token_from_file().is_ok()
+        Self::get_token().await.is_ok()
     }
 
     /// Validate the current token

@@ -4,6 +4,7 @@
 import React, { useEffect, useState } from 'react';
 import { Eye } from 'phosphor-react';
 import { useAppStore } from '../../stores/AppStore';
+import HypeTrainBanner from '../../components/HypeTrainBanner';
 import { useOrientation } from '../ui/useOrientation';
 import { MobilePlayer } from '../player/MobilePlayer';
 import { MobileChatPane } from '../chat/MobileChatPane';
@@ -23,6 +24,7 @@ export const WatchScreen: React.FC = () => {
   const isLoading = useAppStore((s) => s.isLoading);
   const streamUrl = useAppStore((s) => s.streamUrl);
   const currentStream = useAppStore((s) => s.currentStream);
+  const currentHypeTrain = useAppStore((s) => s.currentHypeTrain);
   const orientation = useOrientation();
   const [landscapeChat, setLandscapeChat] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -66,31 +68,48 @@ export const WatchScreen: React.FC = () => {
       <div className="w-full aspect-video shrink-0">
         <MobilePlayer />
       </div>
-      {/* Stream info bar: darker like the desktop stream header, with the
-          channel line plus live viewers and uptime. */}
-      {currentStream && (
-        <div className="shrink-0 px-3.5 py-2 border-b border-borderSubtle bg-background-secondary">
-          <div className="text-[13.5px] font-semibold text-textPrimary truncate leading-snug">
-            {currentStream.title}
+      {/* Chat area with the desktop chat-header treatment: an elevated blurred
+          overlay carrying the stream info row, with the HypeTrainBanner
+          sliding in beneath it (flex-col-reverse keeps info on top). Chat
+          scrolls underneath, exactly like the desktop widget. */}
+      <div className="flex-1 min-h-0 relative flex flex-col">
+        {currentStream && (
+          <div
+            className="absolute top-0 left-0 right-0 px-3.5 py-2 border-b border-borderSubtle backdrop-blur-ultra z-10 pointer-events-none shadow-lg overflow-hidden flex flex-col-reverse"
+            style={{
+              backgroundColor: 'color-mix(in srgb, var(--color-background) 90%, transparent)',
+            }}
+          >
+            {currentHypeTrain && (
+              <HypeTrainBanner
+                train={currentHypeTrain}
+                onExpire={() => useAppStore.getState().setCurrentHypeTrain(null)}
+              />
+            )}
+            <div className="relative z-10">
+              <div className="text-[13.5px] font-semibold text-textPrimary truncate leading-snug">
+                {currentStream.title}
+              </div>
+              <div className="flex items-center gap-2 mt-0.5 min-w-0">
+                <span className="text-[12.5px] text-textSecondary truncate">
+                  {currentStream.user_name}
+                  {currentStream.game_name ? ` · ${currentStream.game_name}` : ''}
+                </span>
+                <span className="ml-auto flex items-center gap-2 shrink-0 text-[12px] text-textMuted">
+                  <span className="flex items-center gap-1 text-live">
+                    <Eye size={13} weight="fill" />
+                    {currentStream.viewer_count.toLocaleString()}
+                  </span>
+                  {currentStream.started_at && (
+                    <span>{formatUptime(currentStream.started_at, nowMs)}</span>
+                  )}
+                </span>
+              </div>
+            </div>
           </div>
-          <div className="flex items-center gap-2 mt-0.5 min-w-0">
-            <span className="text-[12.5px] text-textSecondary truncate">
-              {currentStream.user_name}
-              {currentStream.game_name ? ` · ${currentStream.game_name}` : ''}
-            </span>
-            <span className="ml-auto flex items-center gap-2 shrink-0 text-[12px] text-textMuted">
-              <span className="flex items-center gap-1 text-live">
-                <Eye size={13} weight="fill" />
-                {currentStream.viewer_count.toLocaleString()}
-              </span>
-              {currentStream.started_at && (
-                <span>{formatUptime(currentStream.started_at, nowMs)}</span>
-              )}
-            </span>
-          </div>
-        </div>
-      )}
-      <MobileChatPane />
+        )}
+        <MobileChatPane />
+      </div>
     </div>
   );
 };

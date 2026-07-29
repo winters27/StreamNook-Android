@@ -162,28 +162,45 @@ export const MobileChatPane: React.FC = () => {
   );
 
   const openMessageActions = useCallback(
-    (messageId: string, username: string) => {
+    (messageId: string, usernameHint?: string) => {
       let content = '';
       let userId = '';
+      let username = usernameHint ?? '';
       for (const message of messages) {
         if (getMessageId(message) !== messageId) continue;
         try {
           const parsed = parseMessage(message as string | BackendChatMessage);
           content = parsed.content ?? '';
           userId = parsed.tags.get('user-id') ?? '';
+          if (!username) username = parsed.username ?? '';
         } catch {
           content = '';
         }
         break;
       }
+      if (!username) return;
       setActionTarget({ messageId, username, userId, content });
     },
     [messages, getMessageId],
   );
 
+  // Long-press ANYWHERE on a message row opens the action sheet, not just the
+  // username: Android synthesizes contextmenu from the hold, and every row
+  // carries data-message-id (see ChatMessageList's MessageRow).
+  const onListContextMenu = useCallback(
+    (e: React.MouseEvent) => {
+      const row = (e.target as HTMLElement).closest('[data-message-id]');
+      if (!row) return;
+      e.preventDefault();
+      const messageId = row.getAttribute('data-message-id');
+      if (messageId) openMessageActions(messageId);
+    },
+    [openMessageActions],
+  );
+
   return (
     <div className="flex-1 min-h-0 flex flex-col">
-      <div className="flex-1 min-h-0 relative">
+      <div className="flex-1 min-h-0 relative" onContextMenu={onListContextMenu}>
         <ChatMessageList
           messages={messages}
           renderToken={renderToken}

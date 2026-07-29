@@ -57,6 +57,9 @@ export const ActivityScreen: React.FC = () => {
       });
       setDeviceCode(null);
       addToast('Drops connected!', 'success');
+      // Trust the successful poll like desktop does; load() then fills the
+      // inventory (and the backend check now agrees post-connect).
+      setAuthed(true);
       await load();
     } catch (err) {
       Logger.error('[Activity] drops connect failed:', err);
