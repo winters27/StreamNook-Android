@@ -138,54 +138,54 @@ export const MobilePlayer: React.FC<{
         {/* Stream info, top-left */}
         {currentStream && (
           <div
-            className="absolute inset-x-0 top-0 px-3 pt-2 flex items-start gap-2"
+            className="absolute inset-x-0 top-0 px-3 pt-2"
             style={immersive ? { paddingTop: 'calc(var(--sn-safe-t, 0px) + 8px)' } : undefined}
           >
-            {currentStream.profile_image_url ? (
-              <img
-                src={currentStream.profile_image_url}
-                alt=""
-                draggable={false}
-                className="w-8 h-8 rounded-full object-cover shrink-0 ring-2 ring-live/80"
-              />
-            ) : (
-              <div className="w-8 h-8 rounded-full bg-white/15 shrink-0 flex items-center justify-center text-[13px] font-bold text-white ring-2 ring-live/80">
-                {currentStream.user_name?.charAt(0).toUpperCase()}
-              </div>
-            )}
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-1.5 min-w-0">
-                <span className="text-[13.5px] font-semibold text-white truncate">
-                  {currentStream.user_name}
-                </span>
-                {currentStream.broadcaster_type === 'partner' && (
-                  <svg className="w-3 h-3 shrink-0" viewBox="0 0 16 16" fill="#9146FF">
-                    <path
-                      fillRule="evenodd"
-                      d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z"
-                      clipRule="evenodd"
-                    ></path>
-                  </svg>
-                )}
-                <span className="ml-auto flex items-center gap-2 shrink-0 pl-2">
-                  <span className="flex items-center gap-1 text-[12px] font-medium text-live">
-                    <Eye size={12} weight="fill" />
-                    {currentStream.viewer_count.toLocaleString()}
-                  </span>
-                  <span className="text-[12px] text-white/70">
-                    {formatUptime(currentStream.started_at, nowMs)}
-                  </span>
-                </span>
-              </div>
-              <div className="text-[12.5px] text-white/85 truncate leading-snug mt-0.5">
-                {currentStream.title}
-              </div>
-              {currentStream.game_name && (
-                <div className="text-[11.5px] text-white/60 truncate leading-snug">
-                  {currentStream.game_name}
+            {/* Identity row: avatar + name, with the live metrics opposite. */}
+            <div className="flex items-center gap-2 min-w-0">
+              {currentStream.profile_image_url ? (
+                <img
+                  src={currentStream.profile_image_url}
+                  alt=""
+                  draggable={false}
+                  className="w-7 h-7 rounded-full object-cover shrink-0 ring-2 ring-live/80"
+                />
+              ) : (
+                <div className="w-7 h-7 rounded-full bg-white/15 shrink-0 flex items-center justify-center text-[12px] font-bold text-white ring-2 ring-live/80">
+                  {currentStream.user_name?.charAt(0).toUpperCase()}
                 </div>
               )}
+              <span className="text-[13.5px] font-semibold text-white truncate">
+                {currentStream.user_name}
+              </span>
+              {currentStream.broadcaster_type === 'partner' && (
+                <svg className="w-3 h-3 shrink-0 -ml-0.5" viewBox="0 0 16 16" fill="#9146FF">
+                  <path
+                    fillRule="evenodd"
+                    d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z"
+                    clipRule="evenodd"
+                  ></path>
+                </svg>
+              )}
+              <span className="ml-auto flex items-center gap-2 shrink-0 pl-2">
+                <span className="flex items-center gap-1 text-[12px] font-medium text-live">
+                  <Eye size={12} weight="fill" />
+                  {currentStream.viewer_count.toLocaleString()}
+                </span>
+                <span className="text-[12px] text-white/70">
+                  {formatUptime(currentStream.started_at, nowMs)}
+                </span>
+              </span>
             </div>
+            {/* Title + category run the full width beneath the identity row. */}
+            <div className="text-[12.5px] text-white/85 truncate leading-snug mt-1">
+              {currentStream.title}
+            </div>
+            {currentStream.game_name && (
+              <div className="text-[11.5px] text-white/60 truncate leading-snug">
+                {currentStream.game_name}
+              </div>
+            )}
           </div>
         )}
         {/* Center play/pause */}
