@@ -52,6 +52,26 @@ class MainActivity : TauriActivity() {
     fun setPipEligible(eligible: Boolean) {
       pipEligible = eligible
     }
+
+    /** Enter TRUE system picture-in-picture on demand (drag-down, PiP button).
+     *  The activity shrinks into the OS PiP window: draggable, resizable,
+     *  floats over everything, tap to expand back. */
+    @JavascriptInterface
+    fun enterPip() {
+      runOnUiThread {
+        if (!isInPictureInPictureMode) {
+          try {
+            enterPictureInPictureMode(
+              PictureInPictureParams.Builder()
+                .setAspectRatio(Rational(16, 9))
+                .build(),
+            )
+          } catch (_: Exception) {
+            /* PiP unavailable on this device/config */
+          }
+        }
+      }
+    }
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {

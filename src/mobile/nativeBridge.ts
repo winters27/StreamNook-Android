@@ -5,6 +5,7 @@ interface SNBridge {
   setImmersive?(immersive: boolean): void;
   setKeepScreenOn?(on: boolean): void;
   setPipEligible?(eligible: boolean): void;
+  enterPip?(): void;
 }
 
 function bridge(): SNBridge | undefined {
@@ -30,6 +31,14 @@ export function setKeepScreenOn(on: boolean): void {
 export function setPipEligible(eligible: boolean): void {
   try {
     bridge()?.setPipEligible?.(eligible);
+  } catch {
+    /* bridge absent */
+  }
+}
+
+export function enterPip(): void {
+  try {
+    bridge()?.enterPip?.();
   } catch {
     /* bridge absent */
   }

@@ -1,7 +1,7 @@
 // Touch-first player surface: the video element plus a tap-driven glass control
 // overlay. No Plyr; hls.js runs via useMobileHlsEngine.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowsOut, Gear, Pause, Play, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
+import { ArrowsOut, Gear, Pause, PictureInPicture, Play, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileHlsEngine } from './useMobileHlsEngine';
 import { QualitySheet } from './QualitySheet';
@@ -12,7 +12,9 @@ export const MobilePlayer: React.FC<{
   /** Landscape immersive mode: overlay carries no bottom rounding, adds insets. */
   immersive?: boolean;
   onToggleFullscreen?: () => void;
-}> = ({ immersive = false, onToggleFullscreen }) => {
+  /** Hands playback to the OS picture-in-picture window. */
+  onEnterPip?: () => void;
+}> = ({ immersive = false, onToggleFullscreen, onEnterPip }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const { state } = useMobileHlsEngine(videoRef);
   const restartStream = useAppStore((s) => s.restartStream);
@@ -142,6 +144,18 @@ export const MobilePlayer: React.FC<{
             >
               {muted ? <SpeakerSlash size={21} /> : <SpeakerHigh size={21} />}
             </button>
+            {onEnterPip && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onEnterPip();
+                }}
+                className="sn-touch flex items-center justify-center text-white"
+                aria-label="Picture in picture"
+              >
+                <PictureInPicture size={21} />
+              </button>
+            )}
             <button
               onClick={(e) => {
                 e.stopPropagation();

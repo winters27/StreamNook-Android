@@ -1,16 +1,15 @@
 // The watch layer.
 //
-// Portrait full: 16:9 player band + the desktop-identity chat header (blurred
+// Portrait: 16:9 player band + the desktop-identity chat header (blurred
 // overlay with stream info, pinned strip, HypeTrainBanner) + chat, with the
 // poll and prediction cards mounted over the chat like desktop.
-// Mini: drag the player down (or press back) and it becomes a floating
-// mini player above the tab bar; tap to restore, X to exit.
-// Landscape full: immersive full-bleed player (system bars hidden via the
-// native bridge) with a chat side panel toggle.
-// System PiP: leaving the app while playing pips the whole activity; the shell
-// strips to the bare player (sn:pip event from MainActivity).
+// Landscape: immersive full-bleed player (system bars hidden via the native
+// bridge) with a chat side panel toggle.
+// TRUE system PiP: drag the player down, tap the player's PiP control, or
+// leave the app while playing; the OS window is draggable/resizable and the
+// shell strips to the bare player (sn:pip event from MainActivity).
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Eye, PushPin, X } from 'phosphor-react';
+import { Eye, PushPin } from 'phosphor-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileNavStore } from '../navStore';
@@ -23,7 +22,7 @@ import HypeTrainBanner from '../../components/HypeTrainBanner';
 import PollOverlay from '../../components/PollOverlay';
 import PredictionOverlay from '../../components/PredictionOverlay';
 import LoadingWidget from '../../components/LoadingWidget';
-import { setImmersive, setKeepScreenOn, setPipEligible } from '../nativeBridge';
+import { enterPip, setImmersive, setKeepScreenOn, setPipEligible } from '../nativeBridge';
 import { Logger } from '../../utils/logger';
 
 // "2h 14m" from the Helix started_at timestamp, ticking once a minute.
@@ -51,9 +50,6 @@ export const WatchScreen: React.FC = () => {
   const streamUrl = useAppStore((s) => s.streamUrl);
   const currentStream = useAppStore((s) => s.currentStream);
   const currentHypeTrain = useAppStore((s) => s.currentHypeTrain);
-  const playerMode = useMobileNavStore((s) => s.playerMode);
-  const setPlayerMode = useMobileNavStore((s) => s.setPlayerMode);
-  const exitStream = useAppStore((s) => s.exitStream);
   const refreshNonce = usePinStore((s) => s.refreshNonce);
   const orientation = useOrientation();
   const [landscapeChat, setLandscapeChat] = useState(false);
@@ -90,22 +86,16 @@ export const WatchScreen: React.FC = () => {
   }, [watching]);
 
   useEffect(() => {
-    const immersive = watching && orientation === 'landscape' && playerMode === 'full' && !pip;
+    const immersive = watching && orientation === 'landscape' && !pip;
     setImmersive(immersive);
     return () => setImmersive(false);
-  }, [watching, orientation, playerMode, pip]);
-
-  // A newly started stream always opens full. External-store sync (navStore),
-  // which is exactly what effects are for; the rule can't tell zustand setters
-  // from React setState.
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (channelId) setPlayerMode('full');
-  }, [channelId, setPlayerMode]);
+  }, [watching, orientation, pip]);
 
   // Pinned messages: 30s poll + instant refresh on pin/unpin actions.
   useEffect(() => {
     if (!channelId || !watching) {
+      // External-store sync: clearing stale pins when the channel goes away.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setPinned([]);
       return;
     }
@@ -133,23 +123,20 @@ export const WatchScreen: React.FC = () => {
     };
   }, [channelId, watching, refreshNonce]);
 
-  // Drag the portrait player downward to collapse into the mini player.
+  // Drag the portrait player downward to enter TRUE system PiP.
   const onPlayerTouchStart = useCallback((e: React.TouchEvent) => {
     dragStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
   }, []);
-  const onPlayerTouchMove = useCallback(
-    (e: React.TouchEvent) => {
-      const start = dragStart.current;
-      if (!start) return;
-      const dy = e.touches[0].clientY - start.y;
-      const dx = Math.abs(e.touches[0].clientX - start.x);
-      if (dy > MINI_DRAG_THRESHOLD_PX && dy > dx * 1.5) {
-        dragStart.current = null;
-        setPlayerMode('mini');
-      }
-    },
-    [setPlayerMode],
-  );
+  const onPlayerTouchMove = useCallback((e: React.TouchEvent) => {
+    const start = dragStart.current;
+    if (!start) return;
+    const dy = e.touches[0].clientY - start.y;
+    const dx = Math.abs(e.touches[0].clientX - start.x);
+    if (dy > MINI_DRAG_THRESHOLD_PX && dy > dx * 1.5) {
+      dragStart.current = null;
+      enterPip();
+    }
+  }, []);
   const onPlayerTouchEnd = useCallback(() => {
     dragStart.current = null;
   }, []);
@@ -173,7 +160,7 @@ export const WatchScreen: React.FC = () => {
     );
   }
 
-  if (orientation === 'landscape' && playerMode === 'full') {
+  if (orientation === 'landscape') {
     return (
       <div className="absolute inset-0 z-40 bg-black flex">
         <div className="flex-1 min-w-0">
@@ -202,56 +189,22 @@ export const WatchScreen: React.FC = () => {
     );
   }
 
-  const mini = playerMode === 'mini';
-
   return (
     <div
-      className={
-        mini
-          ? 'fixed z-30 rounded-lg overflow-hidden shadow-[0_10px_30px_-8px_rgba(0,0,0,0.6)]'
-          : 'absolute inset-0 z-40 bg-background flex flex-col'
-      }
-      style={
-        mini
-          ? {
-              right: 12,
-              bottom: 'calc(var(--sn-tabbar-h, 56px) + var(--sn-safe-b, 0px) + 24px)',
-              width: 186,
-            }
-          : { paddingTop: 'var(--sn-safe-t, 0px)' }
-      }
+      className="absolute inset-0 z-40 bg-background flex flex-col"
+      style={{ paddingTop: 'var(--sn-safe-t, 0px)' }}
     >
-      {/* The player keeps this exact tree position in both modes, so the video
-          element never remounts when collapsing/restoring. */}
+      {/* Drag the player band down to hand playback to the OS PiP window. */}
       <div
-        className={`w-full aspect-video relative ${mini ? '' : 'shrink-0'}`}
-        onTouchStart={mini ? undefined : onPlayerTouchStart}
-        onTouchMove={mini ? undefined : onPlayerTouchMove}
-        onTouchEnd={mini ? undefined : onPlayerTouchEnd}
+        className="w-full aspect-video relative shrink-0"
+        onTouchStart={onPlayerTouchStart}
+        onTouchMove={onPlayerTouchMove}
+        onTouchEnd={onPlayerTouchEnd}
       >
-        <MobilePlayer />
-        {mini && (
-          <>
-            <button
-              className="absolute inset-0 z-10"
-              aria-label="Restore player"
-              onClick={() => setPlayerMode('full')}
-            />
-            <button
-              className="absolute top-1 right-1 z-20 w-7 h-7 rounded-full bg-black/60 flex items-center justify-center text-white"
-              aria-label="Close stream"
-              onClick={(e) => {
-                e.stopPropagation();
-                void exitStream();
-              }}
-            >
-              <X size={14} weight="bold" />
-            </button>
-          </>
-        )}
+        <MobilePlayer onEnterPip={enterPip} />
       </div>
 
-      {!mini && (
+      {(
         <div className="flex-1 min-h-0 relative flex flex-col">
           {currentStream && (
             <div
