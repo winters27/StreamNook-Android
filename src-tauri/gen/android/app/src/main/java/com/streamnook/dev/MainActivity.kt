@@ -1,12 +1,16 @@
 package com.streamnook.dev
 
+import android.app.PictureInPictureParams
 import android.os.Bundle
+import android.util.Rational
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import org.json.JSONObject
 
 class MainActivity : TauriActivity() {
@@ -17,9 +21,37 @@ class MainActivity : TauriActivity() {
   // have not been applied to the fresh document yet).
   @Volatile private var insetsJson: String = "{}"
 
+  // Whether a stream is playing, so onUserLeaveHint knows to enter system
+  // picture-in-picture. Pushed from JS.
+  @Volatile private var pipEligible: Boolean = false
+
   inner class InsetsBridge {
     @JavascriptInterface
     fun get(): String = insetsJson
+
+    /** Hide/show the system bars (immersive playback, e.g. landscape watch). */
+    @JavascriptInterface
+    fun setImmersive(immersive: Boolean) {
+      runOnUiThread {
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        controller.systemBarsBehavior =
+          WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        if (immersive) controller.hide(WindowInsetsCompat.Type.systemBars())
+        else controller.show(WindowInsetsCompat.Type.systemBars())
+      }
+    }
+
+    /** Keep the screen awake while a stream plays. */
+    @JavascriptInterface
+    fun setKeepScreenOn(on: Boolean) {
+      runOnUiThread { webView?.keepScreenOn = on }
+    }
+
+    /** Mark whether leaving the app should enter system picture-in-picture. */
+    @JavascriptInterface
+    fun setPipEligible(eligible: Boolean) {
+      pipEligible = eligible
+    }
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -42,6 +74,36 @@ class MainActivity : TauriActivity() {
         }
       }
     })
+  }
+
+  // Home/recents while a stream plays: keep it playing in a system PiP window.
+  override fun onUserLeaveHint() {
+    super.onUserLeaveHint()
+    if (pipEligible && !isInPictureInPictureMode) {
+      try {
+        enterPictureInPictureMode(
+          PictureInPictureParams.Builder()
+            .setAspectRatio(Rational(16, 9))
+            .build(),
+        )
+      } catch (_: Exception) {
+        /* PiP unavailable on this device/config */
+      }
+    }
+  }
+
+  override fun onPictureInPictureModeChanged(
+    isInPictureInPictureMode: Boolean,
+    newConfig: android.content.res.Configuration,
+  ) {
+    super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+    // Tell the web shell so it strips down to the bare player while pipped.
+    val flag = if (isInPictureInPictureMode) "true" else "false"
+    webView?.evaluateJavascript(
+      "(function(){document.documentElement.dataset.snPip='" + flag +
+        "';window.dispatchEvent(new CustomEvent('sn:pip',{detail:" + flag + "}));})()",
+      null,
+    )
   }
 
   override fun onWebViewCreate(webView: WebView) {

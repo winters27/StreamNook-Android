@@ -21,6 +21,8 @@ interface MobileNavState {
   browseCategory: TwitchCategory | null;
   /** The cosmetics (equip) screen. */
   cosmeticsOpen: boolean;
+  /** Watch layer presentation: full screen, or the floating mini player. */
+  playerMode: 'full' | 'mini';
   setTab: (tab: MobileTab) => void;
   pushSheet: (id: string) => void;
   popSheet: (id?: string) => void;
@@ -28,6 +30,7 @@ interface MobileNavState {
   closeSettings: () => void;
   openBrowseCategory: (category: TwitchCategory | null) => void;
   setCosmeticsOpen: (open: boolean) => void;
+  setPlayerMode: (mode: 'full' | 'mini') => void;
   /** Back chain: top sheet -> settings tab -> settings list -> exit stream ->
    *  non-default tab -> not consumed (native backgrounds the task). */
   handleBack: () => boolean;
@@ -39,6 +42,7 @@ export const useMobileNavStore = create<MobileNavState>((set, get) => ({
   settingsView: null,
   browseCategory: null,
   cosmeticsOpen: false,
+  playerMode: 'full',
 
   setTab: (tab) => set({ activeTab: tab }),
 
@@ -54,6 +58,7 @@ export const useMobileNavStore = create<MobileNavState>((set, get) => ({
   closeSettings: () => set({ settingsView: null }),
   openBrowseCategory: (category) => set({ browseCategory: category }),
   setCosmeticsOpen: (open) => set({ cosmeticsOpen: open }),
+  setPlayerMode: (mode) => set({ playerMode: mode }),
 
   handleBack: () => {
     const { sheetStack, activeTab, settingsView, browseCategory, cosmeticsOpen } = get();
@@ -71,8 +76,12 @@ export const useMobileNavStore = create<MobileNavState>((set, get) => ({
       return true;
     }
     const app = useAppStore.getState();
-    if (app.streamUrl || app.isLoading) {
-      void app.exitStream();
+    const { playerMode } = get();
+    // Back from the full watch view minimizes to the floating mini player
+    // (Twitch-style: the stream keeps playing while you browse). Exiting is
+    // the mini player's close button or the player's own controls.
+    if ((app.streamUrl || app.isLoading) && playerMode === 'full') {
+      set({ playerMode: 'mini' });
       return true;
     }
     if (browseCategory) {
