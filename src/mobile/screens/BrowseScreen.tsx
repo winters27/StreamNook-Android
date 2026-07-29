@@ -9,12 +9,13 @@ import { readStreamView, writeStreamView, type StreamViewMode } from './Followin
 import { PullToRefresh } from '../ui/PullToRefresh';
 import { SkeletonCards } from '../ui/SkeletonCards';
 import { Logger } from '../../utils/logger';
+import { gameBoxArt } from '../../utils/boxArt';
 import type { TwitchCategory, TwitchStream } from '../../types';
 
 type BrowseMode = 'live' | 'categories';
 
 function boxArt(category: TwitchCategory): string {
-  return category.box_art_url.replace('{width}', '285').replace('{height}', '380');
+  return gameBoxArt(category.box_art_url, 285, 380);
 }
 
 // Top categories, module-cached for the session (pull-to-refresh reloads).

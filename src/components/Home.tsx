@@ -26,6 +26,7 @@ import {
 
 import { Logger } from '../utils/logger';
 import { useVisibleInterval } from '../utils/useVisibleInterval';
+import { gameBoxArt } from '../utils/boxArt';
 // Types for drops data
 interface DropCampaign {
     id: string;
@@ -1382,13 +1383,7 @@ const Home = () => {
             .replace('{width}', '1280').replace('{height}', '720');
     };
 
-    const getGameBoxArt = (url: string) => {
-        if (!url) return '';
-        if (url.includes('{width}') && url.includes('{height}')) {
-            return url.replace('{width}', '1200').replace('{height}', '1600');
-        }
-        return url.replace(/-\d+x\d+\.(jpg|jpeg|png)$/i, '-1200x1600.$1');
-    };
+    const getGameBoxArt = (url: string) => gameBoxArt(url);
 
     const handleStreamClick = (e: React.MouseEvent, stream: TwitchStream) => {
         // Ctrl/Cmd+click adds the stream to multinook instead of switching to it.
