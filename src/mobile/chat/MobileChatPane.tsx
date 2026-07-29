@@ -22,12 +22,15 @@ import type { BackendChatMessage } from '../../services/twitchChat';
 import { Logger } from '../../utils/logger';
 import { MobileChatInput } from './MobileChatInput';
 import { UserSheet, type SheetUser } from './UserSheet';
-import { MobileSheet } from '../ui/MobileSheet';
 import { ChatTabStrip } from './ChatTabStrip';
 import { AddChatSheet } from './AddChatSheet';
 import { useChatTabsStore } from './chatTabsStore';
-import { TIMEOUT_OPTIONS, banUser, deleteMessage, isModeratorFrom } from './modActions';
+import { banUser, deleteMessage, isModeratorFrom, pinMessage, unbanUser } from './modActions';
 import { deriveChatGating } from './chatGating';
+import { ChatFanOut, type FanAction, type FanTarget } from './ChatFanOut';
+import { useLongPressDrag } from './useLongPressDrag';
+import { usePinStore } from '../../stores/pinStore';
+import { formatDuration } from '../../utils/timeoutRamp';
 
 export const MobileChatPane: React.FC = () => {
   const currentStream = useAppStore((s) => s.currentStream);
@@ -76,6 +79,8 @@ export const MobileChatPane: React.FC = () => {
 
   const isModerator = isModeratorFrom(userBadges);
   const gating = useMemo(() => deriveChatGating(roomState, userBadges), [roomState, userBadges]);
+  /** Every Helix mod action keys off the channel's numeric id. */
+  const broadcasterId = activeTab?.channelId ?? null;
   const [modToolsOn, setModToolsOn] = useState(false);
   // Losing mod powers (switching to a room you do not moderate) must not leave
   // the destructive actions armed.
@@ -90,18 +95,9 @@ export const MobileChatPane: React.FC = () => {
 
   const [sheetUser, setSheetUser] = useState<SheetUser | null>(null);
   const [addChatOpen, setAddChatOpen] = useState(false);
-  const [timeoutTarget, setTimeoutTarget] = useState<{
-    userId: string;
-    username: string;
-  } | null>(null);
-  // Long-press a message (Android synthesizes contextmenu -> the RightClick
-  // callbacks) to open the action sheet; Reply threads through the input.
-  const [actionTarget, setActionTarget] = useState<{
-    messageId: string;
-    username: string;
-    userId: string;
-    content: string;
-  } | null>(null);
+  // Long-press arms the fan-out over the pressed row; it owns every message
+  // action now, so there is no separate action sheet.
+  const [fanTarget, setFanTarget] = useState<FanTarget | null>(null);
   const [replyDraft, setReplyDraft] = useState<{
     messageId: string;
     username: string;
@@ -237,44 +233,160 @@ export const MobileChatPane: React.FC = () => {
     [],
   );
 
-  const openMessageActions = useCallback(
-    (messageId: string, usernameHint?: string) => {
-      let content = '';
-      let userId = '';
-      let username = usernameHint ?? '';
+  /** Pull the author and body out of a rendered row's message id. */
+  const describeMessage = useCallback(
+    (messageId: string) => {
       for (const message of messages) {
         if (getMessageId(message) !== messageId) continue;
         try {
           const parsed = parseMessage(message as string | BackendChatMessage);
-          content = parsed.content ?? '';
-          userId = parsed.tags.get('user-id') ?? '';
-          if (!username) username = parsed.username ?? '';
+          const username = parsed.username ?? '';
+          if (!username) return null;
+          return {
+            messageId,
+            username,
+            userId: parsed.tags.get('user-id') ?? '',
+            content: parsed.content ?? '',
+          };
         } catch {
-          content = '';
+          return null;
         }
-        break;
       }
-      if (!username) return;
-      setActionTarget({ messageId, username, userId, content });
+      return null;
     },
     [messages, getMessageId],
   );
 
-  // Long-press ANYWHERE on a message row opens the action sheet, not just the
-  // username: Android synthesizes contextmenu from the hold, and every row
-  // carries data-message-id (see ChatMessageList's MessageRow).
-  const onListContextMenu = useCallback(
-    (e: React.MouseEvent) => {
-      const row = (e.target as HTMLElement).closest('[data-message-id]');
-      if (!row) return;
-      e.preventDefault();
-      const messageId = row.getAttribute('data-message-id');
-      if (messageId) openMessageActions(messageId);
-    },
-    [openMessageActions],
+  // Suppress the synthesized contextmenu entirely: the fan-out owns the hold now,
+  // and letting both fire would open a menu behind the fan.
+  const onListContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+  }, []);
+
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  const resolveRow = useCallback(
+    (el: HTMLElement) => el.getAttribute('data-message-id'),
+    [],
   );
 
-  const broadcasterId = activeTab?.channelId ?? null;
+  const onArmFan = useCallback(
+    (messageId: string, x: number, y: number) => {
+      const found = describeMessage(messageId);
+      if (!found) return;
+      setFanTarget({ ...found, originX: x, originY: y });
+    },
+    [describeMessage],
+  );
+
+  const press = useLongPressDrag({
+    resolve: resolveRow,
+    onArm: onArmFan,
+    scrollLockRef: listRef,
+  });
+
+  const closeFan = useCallback(() => {
+    setFanTarget(null);
+    press.release();
+  }, [press]);
+
+  const runFanAction = useCallback(
+    (action: FanAction, timeoutSecs?: number) => {
+      const t = fanTarget;
+      closeFan();
+      if (!t) return;
+      switch (action) {
+        case 'reply':
+          setReplyDraft({
+            messageId: t.messageId,
+            username: t.username,
+            channel: activeChannel ?? '',
+          });
+          break;
+        case 'copy':
+          void navigator.clipboard.writeText(t.content).catch(() => {});
+          break;
+        case 'profile':
+          setSheetUser({
+            userId: t.userId,
+            username: t.username,
+            displayName: t.username,
+            color: '#9147FF',
+          });
+          break;
+        case 'delete':
+          if (broadcasterId) {
+            void deleteMessage(broadcasterId, t.messageId).then(
+              (ok) => !ok && addToast('Could not delete that message.', 'error'),
+            );
+          }
+          break;
+        case 'timeout':
+          if (broadcasterId && t.userId) {
+            void banUser(broadcasterId, t.userId, timeoutSecs ?? 600).then((ok) => {
+              if (!ok) addToast('Could not time out that user.', 'error');
+              else
+                addToast(
+                  `Timed out ${t.username} for ${formatDuration(timeoutSecs ?? 600)}`,
+                  'success',
+                  {
+                    label: 'Undo',
+                    onClick: () => void unbanUser(broadcasterId, t.userId),
+                  },
+                );
+            });
+          }
+          break;
+        case 'ban':
+          if (broadcasterId && t.userId) {
+            void banUser(broadcasterId, t.userId, null).then((ok) => {
+              if (!ok) addToast('Could not ban that user.', 'error');
+              else
+                addToast(`Banned ${t.username}`, 'success', {
+                  label: 'Undo',
+                  onClick: () => void unbanUser(broadcasterId, t.userId),
+                });
+            });
+          }
+          break;
+        case 'pin':
+          if (broadcasterId) {
+            void pinMessage(broadcasterId, t.messageId).then((ok) => {
+              if (ok) usePinStore.getState().requestRefresh();
+              else addToast('Could not pin that message.', 'error');
+            });
+          }
+          break;
+      }
+    },
+    [fanTarget, closeFan, activeChannel, broadcasterId, addToast],
+  );
+
+  // Tap-to-reply, but only while paused. A live list scrolls under your finger,
+  // so a tap on a moving row is a coin flip; pausing makes the target stable.
+  // Paused rows get a visible reply affordance (see ChatMessageList styling via
+  // the data attribute below) so the gesture is discoverable rather than secret.
+  const onListClick = useCallback(
+    (e: React.MouseEvent) => {
+      if (!isPaused || press.isArmed()) return;
+      const el = e.target as HTMLElement;
+      // Usernames and links keep their own behaviour.
+      if (el.closest('a,[data-no-drag],button')) return;
+      const row = el.closest('[data-message-id]');
+      if (!row) return;
+      const messageId = row.getAttribute('data-message-id');
+      if (!messageId) return;
+      const found = describeMessage(messageId);
+      if (!found) return;
+      setReplyDraft({
+        messageId: found.messageId,
+        username: found.username,
+        channel: activeChannel ?? '',
+      });
+    },
+    [isPaused, press, describeMessage, activeChannel],
+  );
+
 
   const row =
     'sn-touch flex items-center px-2 text-[15px] text-textPrimary active:opacity-70 disabled:opacity-50';
@@ -282,7 +394,18 @@ export const MobileChatPane: React.FC = () => {
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       <ChatTabStrip />
-      <div className="flex-1 min-h-0 relative" onContextMenu={onListContextMenu}>
+      <div
+        ref={listRef}
+        className="flex-1 min-h-0 relative"
+        onContextMenu={onListContextMenu}
+        onPointerDown={press.onPointerDown}
+        onPointerMove={press.onPointerMove}
+        onPointerUp={press.onPointerUp}
+        onClick={onListClick}
+        // While paused, rows are tappable to reply. Signposted by the hint pill
+        // below rather than left as a secret gesture.
+        data-tap-reply={isPaused ? 'true' : undefined}
+      >
         <ChatMessageList
           messages={messages}
           renderToken={renderToken}
@@ -292,7 +415,7 @@ export const MobileChatPane: React.FC = () => {
           onUsernameClick={onUsernameClick}
           onReplyClick={() => {}}
           onEmoteRightClick={() => {}}
-          onUsernameRightClick={openMessageActions}
+          onUsernameRightClick={() => {}}
           onBadgeClick={() => {}}
           highlightedMessageId={null}
           deletedMessageIds={deletedMessageIds}
@@ -301,13 +424,18 @@ export const MobileChatPane: React.FC = () => {
           getMessageId={getMessageId}
         />
         {isPaused && (
-          <button
-            onClick={resumeLive}
-            className="absolute bottom-2 left-1/2 -translate-x-1/2 glass-button flex items-center gap-1 whitespace-nowrap rounded-full px-3 py-1 text-[12px] font-medium text-textPrimary z-10"
-          >
-            <CaretDown size={11} weight="bold" />
-            Resume live
-          </button>
+          <div className="absolute bottom-2 left-0 right-0 flex flex-col items-center gap-1 z-10 pointer-events-none">
+            <span className="glass-badge rounded-full px-2 py-0.5 text-[10.5px] text-textMuted">
+              Tap a message to reply
+            </span>
+            <button
+              onClick={resumeLive}
+              className="pointer-events-auto glass-button flex items-center gap-1 whitespace-nowrap rounded-full px-3 py-1 text-[12px] font-medium text-textPrimary"
+            >
+              <CaretDown size={11} weight="bold" />
+              Resume live
+            </button>
+          </div>
         )}
       </div>
       <MobileChatInput
@@ -331,134 +459,15 @@ export const MobileChatPane: React.FC = () => {
       />
       <UserSheet user={sheetUser} onClose={() => setSheetUser(null)} />
       <AddChatSheet open={addChatOpen} onClose={() => setAddChatOpen(false)} />
-
-      {/* Message action sheet (long-press a message). */}
-      <MobileSheet
-        open={!!actionTarget}
-        onClose={() => setActionTarget(null)}
-        maxHeightFraction={modToolsArmed ? 0.55 : 0.4}
-      >
-        {actionTarget && (
-          <div className="flex flex-col">
-            <div className="px-2 pb-2 text-[13px] text-textMuted truncate">
-              {actionTarget.username}
-              {actionTarget.content ? `: ${actionTarget.content}` : ''}
-            </div>
-            <button
-              onClick={() => {
-                setReplyDraft({ messageId: actionTarget.messageId, username: actionTarget.username, channel: activeChannel ?? '' });
-                setActionTarget(null);
-              }}
-              className={row}
-            >
-              Reply
-            </button>
-            <button
-              onClick={() => {
-                void navigator.clipboard.writeText(actionTarget.content).catch(() => {});
-                setActionTarget(null);
-              }}
-              disabled={!actionTarget.content}
-              className={row}
-            >
-              Copy message
-            </button>
-            <button
-              onClick={() => {
-                const target = actionTarget;
-                setActionTarget(null);
-                setSheetUser({
-                  userId: target.userId,
-                  username: target.username,
-                  displayName: target.username,
-                  color: '#9147FF',
-                });
-              }}
-              className={row}
-            >
-              View profile
-            </button>
-
-            {/* Mod actions are behind the explicit Moderator tools toggle so a
-                destructive tap is never one long-press away by accident. */}
-            {modToolsArmed && broadcasterId && (
-              <>
-                <div className="mt-1.5 mb-0.5 h-px bg-borderSubtle" />
-                <button
-                  onClick={() => {
-                    const target = actionTarget;
-                    setActionTarget(null);
-                    void deleteMessage(broadcasterId, target.messageId).then((ok) =>
-                      addToast(ok ? 'Message deleted' : 'Could not delete that message.', ok ? 'success' : 'error'),
-                    );
-                  }}
-                  className={row}
-                >
-                  Delete message
-                </button>
-                <button
-                  onClick={() => {
-                    const target = actionTarget;
-                    setActionTarget(null);
-                    setTimeoutTarget({ userId: target.userId, username: target.username });
-                  }}
-                  disabled={!actionTarget.userId}
-                  className={row}
-                >
-                  Timeout {actionTarget.username}
-                </button>
-                <button
-                  onClick={() => {
-                    const target = actionTarget;
-                    setActionTarget(null);
-                    void banUser(broadcasterId, target.userId, null).then((ok) =>
-                      addToast(
-                        ok ? `Banned ${target.username}` : 'Could not ban that user.',
-                        ok ? 'success' : 'error',
-                      ),
-                    );
-                  }}
-                  disabled={!actionTarget.userId}
-                  className={`${row} !text-error`}
-                >
-                  Ban {actionTarget.username}
-                </button>
-              </>
-            )}
-          </div>
-        )}
-      </MobileSheet>
-
-      {/* Timeout duration picker. */}
-      <MobileSheet
-        open={!!timeoutTarget}
-        onClose={() => setTimeoutTarget(null)}
-        title={timeoutTarget ? `Timeout ${timeoutTarget.username}` : undefined}
-        maxHeightFraction={0.4}
-      >
-        {timeoutTarget && broadcasterId && (
-          <div className="flex flex-col">
-            {TIMEOUT_OPTIONS.map((opt) => (
-              <button
-                key={opt.seconds}
-                onClick={() => {
-                  const target = timeoutTarget;
-                  setTimeoutTarget(null);
-                  void banUser(broadcasterId, target.userId, opt.seconds).then((ok) =>
-                    addToast(
-                      ok ? `${target.username} timed out for ${opt.label}` : 'Could not time out that user.',
-                      ok ? 'success' : 'error',
-                    ),
-                  );
-                }}
-                className={row}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        )}
-      </MobileSheet>
+      {/* Long-press fan-out. Owns every per-message action now, for everyone:
+          moderators simply get more buckets. */}
+      <ChatFanOut
+        target={fanTarget}
+        isModerator={modToolsArmed}
+        canPin={modToolsArmed && !!broadcasterId}
+        onCommit={runFanAction}
+        onCancel={closeFan}
+      />
     </div>
   );
 };

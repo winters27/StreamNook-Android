@@ -326,12 +326,16 @@ const ToastManager = () => {
     }
   };
 
-  // On mobile, toasts are down to failures only. Everything else they used to
-  // carry is either already visible (a deleted message goes struck-through in
-  // chat, a quality switch shows in the player) or now arrives as a real Android
-  // notification, so stacking cards over chat was pure noise. Errors stay,
-  // because a silent failure is worse than a card.
-  const visibleToasts = IS_MOBILE ? toasts.filter((t) => t.type === 'error') : toasts;
+  // On mobile, toasts are down to failures and anything actionable. Everything
+  // else they used to carry is either already visible (a deleted message goes
+  // struck-through in chat, a quality switch shows in the player) or now arrives
+  // as a real Android notification, so stacking cards over chat was pure noise.
+  // Errors stay because a silent failure is worse than a card, and a toast
+  // carrying an action is not noise: it is the only route to Undo after a
+  // timeout or a ban.
+  const visibleToasts = IS_MOBILE
+    ? toasts.filter((t) => t.type === 'error' || !!t.action)
+    : toasts;
 
   return (
     <div

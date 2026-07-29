@@ -42,6 +42,27 @@ export async function banUser(
   }
 }
 
+/** Reverses both a ban and a timeout, which is what makes Undo possible. */
+export async function unbanUser(broadcasterId: string, targetUserId: string): Promise<boolean> {
+  try {
+    await invoke('unban_user', { broadcasterId, targetUserId });
+    return true;
+  } catch (err) {
+    Logger.error('[MobileMod] unban failed:', err);
+    return false;
+  }
+}
+
+export async function pinMessage(broadcasterId: string, messageId: string): Promise<boolean> {
+  try {
+    await invoke('pin_chat_message', { broadcasterId, messageId, durationSeconds: null });
+    return true;
+  } catch (err) {
+    Logger.error('[MobileMod] pin failed:', err);
+    return false;
+  }
+}
+
 export const TIMEOUT_OPTIONS: { label: string; seconds: number }[] = [
   { label: '60s', seconds: 60 },
   { label: '10m', seconds: 600 },

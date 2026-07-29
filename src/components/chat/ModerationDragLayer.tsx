@@ -9,6 +9,11 @@ import { computePaintStyle } from '../../services/seventvService';
 import { useDragModerationStore } from '../../stores/dragModerationStore';
 import { usePinStore } from '../../stores/pinStore';
 import { Logger } from '../../utils/logger';
+import {
+  MAX_TIMEOUT_SECS,
+  formatDuration,
+  timeoutSecsFromDistance,
+} from '../../utils/timeoutRamp';
 
 type BucketKind = 'neutral' | 'danger';
 interface Bucket {
@@ -20,42 +25,8 @@ interface Bucket {
   activeTint: string;
 }
 
-// Twitch timeout range: 1s up to the 14-day (1209600s) max; longer is a ban.
-const MAX_TIMEOUT_SECS = 1209600;
-
-// Continuous timeout: drag-out distance (px) -> seconds, on a steep 10th-power
-// ramp (most of the range is short, the last stretch shoots to the 14-day max),
-// snapped to a clean value. No fixed list to clip off-screen; the duration
-// tracks how far you drag.
-const TIMEOUT_RANGE_PX = 260;
-const timeoutSecsFromDistance = (px: number): number => {
-  const ratio = Math.min(1, Math.max(0, px) / TIMEOUT_RANGE_PX);
-  return snapDuration(Math.pow(ratio, 10) * MAX_TIMEOUT_SECS);
-};
-
-// Round to a tidy value whose granularity grows with magnitude.
-function snapDuration(s: number): number {
-  let v: number;
-  if (s < 60) v = Math.round(s / 5) * 5;
-  else if (s < 3600) v = Math.round(s / 60) * 60;
-  else if (s < 86400) v = Math.round(s / 1800) * 1800;
-  else v = Math.round(s / 86400) * 86400;
-  return Math.min(MAX_TIMEOUT_SECS, Math.max(1, v));
-}
-
-// Human-readable duration (e.g. "45s", "10m", "1h 30m", "2d").
-function formatDuration(s: number): string {
-  if (s < 60) return `${Math.round(s)}s`;
-  if (s < 3600) return `${Math.round(s / 60)}m`;
-  if (s < 86400) {
-    const h = Math.floor(s / 3600);
-    const m = Math.round((s % 3600) / 60);
-    return m ? `${h}h ${m}m` : `${h}h`;
-  }
-  const d = Math.floor(s / 86400);
-  const h = Math.round((s % 86400) / 3600);
-  return h ? `${d}d ${h}h` : `${d}d`;
-}
+// The timeout ramp now lives in utils/timeoutRamp so the mobile fan-out dials
+// on the identical curve. Behaviour here is unchanged.
 
 /**
  * Global drag-to-moderate overlay. A grab handle in the chat dock "lifts" a
