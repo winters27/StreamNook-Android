@@ -9,6 +9,7 @@ import { ToastPosition, DEFAULT_TOAST_POSITION, DEFAULT_TOAST_EDGE_OFFSET } from
 import { Logger } from '../utils/logger';
 import { playSound, type SoundId } from '../utils/notificationSound';
 import { liveActivityText } from '../utils/liveActivity';
+import { IS_MOBILE } from '../utils/platform';
 interface LiveNotification {
   streamer_name: string;
   streamer_login: string;
@@ -145,7 +146,7 @@ interface ToastLayout {
 // Translate an anchor + vertical offset into the container's position styles and
 // the per-toast slide direction. Side anchors slide in horizontally from their
 // edge; top/bottom-center anchors slide vertically from theirs.
-const getToastLayout = (position: ToastPosition, offset: number): ToastLayout => {
+const getToastLayout = (position: ToastPosition, offset: number | string): ToastLayout => {
   const isTop = position.startsWith('top');
   const isLeft = position.endsWith('left');
   const isRight = position.endsWith('right');
@@ -181,10 +182,18 @@ const ToastManager = () => {
   const toasts = useAppStore((s) => s.toasts);
   const settings = useAppStore((s) => s.settings);
 
-  const layout = getToastLayout(
-    settings.live_notifications?.toast_position ?? DEFAULT_TOAST_POSITION,
-    settings.live_notifications?.toast_edge_offset ?? DEFAULT_TOAST_EDGE_OFFSET,
-  );
+  // Mobile: toasts always anchor bottom-center, floated above the tab bar and
+  // the gesture inset. The desktop position/offset settings drive everything
+  // else unchanged.
+  const layout = IS_MOBILE
+    ? getToastLayout(
+        'bottom-center',
+        'calc(var(--sn-tabbar-h, 56px) + var(--sn-safe-b, 0px) + 12px)',
+      )
+    : getToastLayout(
+        settings.live_notifications?.toast_position ?? DEFAULT_TOAST_POSITION,
+        settings.live_notifications?.toast_edge_offset ?? DEFAULT_TOAST_EDGE_OFFSET,
+      );
 
   // Thin wrapper so existing callers keep the (soundType?: string) signature.
   // Actual sound generation lives in utils/notificationSound so chat highlights
