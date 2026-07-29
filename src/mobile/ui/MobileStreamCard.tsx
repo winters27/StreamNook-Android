@@ -94,8 +94,9 @@ export const MobileStreamCard: React.FC<{
             className="w-full aspect-video object-cover"
             draggable={false}
           />
-          {/* Bare live dot instead of the pill: rows are too small for chrome. */}
-          <span className="absolute top-1.5 left-1.5 w-2 h-2 rounded-full bg-live animate-pulse" />
+          {/* Bare live dot instead of the pill: rows are too small for chrome.
+              Small and quiet, with a faint dark ring for bright thumbnails. */}
+          <span className="absolute top-1.5 left-1.5 w-1.5 h-1.5 rounded-full bg-live animate-pulse ring-1 ring-black/40" />
           {hypeTrain && (
             <div
               className={hypeTrain.isGolden ? 'hype-train-badge-glass-golden' : 'hype-train-badge-glass'}
