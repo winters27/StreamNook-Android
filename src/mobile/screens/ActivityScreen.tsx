@@ -8,17 +8,43 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import { PullToRefresh } from '../ui/PullToRefresh';
 import { getAllUserBadgesWithEarned } from '../../services/badgeService';
+import {
+  deriveBadgeStatus,
+  formatBadgeDateInfo,
+  type BadgeWindowStatus,
+} from '../../utils/badgeWindow';
 import { Logger } from '../../utils/logger';
 import type { DropsDeviceCodeInfo, InventoryItem, InventoryResponse } from '../../types';
 
 type ActivityTab = 'drops' | 'badges';
 
+// Mirrors the desktop Global Cosmetics gallery: newest first, with each
+// badge's live earn status derived from its BadgeBase window.
 interface GlobalBadge {
+  key: string;
   title: string;
   image: string;
+  /** Precomputed newest-first rank from the badge metadata cache. */
+  position: number;
+  status: BadgeWindowStatus | null;
+  dateInfo: string;
+}
+interface GlobalBadgeVersion {
+  id?: string;
+  title?: string;
+  image_url_2x?: string;
+  image_url_4x?: string;
+}
+interface GlobalBadgeSet {
+  set_id?: string;
+  versions?: GlobalBadgeVersion[];
 }
 interface GlobalBadgeResponse {
-  data?: { versions?: { title?: string; image_url_2x?: string }[] }[];
+  data?: GlobalBadgeSet[];
+}
+interface CachedBadgeMeta {
+  data?: { more_info?: string | null; enrichment?: Record<string, unknown> | null };
+  position?: number;
 }
 
 export const ActivityScreen: React.FC = () => {
@@ -64,19 +90,43 @@ export const ActivityScreen: React.FC = () => {
         await invoke('prefetch_global_badges').catch(() => {});
         global = await invoke<GlobalBadgeResponse | null>('get_cached_global_badges');
       }
+
+      // Badge metadata (earn window + newest-first position) comes from the
+      // universal cache in one batch, keyed exactly as the desktop gallery
+      // keys it.
+      let meta: Record<string, CachedBadgeMeta> = {};
+      try {
+        meta =
+          (await invoke<Record<string, CachedBadgeMeta>>('get_all_universal_cached_items', {
+            cacheType: 'badge',
+          })) ?? {};
+      } catch (err) {
+        Logger.warn('[Activity] badge metadata cache unavailable:', err);
+      }
+
+      const seen = new Set<string>();
       const all: GlobalBadge[] = [];
       for (const set of global?.data ?? []) {
         for (const v of set.versions ?? []) {
-          if (v.title && v.image_url_2x) {
-            all.push({ title: v.title, image: v.image_url_2x });
-          }
+          const image = v.image_url_4x || v.image_url_2x;
+          if (!v.title || !image) continue;
+          if (seen.has(v.title)) continue; // same badge repeats across sets
+          seen.add(v.title);
+          const cached = meta[`metadata:${set.set_id}-v${v.id}`];
+          all.push({
+            key: `${set.set_id}-${v.id}`,
+            title: v.title,
+            image,
+            position: typeof cached?.position === 'number' ? cached.position : Number.MAX_SAFE_INTEGER,
+            status: deriveBadgeStatus(cached?.data?.more_info, cached?.data?.enrichment),
+            dateInfo: formatBadgeDateInfo(cached?.data?.more_info),
+          });
         }
       }
-      // Dedupe by title: many sets repeat the same badge across versions.
-      const seen = new Set<string>();
-      const unique = all.filter((b) => (seen.has(b.title) ? false : (seen.add(b.title), true)));
-      unique.sort((a, b) => a.title.localeCompare(b.title));
-      setGlobalBadges(unique);
+      // Newest first by the precomputed position, exactly like the desktop
+      // gallery's default sort; anything without metadata sinks to the end.
+      all.sort((a, b) => a.position - b.position || a.title.localeCompare(b.title));
+      setGlobalBadges(all);
 
       const uid = currentUser?.user_id;
       const login = currentUser?.login || currentUser?.username;
@@ -146,6 +196,10 @@ export const ActivityScreen: React.FC = () => {
     }
   };
 
+  const availableCount = globalBadges.filter(
+    (b) => b.status === 'available' && !ownedTitles.has(b.title),
+  ).length;
+
   const inProgress = (inventory?.items ?? []).filter(
     (i: InventoryItem) => i.status === 'Active' || i.drops_in_progress > 0,
   );
@@ -179,33 +233,62 @@ export const ActivityScreen: React.FC = () => {
             </div>
           ) : (
             <>
-              <div className="text-[12px] text-textMuted pt-1 pb-2">
-                {ownedTitles.size} of {globalBadges.length} collected
+              <div className="flex items-center gap-2 pt-1 pb-2">
+                <span className="text-[12px] text-textMuted">
+                  {ownedTitles.size} of {globalBadges.length} collected
+                </span>
+                {availableCount > 0 && (
+                  <span className="text-[12px] text-success font-medium">
+                    {availableCount} available now
+                  </span>
+                )}
               </div>
-              <div className="grid grid-cols-4 gap-2">
+              <div className="grid grid-cols-3 gap-2">
                 {globalBadges.map((badge) => {
                   const owned = ownedTitles.has(badge.title);
+                  const available = badge.status === 'available';
+                  const comingSoon = badge.status === 'coming-soon';
                   return (
                     <div
-                      key={badge.title}
-                      className={`glass-panel p-2 flex flex-col items-center gap-1.5 ${
-                        owned ? 'ring-1 ring-accent/60' : ''
-                      }`}
+                      key={badge.key}
+                      className={`glass-panel p-2 flex flex-col items-center gap-1.5 relative ${
+                        available && !owned ? 'ring-1 ring-success/70' : ''
+                      } ${owned ? 'ring-1 ring-accent/60' : ''}`}
                     >
                       <img
                         src={badge.image}
                         alt=""
                         loading="lazy"
-                        className={`w-10 h-10 object-contain ${owned ? '' : 'opacity-40 grayscale'}`}
+                        className={`w-11 h-11 object-contain ${
+                          owned || available ? '' : 'opacity-45 grayscale'
+                        }`}
                         draggable={false}
                       />
                       <span
                         className={`text-[10.5px] text-center line-clamp-2 leading-tight ${
-                          owned ? 'text-textPrimary' : 'text-textMuted'
+                          owned || available ? 'text-textPrimary' : 'text-textMuted'
                         }`}
                       >
                         {badge.title}
                       </span>
+                      {/* Live earn status: owned wins, then the window state. */}
+                      {owned ? (
+                        <span className="text-[9.5px] font-semibold text-accent leading-none">
+                          OWNED
+                        </span>
+                      ) : available ? (
+                        <span className="text-[9.5px] font-semibold text-success leading-none">
+                          AVAILABLE
+                        </span>
+                      ) : comingSoon ? (
+                        <span className="text-[9.5px] font-semibold text-warning leading-none">
+                          SOON
+                        </span>
+                      ) : (
+                        <span className="text-[9.5px] text-textMuted leading-none">
+                          {badge.dateInfo ? 'ENDED' : ''}
+                        </span>
+                      )}
                     </div>
                   );
                 })}
