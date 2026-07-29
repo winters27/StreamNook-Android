@@ -49,7 +49,16 @@ export const MobileChatInput: React.FC<{
   };
 
   return (
-    <div className="shrink-0 flex items-end gap-1.5 px-2.5 py-2 border-t border-borderSubtle">
+    // Bottom padding: ride the soft keyboard (--sn-kb, pushed by the native
+    // WindowInsets bridge; targetSdk 36 edge-to-edge ignores adjustResize) and
+    // clear the gesture pill when the keyboard is closed.
+    <div
+      className="shrink-0 flex items-end gap-1.5 px-2.5 pt-2 border-t border-borderSubtle"
+      style={{
+        paddingBottom: 'calc(max(var(--sn-kb, 0px), var(--sn-safe-b, 0px)) + 10px)',
+        transition: 'padding-bottom 0.15s ease-out',
+      }}
+    >
       <button
         onClick={() => setEmotesOpen(true)}
         className="sn-touch flex items-center justify-center text-textSecondary active:text-textPrimary"

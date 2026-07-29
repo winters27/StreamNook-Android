@@ -1,7 +1,7 @@
 // Followed live channels: single-column card feed with pull-to-refresh.
 import React, { useEffect, useState } from 'react';
 import { useAppStore } from '../../stores/AppStore';
-import { MobileStreamCard } from '../ui/MobileStreamCard';
+import { MobileStreamCard, useDropsGameNames } from '../ui/MobileStreamCard';
 import { PullToRefresh } from '../ui/PullToRefresh';
 import { SkeletonCards } from '../ui/SkeletonCards';
 import type { TwitchStream } from '../../types';
@@ -11,6 +11,7 @@ export const FollowingScreen: React.FC = () => {
   const loadFollowedStreams = useAppStore((s) => s.loadFollowedStreams);
   const startStream = useAppStore((s) => s.startStream);
   const [firstLoad, setFirstLoad] = useState(followedStreams.length === 0);
+  const dropsGameNames = useDropsGameNames();
 
   useEffect(() => {
     if (followedStreams.length === 0) {
@@ -45,7 +46,7 @@ export const FollowingScreen: React.FC = () => {
         ) : (
           <div className="flex flex-col gap-3 px-4 pb-4">
             {followedStreams.map((s) => (
-              <MobileStreamCard key={s.id} stream={s} onPress={onPress} />
+              <MobileStreamCard key={s.id} stream={s} dropsGameNames={dropsGameNames} onPress={onPress} />
             ))}
           </div>
         )}

@@ -3,7 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { MagnifyingGlass, X } from 'phosphor-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
-import { MobileStreamCard } from '../ui/MobileStreamCard';
+import { MobileStreamCard, useDropsGameNames } from '../ui/MobileStreamCard';
 import { PullToRefresh } from '../ui/PullToRefresh';
 import { SkeletonCards } from '../ui/SkeletonCards';
 import { Logger } from '../../utils/logger';
@@ -19,6 +19,7 @@ export const BrowseScreen: React.FC = () => {
   const [searching, setSearching] = useState(false);
   const [firstLoad, setFirstLoad] = useState(recommendedStreams.length === 0);
   const searchSeq = useRef(0);
+  const dropsGameNames = useDropsGameNames();
 
   useEffect(() => {
     if (recommendedStreams.length === 0) {
@@ -114,7 +115,7 @@ export const BrowseScreen: React.FC = () => {
         ) : (
           <div className="flex flex-col gap-3 px-4 pb-4">
             {shown.map((s) => (
-              <MobileStreamCard key={s.id} stream={s} onPress={onPress} />
+              <MobileStreamCard key={s.id} stream={s} dropsGameNames={dropsGameNames} onPress={onPress} />
             ))}
           </div>
         )}
