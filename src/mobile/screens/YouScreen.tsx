@@ -1,9 +1,11 @@
-// The You tab: account header + entry points. Cosmetics equip and full profile
-// arrive with the profile phase; this covers identity, settings, and sign-out.
+// The You tab: account header, settings sections inline (no intermediate
+// menu), sign out at the very bottom.
 import React, { useState } from 'react';
-import { CaretRight, Gear, SignOut } from 'phosphor-react';
+import { SignOut } from 'phosphor-react';
+import { ChevronRight } from 'lucide-react';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileNavStore } from '../navStore';
+import { SETTINGS_ROWS } from './SettingsScreen';
 
 export const YouScreen: React.FC = () => {
   const currentUser = useAppStore((s) => s.currentUser);
@@ -13,7 +15,7 @@ export const YouScreen: React.FC = () => {
 
   return (
     <div className="sn-mobile-screen sn-tabbar-clearance">
-      <div className="flex items-center gap-3 px-4 pt-4 pb-4">
+      <div className="flex items-center gap-3 px-4 pt-4 pb-3">
         {currentUser?.profile_image_url ? (
           <img
             src={currentUser.profile_image_url}
@@ -34,15 +36,25 @@ export const YouScreen: React.FC = () => {
         </div>
       </div>
 
+      <div className="text-[12px] font-semibold text-textMuted uppercase tracking-wide px-4 mb-1">
+        Settings
+      </div>
       <div className="px-3">
-        <button
-          onClick={() => openSettings()}
-          className="w-full flex items-center gap-3 px-3 py-3.5 rounded-lg active:bg-surface-active text-left"
-        >
-          <Gear size={21} className="text-textSecondary shrink-0" />
-          <span className="flex-1 text-[15px] font-medium text-textPrimary">Settings</span>
-          <CaretRight size={16} className="text-textMuted shrink-0" />
-        </button>
+        {SETTINGS_ROWS.map(({ id, label, icon: Icon, description }) => (
+          <button
+            key={id}
+            onClick={() => openSettings(id)}
+            className="w-full flex items-center gap-3 px-3 py-3 rounded-lg active:bg-surface-active text-left"
+          >
+            <Icon size={20} className="text-textSecondary shrink-0" />
+            <span className="flex-1 min-w-0">
+              <span className="block text-[15px] font-medium text-textPrimary">{label}</span>
+              <span className="block text-[12.5px] text-textMuted truncate">{description}</span>
+            </span>
+            <ChevronRight size={16} className="text-textMuted shrink-0" />
+          </button>
+        ))}
+
         <button
           onClick={() => {
             if (!confirmSignOut) {
@@ -52,9 +64,9 @@ export const YouScreen: React.FC = () => {
             }
             void signOutActiveAccount();
           }}
-          className="w-full flex items-center gap-3 px-3 py-3.5 rounded-lg active:bg-surface-active text-left"
+          className="w-full flex items-center gap-3 px-3 py-3.5 mt-4 rounded-lg active:bg-surface-active text-left"
         >
-          <SignOut size={21} className="text-error shrink-0" />
+          <SignOut size={20} className="text-error shrink-0" />
           <span className="flex-1 text-[15px] font-medium text-error">
             {confirmSignOut ? 'Tap again to sign out' : 'Sign out'}
           </span>

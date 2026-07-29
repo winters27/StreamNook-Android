@@ -44,10 +44,58 @@ export const MobileStreamCard: React.FC<{
   stream: TwitchStream;
   dropsGameNames?: Map<string, DropCampaign>;
   onPress: (stream: TwitchStream) => void;
-}> = ({ stream, dropsGameNames, onPress }) => {
+  /** 'card' = big thumbnail stack; 'row' = compact list row (thumb left). */
+  variant?: 'card' | 'row';
+}> = ({ stream, dropsGameNames, onPress, variant = 'card' }) => {
   const hasDrops = !!(
     stream.game_name && dropsGameNames?.has(stream.game_name.toLowerCase())
   );
+
+  if (variant === 'row') {
+    return (
+      <button
+        onClick={() => onPress(stream)}
+        className="w-full text-left glass-panel media-card p-2 flex gap-2.5 active:opacity-80 transition-opacity"
+      >
+        <div className="relative w-[136px] shrink-0 overflow-hidden rounded">
+          <img
+            loading="lazy"
+            src={thumbUrl(stream)}
+            alt=""
+            className="w-full aspect-video object-cover"
+            draggable={false}
+          />
+          <div className="absolute top-1 left-1 live-dot text-[10px] px-1 py-0.5">LIVE</div>
+          <div className="absolute bottom-1 left-1 px-1 py-0.5 glass-badge text-white text-[10px] font-medium rounded">
+            {stream.viewer_count.toLocaleString()}
+          </div>
+        </div>
+        <div className="flex-1 min-w-0 flex flex-col justify-center gap-0.5">
+          <h3 className="text-textPrimary font-medium text-[13.5px] leading-snug line-clamp-2">
+            <StreamTitleWithEmojis title={stream.title} />
+          </h3>
+          <div className="flex items-center gap-1 text-textSecondary text-[12px]">
+            <span className="truncate">{stream.user_name}</span>
+            {stream.broadcaster_type === 'partner' && (
+              <svg className="w-2.5 h-2.5 flex-shrink-0" viewBox="0 0 16 16" fill="#9146FF">
+                <path
+                  fillRule="evenodd"
+                  d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z"
+                  clipRule="evenodd"
+                ></path>
+              </svg>
+            )}
+          </div>
+          {stream.game_name && (
+            <div className="flex items-center gap-1 text-textMuted text-[12px]">
+              <span className="truncate">{stream.game_name}</span>
+              {hasDrops && <Gift size={10} className="text-accent flex-shrink-0" />}
+            </div>
+          )}
+        </div>
+      </button>
+    );
+  }
 
   return (
     <button

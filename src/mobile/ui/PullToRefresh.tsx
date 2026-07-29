@@ -1,8 +1,12 @@
-// Pull-to-refresh: the standard mobile refresh idiom. Wraps a scrollable
-// container; dragging down from the very top reveals a glass indicator that
-// arms past a threshold and runs onRefresh on release. Dependency-free
-// (pointer events), styled on the design system: inset-bevel disc, no glow.
-import React, { useCallback, useRef, useState } from 'react';
+// Pull-to-refresh: the standard mobile refresh idiom. Native touch listeners
+// with a non-passive touchmove, because Android's scroll gesture claims pointer
+// events (pointercancel fires as soon as the browser takes the scroll), which
+// silently killed the first pointer-event implementation. While the list sits
+// at its top and the finger drags down, the touchmove is preventDefault()ed
+// and drives the pull; everywhere else the browser scrolls normally.
+// Indicator: a down arrow fades/scales in with the drag and flips upward once
+// past the release threshold, then a spinner runs while onRefresh resolves.
+import React, { useEffect, useRef, useState } from 'react';
 import { ArrowDown, CircleNotch } from 'phosphor-react';
 
 const ARM_THRESHOLD_PX = 72;
@@ -14,54 +18,87 @@ export const PullToRefresh: React.FC<{
   children: React.ReactNode;
 }> = ({ onRefresh, className, children }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const startY = useRef<number | null>(null);
-  const pulling = useRef(false);
   const [pull, setPull] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
-  const onPointerDown = useCallback((e: React.PointerEvent) => {
-    if (refreshing) return;
-    const el = scrollRef.current;
-    if (!el || el.scrollTop > 0) return;
-    startY.current = e.clientY;
-    pulling.current = false;
-  }, [refreshing]);
+  // Live values for the native listeners (registered once).
+  const refreshingRef = useRef(false);
+  const onRefreshRef = useRef(onRefresh);
+  useEffect(() => {
+    onRefreshRef.current = onRefresh;
+  });
 
-  const onPointerMove = useCallback((e: React.PointerEvent) => {
-    if (startY.current === null || refreshing) return;
+  useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const dy = e.clientY - startY.current;
-    // Only hijack the gesture while the list is at its top and moving down.
-    if (el.scrollTop > 0 && !pulling.current) {
-      startY.current = null;
-      return;
-    }
-    if (dy <= 0 && !pulling.current) return;
-    pulling.current = true;
-    setDragging(true);
-    // Rubber-band: diminishing returns past the threshold.
-    setPull(Math.min(MAX_PULL_PX, dy * 0.5));
-  }, [refreshing]);
 
-  const finish = useCallback(() => {
-    if (startY.current === null) return;
-    startY.current = null;
-    pulling.current = false;
-    setDragging(false);
-    setPull((current) => {
-      if (current >= ARM_THRESHOLD_PX * 0.5 && !refreshing) {
+    let startY: number | null = null;
+    let pulling = false;
+    let lastPull = 0;
+
+    const reset = () => {
+      startY = null;
+      pulling = false;
+      lastPull = 0;
+      setDragging(false);
+    };
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (refreshingRef.current) return;
+      if (el.scrollTop > 0) return;
+      startY = e.touches[0].clientY;
+      pulling = false;
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (startY === null || refreshingRef.current) return;
+      const dy = e.touches[0].clientY - startY;
+      if (!pulling) {
+        // Only claim the gesture when the list is at its top and the finger
+        // moves down; otherwise hand it back to native scrolling.
+        if (dy <= 0 || el.scrollTop > 0) {
+          startY = null;
+          return;
+        }
+        pulling = true;
+        setDragging(true);
+      }
+      // Claimed: stop the browser's overscroll and drive the pull.
+      e.preventDefault();
+      lastPull = Math.max(0, Math.min(MAX_PULL_PX, dy * 0.5));
+      setPull(lastPull);
+    };
+
+    const onTouchEnd = () => {
+      if (startY === null) return;
+      const release = lastPull;
+      reset();
+      if (release >= ARM_THRESHOLD_PX * 0.5 && !refreshingRef.current) {
+        refreshingRef.current = true;
         setRefreshing(true);
-        void Promise.resolve(onRefresh()).finally(() => {
+        setPull(ARM_THRESHOLD_PX * 0.5);
+        void Promise.resolve(onRefreshRef.current()).finally(() => {
+          refreshingRef.current = false;
           setRefreshing(false);
           setPull(0);
         });
-        return ARM_THRESHOLD_PX * 0.5;
+      } else {
+        setPull(0);
       }
-      return 0;
-    });
-  }, [onRefresh, refreshing]);
+    };
+
+    el.addEventListener('touchstart', onTouchStart, { passive: true });
+    el.addEventListener('touchmove', onTouchMove, { passive: false });
+    el.addEventListener('touchend', onTouchEnd, { passive: true });
+    el.addEventListener('touchcancel', onTouchEnd, { passive: true });
+    return () => {
+      el.removeEventListener('touchstart', onTouchStart);
+      el.removeEventListener('touchmove', onTouchMove);
+      el.removeEventListener('touchend', onTouchEnd);
+      el.removeEventListener('touchcancel', onTouchEnd);
+    };
+  }, []);
 
   const armed = pull >= ARM_THRESHOLD_PX * 0.5;
   const indicatorVisible = pull > 4 || refreshing;
@@ -77,8 +114,6 @@ export const PullToRefresh: React.FC<{
             {refreshing ? (
               <CircleNotch size={18} className="animate-spin text-accent" />
             ) : (
-              // Validating pull: the arrow fades and scales in with the drag,
-              // then flips upward once past the release threshold.
               <ArrowDown
                 size={18}
                 className={armed ? 'text-accent' : 'text-textMuted'}
@@ -101,10 +136,6 @@ export const PullToRefresh: React.FC<{
           transform: pull ? `translateY(${pull}px)` : undefined,
           transition: dragging ? 'none' : 'transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1)',
         }}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={finish}
-        onPointerCancel={finish}
       >
         {children}
       </div>

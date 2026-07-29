@@ -39,24 +39,24 @@ export const MobileTabBar: React.FC = () => {
             <button
               key={id}
               onClick={() => setTab(id)}
-              className={`sn-touch flex-1 flex flex-col items-center justify-center gap-0.5 transition-colors ${
+              className={`sn-touch flex-1 flex items-center justify-center transition-colors ${
                 active ? 'text-accent' : 'text-textMuted'
               }`}
               aria-current={active ? 'page' : undefined}
+              aria-label={label}
             >
               {isYouWithAvatar ? (
                 <img
                   src={avatarUrl}
                   alt=""
                   draggable={false}
-                  className={`w-[22px] h-[22px] rounded-full object-cover ${
+                  className={`w-[26px] h-[26px] rounded-full object-cover ${
                     active ? 'ring-2 ring-accent' : ''
                   }`}
                 />
               ) : (
-                <Icon size={22} weight={active ? 'fill' : 'regular'} />
+                <Icon size={24} weight={active ? 'fill' : 'regular'} />
               )}
-              <span className="text-[11px] leading-none">{label}</span>
             </button>
           );
         })}

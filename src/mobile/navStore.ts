@@ -15,14 +15,14 @@ interface MobileNavState {
   activeTab: MobileTab;
   /** Open sheet ids, bottom-most first. Sheets self-register on open. */
   sheetStack: string[];
-  /** Settings drill-in: null = closed, 'list' = tab list, else the open tab id. */
+  /** Settings panel: the open tab id, or null (the section list lives on You). */
   settingsView: string | null;
   /** Browse category drill: the open category's streams screen, or null. */
   browseCategory: TwitchCategory | null;
   setTab: (tab: MobileTab) => void;
   pushSheet: (id: string) => void;
   popSheet: (id?: string) => void;
-  openSettings: (tab?: string) => void;
+  openSettings: (tab: string) => void;
   closeSettings: () => void;
   openBrowseCategory: (category: TwitchCategory | null) => void;
   /** Back chain: top sheet -> settings tab -> settings list -> exit stream ->
@@ -46,7 +46,7 @@ export const useMobileNavStore = create<MobileNavState>((set, get) => ({
       sheetStack: id ? s.sheetStack.filter((x) => x !== id) : s.sheetStack.slice(0, -1),
     })),
 
-  openSettings: (tab) => set({ settingsView: tab ?? 'list' }),
+  openSettings: (tab) => set({ settingsView: tab }),
   closeSettings: () => set({ settingsView: null }),
   openBrowseCategory: (category) => set({ browseCategory: category }),
 
@@ -57,11 +57,7 @@ export const useMobileNavStore = create<MobileNavState>((set, get) => ({
       window.dispatchEvent(new CustomEvent('sn:close-sheet', { detail: top }));
       return true;
     }
-    if (settingsView && settingsView !== 'list') {
-      set({ settingsView: 'list' });
-      return true;
-    }
-    if (settingsView === 'list') {
+    if (settingsView) {
       set({ settingsView: null });
       return true;
     }
