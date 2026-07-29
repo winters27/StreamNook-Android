@@ -59,6 +59,7 @@ export const WatchScreen: React.FC = () => {
   const [pip, setPip] = useState(false);
   const [pinned, setPinned] = useState<PinnedMessage[]>([]);
   const [pinsOpen, setPinsOpen] = useState(false);
+  const [dropActive, setDropActive] = useState(false);
   const [viewport, setViewport] = useState(() => ({
     w: window.innerWidth,
     h: window.innerHeight,
@@ -329,9 +330,17 @@ export const WatchScreen: React.FC = () => {
           {/* Chat header carries only live, transient signal now: the hype
               train and the pinned message. The persistent stream info lives in
               the player overlay, so chat keeps its full height. */}
-          {(currentHypeTrain || pinned.length > 0) && (
+          {/* Always mounted, hidden when empty. DropProgressBar has to run to
+              discover whether there is a drop to show, and gating the wrapper on
+              its answer would mean it never mounts to give one. `hidden` still
+              mounts children and runs their effects, so this breaks that cycle
+              without painting an empty strip. */}
             <div
-              className="absolute top-0 left-0 right-0 px-3.5 py-1.5 border-b border-borderSubtle backdrop-blur-ultra z-10 pointer-events-none shadow-lg overflow-hidden flex flex-col-reverse"
+              className={
+                currentHypeTrain || pinned.length > 0 || dropActive
+                  ? 'absolute top-0 left-0 right-0 px-3.5 py-1.5 border-b border-borderSubtle backdrop-blur-ultra z-10 pointer-events-none shadow-lg overflow-hidden flex flex-col-reverse'
+                  : 'hidden'
+              }
               style={{
                 backgroundColor: 'color-mix(in srgb, var(--color-background) 90%, transparent)',
               }}
@@ -345,7 +354,7 @@ export const WatchScreen: React.FC = () => {
               {/* Live drop progress for this stream. flex-col-reverse means
                   DOM order here renders ABOVE the pinned strip and below the
                   info row. */}
-              <DropProgressBar />
+              <DropProgressBar onActiveChange={setDropActive} />
               {pinned.length > 0 && (
                 <button
                   onClick={() => setPinsOpen(true)}
@@ -364,7 +373,6 @@ export const WatchScreen: React.FC = () => {
                 </button>
               )}
             </div>
-          )}
 
           {/* Poll + prediction cards, exactly the desktop components: they
               self-fetch off the channel and anchor under the header. */}

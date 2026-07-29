@@ -30,7 +30,13 @@ interface Shown {
   required: number;
 }
 
-export const DropProgressBar: React.FC = () => {
+interface Props {
+  /** Lets the chat header know whether it has anything to show. The header is
+   *  otherwise gated on hype train / pinned message and would never mount this. */
+  onActiveChange?: (active: boolean) => void;
+}
+
+export const DropProgressBar: React.FC<Props> = ({ onActiveChange }) => {
   const currentStream = useAppStore((s) => s.currentStream);
   const originCategory = useAppStore((s) => s.streamOriginCategory);
   const addToast = useAppStore((s) => s.addToast);
@@ -119,6 +125,11 @@ export const DropProgressBar: React.FC = () => {
     const t = setInterval(() => void refresh(), POLL_MS);
     return () => clearInterval(t);
   }, [refresh]);
+
+  useEffect(() => {
+    onActiveChange?.(!!shown);
+    return () => onActiveChange?.(false);
+  }, [shown, onActiveChange]);
 
   if (!shown) return null;
 
