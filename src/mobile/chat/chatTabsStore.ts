@@ -21,6 +21,8 @@ export interface ChatTab {
   channelId: string | null;
   /** Display name for the tab label. */
   label: string;
+  /** Channel avatar for the tab. Absent falls back to an initial. */
+  avatar?: string | null;
   /** True for the tab that follows the stream being watched. It is not
    *  removable and it re-points when the user switches streams. */
   pinnedToStream: boolean;
@@ -33,8 +35,18 @@ interface ChatTabsState {
   reloadNonce: Record<string, number>;
 
   /** Point the stream-following tab at a new channel. */
-  syncStreamTab: (channel: string | null, channelId: string | null, label: string) => void;
-  addTab: (channel: string, channelId: string | null, label: string) => void;
+  syncStreamTab: (
+    channel: string | null,
+    channelId: string | null,
+    label: string,
+    avatar?: string | null,
+  ) => void;
+  addTab: (
+    channel: string,
+    channelId: string | null,
+    label: string,
+    avatar?: string | null,
+  ) => void;
   removeTab: (channel: string) => void;
   setActive: (channel: string) => void;
   reload: (channel: string) => void;
@@ -45,7 +57,7 @@ export const useChatTabsStore = create<ChatTabsState>((set, get) => ({
   activeChannel: null,
   reloadNonce: {},
 
-  syncStreamTab: (channel, channelId, label) => {
+  syncStreamTab: (channel, channelId, label, avatar) => {
     const { tabs, activeChannel } = get();
     const existingStreamTab = tabs.find((t) => t.pinnedToStream);
 
@@ -79,7 +91,7 @@ export const useChatTabsStore = create<ChatTabsState>((set, get) => ({
     }
 
     const next: ChatTab[] = [
-      { channel: key, channelId, label, pinnedToStream: true },
+      { channel: key, channelId, label, avatar, pinnedToStream: true },
       ...tabs.filter((t) => !t.pinnedToStream && t.channel !== key),
     ];
     set({
@@ -92,7 +104,7 @@ export const useChatTabsStore = create<ChatTabsState>((set, get) => ({
     });
   },
 
-  addTab: (channel, channelId, label) => {
+  addTab: (channel, channelId, label, avatar) => {
     const key = channel.toLowerCase();
     const { tabs } = get();
     if (tabs.some((t) => t.channel === key)) {
@@ -103,7 +115,7 @@ export const useChatTabsStore = create<ChatTabsState>((set, get) => ({
       Logger.warn('[ChatTabs] acquire failed:', err),
     );
     set({
-      tabs: [...tabs, { channel: key, channelId, label, pinnedToStream: false }],
+      tabs: [...tabs, { channel: key, channelId, label, avatar, pinnedToStream: false }],
       activeChannel: key,
     });
   },

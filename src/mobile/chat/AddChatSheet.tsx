@@ -58,7 +58,12 @@ export const AddChatSheet: React.FC<{ open: boolean; onClose: () => void }> = ({
   }, [query]);
 
   const pick = (stream: TwitchStream) => {
-    addTab(stream.user_login, stream.user_id || null, stream.user_name || stream.user_login);
+    addTab(
+      stream.user_login,
+      stream.user_id || null,
+      stream.user_name || stream.user_login,
+      stream.profile_image_url ?? null,
+    );
     setQuery('');
     onClose();
   };

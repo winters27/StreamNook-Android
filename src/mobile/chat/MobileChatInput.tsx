@@ -13,7 +13,7 @@
 // several chat tabs open the composer must target the tab you are looking at,
 // which is not necessarily the stream playing.
 import React, { useRef, useState } from 'react';
-import { DotsThreeVertical, X } from 'phosphor-react';
+import { DotsThreeVertical, Lock, X } from 'phosphor-react';
 import { useAppStore } from '../../stores/AppStore';
 import { incrementStat } from '../../services/supabaseService';
 import { refreshChannelEmotes, sendChannelMessage } from '../../stores/chatConnectionStore';
@@ -25,6 +25,7 @@ import { ChannelPointsIcon } from '../../components/ChannelPointsIcon';
 import { useChannelPoints } from './useChannelPoints';
 import { useEmoteOwnerNames } from './useEmoteOwnerNames';
 import { ComposerMenuSheet } from './ComposerMenuSheet';
+import type { ChatGating } from './chatGating';
 
 // Shorter than the desktop's 520px so the panel still clears the soft keyboard,
 // and opaque rather than the panel's own 95%. That 5% reads as solid over a
@@ -47,6 +48,7 @@ interface Props {
   channel: string | null;
   channelId: string | null;
   channelLabel: string | null;
+  gating: ChatGating;
   emotes: EmoteSet | null;
   replyTo?: { messageId: string; username: string } | null;
   onCancelReply?: () => void;
@@ -63,6 +65,7 @@ export const MobileChatInput: React.FC<Props> = ({
   channel,
   channelId,
   channelLabel,
+  gating,
   emotes,
   replyTo,
   onCancelReply,
@@ -136,6 +139,19 @@ export const MobileChatInput: React.FC<Props> = ({
         transition: 'padding-bottom 0.15s ease-out',
       }}
     >
+      {/* Room restrictions. The labels are factual (straight off ROOMSTATE) so
+          they always show; the amber tint only appears when your own badges
+          prove you cannot actually send. */}
+      {gating.labels.length > 0 && (
+        <div
+          className={`flex items-center gap-1.5 px-3 pt-1.5 text-[11.5px] ${
+            gating.blocked ? 'text-warning' : 'text-textMuted'
+          }`}
+        >
+          <Lock size={11} weight="bold" className="shrink-0" />
+          <span className="truncate">{gating.reason ?? gating.labels.join(' · ')}</span>
+        </div>
+      )}
       {replyTo && (
         <div className="flex items-center gap-1.5 px-3 pt-1.5 text-[12.5px] text-textSecondary">
           <span className="truncate">
@@ -193,7 +209,8 @@ export const MobileChatInput: React.FC<Props> = ({
                 void send();
               }
             }}
-            placeholder="Send a message"
+            placeholder={gating.blocked ? (gating.reason ?? 'Chat restricted') : 'Send a message'}
+            disabled={gating.blocked === 'subs'}
             rows={1}
             className="flex-1 min-w-0 resize-none bg-transparent py-2 text-[15px] leading-[1.4] text-textPrimary placeholder:text-textMuted outline-none max-h-[96px]"
             enterKeyHint="send"

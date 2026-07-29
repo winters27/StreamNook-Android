@@ -326,13 +326,20 @@ const ToastManager = () => {
     }
   };
 
+  // On mobile, toasts are down to failures only. Everything else they used to
+  // carry is either already visible (a deleted message goes struck-through in
+  // chat, a quality switch shows in the player) or now arrives as a real Android
+  // notification, so stacking cards over chat was pure noise. Errors stay,
+  // because a silent failure is worse than a card.
+  const visibleToasts = IS_MOBILE ? toasts.filter((t) => t.type === 'error') : toasts;
+
   return (
     <div
       className={`fixed z-50 pointer-events-none flex ${layout.direction} ${layout.align} gap-2`}
       style={layout.style}
     >
       <AnimatePresence>
-        {toasts.map(toast => (
+        {visibleToasts.map(toast => (
           <ToastItem
             key={toast.id}
             toast={toast}

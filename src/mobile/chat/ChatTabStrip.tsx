@@ -38,10 +38,22 @@ export const ChatTabStrip: React.FC = () => {
           >
             <button
               onClick={() => setActive(tab.channel)}
-              className="flex items-center gap-1 pr-1 max-w-[128px]"
+              className="flex items-center gap-1.5 pr-1 max-w-[136px]"
             >
+              {tab.avatar ? (
+                <img
+                  src={tab.avatar}
+                  alt=""
+                  className="w-5 h-5 rounded-full object-cover shrink-0"
+                  draggable={false}
+                />
+              ) : (
+                <span className="w-5 h-5 rounded-full bg-surface flex items-center justify-center text-[10px] font-semibold text-textMuted shrink-0">
+                  {tab.label.charAt(0).toUpperCase()}
+                </span>
+              )}
               {tab.pinnedToStream && (
-                <Broadcast size={12} weight="fill" className="text-accent shrink-0" />
+                <Broadcast size={11} weight="fill" className="text-accent shrink-0" />
               )}
               <span
                 className={`text-[13px] truncate ${

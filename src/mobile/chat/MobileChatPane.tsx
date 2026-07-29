@@ -27,6 +27,7 @@ import { ChatTabStrip } from './ChatTabStrip';
 import { AddChatSheet } from './AddChatSheet';
 import { useChatTabsStore } from './chatTabsStore';
 import { TIMEOUT_OPTIONS, banUser, deleteMessage, isModeratorFrom } from './modActions';
+import { deriveChatGating } from './chatGating';
 
 export const MobileChatPane: React.FC = () => {
   const currentStream = useAppStore((s) => s.currentStream);
@@ -45,8 +46,15 @@ export const MobileChatPane: React.FC = () => {
       currentStream?.user_login ?? null,
       currentStream?.user_id ?? null,
       currentStream?.user_name || currentStream?.user_login || '',
+      currentStream?.profile_image_url ?? null,
     );
-  }, [currentStream?.user_login, currentStream?.user_id, currentStream?.user_name, syncStreamTab]);
+  }, [
+    currentStream?.user_login,
+    currentStream?.user_id,
+    currentStream?.user_name,
+    currentStream?.profile_image_url,
+    syncStreamTab,
+  ]);
 
   const activeTab = useMemo(
     () => tabs.find((t) => t.channel === activeChannel) ?? null,
@@ -60,12 +68,14 @@ export const MobileChatPane: React.FC = () => {
     deletedMessageIds,
     clearedUserContexts,
     userBadges,
+    roomState,
     isConnected,
   } = chat;
 
   const emotes = useChannelEmotes(activeChannel, activeTab?.channelId ?? null, 'twitch');
 
   const isModerator = isModeratorFrom(userBadges);
+  const gating = useMemo(() => deriveChatGating(roomState, userBadges), [roomState, userBadges]);
   const [modToolsOn, setModToolsOn] = useState(false);
   // Losing mod powers (switching to a room you do not moderate) must not leave
   // the destructive actions armed.
@@ -304,6 +314,7 @@ export const MobileChatPane: React.FC = () => {
         channel={activeChannel}
         channelId={broadcasterId}
         channelLabel={activeTab?.label ?? null}
+        gating={gating}
         emotes={emotes}
         replyTo={replyTo}
         onCancelReply={() => setReplyDraft(null)}

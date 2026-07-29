@@ -7,6 +7,7 @@ import { buildShareUrl } from '../../utils/shareLink';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileHlsEngine } from './useMobileHlsEngine';
 import { QualitySheet } from './QualitySheet';
+import PenroseMarch from '../../components/PenroseMarch';
 
 const CONTROLS_HIDE_MS = 3000;
 
@@ -102,11 +103,15 @@ export const MobilePlayer: React.FC<{
         className="w-full h-full object-contain"
         playsInline
         autoPlay
+        // A <video> with no poster gets Android WebView's own grey play-triangle
+        // placeholder until the first frame decodes. A 1x1 transparent poster
+        // suppresses it, so what shows before playback is our logo below.
+        poster="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
       />
 
       {state === 'loading' && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <div className="w-10 h-10 rounded-full border-2 border-white/20 border-t-white/80 animate-spin" />
+          <PenroseMarch size={compact ? 44 : 84} />
         </div>
       )}
 

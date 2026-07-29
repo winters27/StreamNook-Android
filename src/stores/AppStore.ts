@@ -460,7 +460,6 @@ interface AppState {
 }
 
 // Flags to ensure we only show session toasts once per app session
-let hasShownWelcomeBackToast = false;
 
 // Store EventSub listener cleanup functions at module level
 let eventSubListenerCleanup: (() => void)[] = [];
@@ -2636,11 +2635,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         });
       }
 
-      // If we successfully restored session from stored credentials, show success (only once)
-      if (hasCredentials && !wasAuthenticated && !hasShownWelcomeBackToast) {
-        hasShownWelcomeBackToast = true;
-        get().addToast(`Welcome back, ${userInfo.display_name}!`, 'success');
-      }
+      // No welcome-back toast. Restoring a stored session is the expected case,
+      // not news, and announcing it put a toast over the UI on every launch.
 
       // Start whisper listener after successful authentication
       try {
