@@ -588,23 +588,32 @@ export const ActivityScreen: React.FC = () => {
                 <span className="text-[11px] font-semibold text-textMuted">NO LONGER EARNABLE</span>
               ) : null}
             </div>
-            {badgeDetail.description && (
-              <p className="text-[13.5px] text-textSecondary leading-relaxed">
-                {badgeDetail.description}
-              </p>
-            )}
-            {badgeDetail.dateInfo && (
-              <p className="text-[12.5px] text-textMuted mt-2">{badgeDetail.dateInfo}</p>
-            )}
-            {badgeDetail.moreInfo && (
-              <p className="text-[12.5px] text-textSecondary leading-relaxed mt-3 text-left w-full">
-                {badgeDetail.moreInfo}
-              </p>
-            )}
+            {/* ONE body. `dateInfo` is the full more_info blurb with its dates
+                localized, so rendering description + dateInfo + raw more_info
+                printed the same text three times. Prefer the prettified blurb
+                and fall back to Twitch's description only when there is none. */}
+            {(() => {
+              const body = badgeDetail.dateInfo || badgeDetail.description;
+              return body ? (
+                <p className="text-[13px] text-textSecondary leading-relaxed whitespace-pre-line text-left w-full">
+                  {body}
+                </p>
+              ) : null;
+            })()}
             {badgeDetail.usage > 0 && (
-              <p className="text-[12px] text-textMuted mt-3">
+              <p className="text-[12px] text-textMuted mt-3 self-center">
                 {badgeDetail.usage.toLocaleString()} users have this badge
               </p>
+            )}
+            {badgeDetail.infoUrl && (
+              <button
+                onClick={() => {
+                  void invoke('open_browser_url', { url: badgeDetail.infoUrl }).catch(() => {});
+                }}
+                className="glass-button sn-touch mt-4 w-full text-[13.5px] font-semibold text-textPrimary"
+              >
+                More info
+              </button>
             )}
           </div>
         )}
