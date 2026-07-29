@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
 
 import { Logger } from '../utils/logger';
+import { features } from '../features';
 export interface Emote {
   id: string;
   name: string;
@@ -207,6 +208,10 @@ async function downloadEmoteIfNeeded(id: string, url: string): Promise<string | 
   if (pendingDownloads.has(id)) {
     return pendingDownloads.get(id)!;
   }
+
+  // No disk cache on mobile yet (the Android asset protocol and cache dir are
+  // unwired), so consumers fall back to the CDN URL they already carry.
+  if (!features.assetDiskCache) return null;
 
   const settings = await getEmoteCacheSettings();
   if (!settings.enabled) return null;

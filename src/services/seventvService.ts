@@ -4,6 +4,7 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { SevenTVBadge, SevenTVPaint } from '../types';
 
 import { Logger } from '../utils/logger';
+import { features } from '../features';
 // The paint → CSS engine + its v4 paint types now live in the standalone,
 // Tauri-free `paintStyle` module so the hosted overlay page can share the exact
 // same rendering. Re-exported here so existing importers stay unchanged.
@@ -288,6 +289,8 @@ async function downloadCosmeticIfNeeded(id: string, url: string): Promise<string
   if (pendingCosmeticDownloads.has(id)) {
     return pendingCosmeticDownloads.get(id)!;
   }
+
+  if (!features.assetDiskCache) return null;
 
   const settings = await getCosmeticCacheSettings();
   if (!settings.enabled) return null;

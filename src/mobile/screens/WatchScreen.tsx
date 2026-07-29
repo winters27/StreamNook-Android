@@ -21,6 +21,7 @@ import { useOrientation } from '../ui/useOrientation';
 import { MobilePlayer } from '../player/MobilePlayer';
 import { MobileChatPane } from '../chat/MobileChatPane';
 import { MobileSheet } from '../ui/MobileSheet';
+import { DropProgressBar } from '../watch/DropProgressBar';
 import HypeTrainBanner from '../../components/HypeTrainBanner';
 import PollOverlay from '../../components/PollOverlay';
 import PredictionOverlay from '../../components/PredictionOverlay';
@@ -80,11 +81,21 @@ export const WatchScreen: React.FC = () => {
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  // System PiP strip-down flag from MainActivity.
+  // System PiP strip-down flag from MainActivity. Also mirrored onto <html> so
+  // the lifecycle handler can tell real backgrounding from PiP: Android fires
+  // visibilitychange=hidden for both, but in PiP the video is still on screen
+  // and must keep playing.
   useEffect(() => {
-    const onPip = (e: Event) => setPip(!!(e as CustomEvent<boolean>).detail);
+    const onPip = (e: Event) => {
+      const active = !!(e as CustomEvent<boolean>).detail;
+      setPip(active);
+      document.documentElement.dataset.snPip = active ? 'true' : 'false';
+    };
     window.addEventListener('sn:pip', onPip);
-    return () => window.removeEventListener('sn:pip', onPip);
+    return () => {
+      window.removeEventListener('sn:pip', onPip);
+      delete document.documentElement.dataset.snPip;
+    };
   }, []);
 
   // Native playback affordances: stay awake + PiP eligibility while playing,
@@ -331,6 +342,10 @@ export const WatchScreen: React.FC = () => {
                   onExpire={() => useAppStore.getState().setCurrentHypeTrain(null)}
                 />
               )}
+              {/* Live drop progress for this stream. flex-col-reverse means
+                  DOM order here renders ABOVE the pinned strip and below the
+                  info row. */}
+              <DropProgressBar />
               {pinned.length > 0 && (
                 <button
                   onClick={() => setPinsOpen(true)}

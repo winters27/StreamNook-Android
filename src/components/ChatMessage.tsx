@@ -24,6 +24,7 @@ import { StreamNookBadge } from './StreamNookBadge';
 import { AtmosphereBackground } from './AtmosphereBackground';
 import { MajorCologneChrome } from './MajorCologneChrome';
 import { getAtmosphere } from '../services/atmospheres';
+import { features } from '../features';
 import { MAJOR_COLOGNE_THEME_ID } from '../services/cologneEvent';
 import { matchHighlightPhrase, matchHighlightUser, matchHighlightBadge, type HighlightMatch } from '../utils/chatHighlightMatcher';
 import { flashTitle } from '../utils/titleFlasher';
@@ -762,8 +763,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   const atmosphereId = useChatUserStore((s) => (userId ? s.users.get(userId)?.atmosphereId ?? null : null));
   const atmosphere = atmosphereId ? getAtmosphere(atmosphereId) : null;
   // Frost behind the text only when the atmosphere declares it needs it (busy
-  // washes); subtle ones render the text bare.
-  const atmosphereFrost = !!atmosphere?.chatFrost;
+  // washes); subtle ones render the text bare. A backdrop-filter per message row
+  // is the single most expensive thing in the list on phone GPUs, so the wash
+  // still renders there but the frost pass does not.
+  const atmosphereFrost = features.richAtmospheres && !!atmosphere?.chatFrost;
   // CS2 Major Cologne event cosmetics this member applied (null = none). Takes
   // precedence over the Atmosphere wash when present. The chrome asset URLs live
   // on the Cologne atmosphere row (R2), shared by every wearer.

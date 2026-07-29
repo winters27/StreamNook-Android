@@ -66,3 +66,9 @@ src-tauri/gen/android/local.properties
 src-tauri/gen/android/.gradle/
 src-tauri/gen/android/**/build/
 badge-assets-r2/
+
+# Android release signing. Never commit: the keystore and its passwords are
+# the app identity, and a leaked one lets anyone ship an update as StreamNook.
+keystore.properties
+*.jks
+*.keystore

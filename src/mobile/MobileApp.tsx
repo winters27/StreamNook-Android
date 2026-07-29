@@ -11,6 +11,7 @@ import { useThemeBoot } from '../boot/useThemeBoot';
 import { useMobileBoot } from './boot/useMobileBoot';
 import { useKeyboardInsets } from './ui/useKeyboardInsets';
 import { installBackHandler, useMobileNavStore } from './navStore';
+import { installLifecycle } from './lifecycle';
 import { MobileTabBar } from './MobileTabBar';
 import { MobileOnboarding } from './MobileOnboarding';
 import { FollowingScreen } from './screens/FollowingScreen';
@@ -47,6 +48,7 @@ const MobileApp: React.FC = () => {
   }
 
   useEffect(() => installBackHandler(), []);
+  useEffect(() => installLifecycle(), []);
   useEffect(() => {
     applyNativeInsetsOnce();
   }, []);

@@ -990,7 +990,7 @@ html[data-motion="reduced"] .animate-shimmer {
 }
 
 .subscription-gradient {
-  background-color: #0c0c0d;
+  background-color: var(--color-background);
   background-image: linear-gradient(
     90deg,
     color-mix(in srgb, var(--color-highlight-pink) 15%, transparent) 0%,
@@ -1008,7 +1008,7 @@ html[data-motion="reduced"] .animate-shimmer {
 }
 
 .subscription-gradient:hover {
-  background-color: #0c0c0d;
+  background-color: var(--color-background);
   background-image: linear-gradient(
     90deg,
     color-mix(in srgb, var(--color-highlight-pink) 20%, transparent) 0%,
@@ -1035,7 +1035,7 @@ html[data-motion="reduced"] .animate-shimmer {
 }
 
 .donation-gradient {
-  background-color: #0c0c0d;
+  background-color: var(--color-background);
   background-image: linear-gradient(
     90deg,
     color-mix(in srgb, var(--color-success) 15%, transparent) 0%,
@@ -1048,7 +1048,7 @@ html[data-motion="reduced"] .animate-shimmer {
 }
 
 .donation-gradient:hover {
-  background-color: #0c0c0d;
+  background-color: var(--color-background);
   background-image: linear-gradient(
     90deg,
     color-mix(in srgb, var(--color-success) 20%, transparent) 0%,
@@ -1074,7 +1074,7 @@ html[data-motion="reduced"] .animate-shimmer {
 }
 
 .bits-gradient {
-  background-color: #0c0c0d;
+  background-color: var(--color-background);
   background-image: linear-gradient(
     90deg,
     color-mix(in srgb, var(--color-highlight-purple) 18%, transparent) 0%,
@@ -1088,7 +1088,7 @@ html[data-motion="reduced"] .animate-shimmer {
 }
 
 .bits-gradient:hover {
-  background-color: #0c0c0d;
+  background-color: var(--color-background);
   background-image: linear-gradient(
     90deg,
     color-mix(in srgb, var(--color-highlight-purple) 25%, transparent) 0%,
@@ -1115,7 +1115,7 @@ html[data-motion="reduced"] .animate-shimmer {
 }
 
 .watchstreak-gradient {
-  background-color: #0c0c0d;
+  background-color: var(--color-background);
   background-image: linear-gradient(
     90deg,
     color-mix(in srgb, var(--color-highlight-orange) 18%, transparent) 0%,
@@ -1129,7 +1129,7 @@ html[data-motion="reduced"] .animate-shimmer {
 }
 
 .watchstreak-gradient:hover {
-  background-color: #0c0c0d;
+  background-color: var(--color-background);
   background-image: linear-gradient(
     90deg,
     color-mix(in srgb, var(--color-highlight-orange) 25%, transparent) 0%,
@@ -1156,7 +1156,7 @@ html[data-motion="reduced"] .animate-shimmer {
 }
 
 .highlight-message-gradient {
-  background-color: #0c0c0d;
+  background-color: var(--color-background);
   background-image: linear-gradient(
     90deg,
     color-mix(in srgb, var(--color-highlight-cyan) 18%, transparent) 0%,
@@ -1169,7 +1169,7 @@ html[data-motion="reduced"] .animate-shimmer {
 }
 
 .highlight-message-gradient:hover {
-  background-color: #0c0c0d;
+  background-color: var(--color-background);
   background-image: linear-gradient(
     90deg,
     color-mix(in srgb, var(--color-highlight-cyan) 25%, transparent) 0%,
