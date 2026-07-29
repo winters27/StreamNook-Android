@@ -12,7 +12,7 @@
 // the OS window (draggable/resizable by the system, floats over every app).
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Eye, PushPin, X } from 'phosphor-react';
+import { PushPin, X } from 'phosphor-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileNavStore } from '../navStore';
@@ -27,16 +27,6 @@ import PredictionOverlay from '../../components/PredictionOverlay';
 import LoadingWidget from '../../components/LoadingWidget';
 import { enterPip, setImmersive, setKeepScreenOn, setPipEligible } from '../nativeBridge';
 import { Logger } from '../../utils/logger';
-
-// "2h 14m" from the Helix started_at timestamp, ticking once a minute.
-function formatUptime(startedAt: string, nowMs: number): string {
-  const start = Date.parse(startedAt);
-  if (!Number.isFinite(start)) return '';
-  const totalSec = Math.max(0, Math.floor((nowMs - start) / 1000));
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
-}
 
 interface PinnedMessage {
   id: string;
@@ -65,7 +55,6 @@ export const WatchScreen: React.FC = () => {
   const refreshNonce = usePinStore((s) => s.refreshNonce);
   const orientation = useOrientation();
   const [landscapeChat, setLandscapeChat] = useState(false);
-  const [nowMs, setNowMs] = useState(() => Date.now());
   const [pip, setPip] = useState(false);
   const [pinned, setPinned] = useState<PinnedMessage[]>([]);
   const [pinsOpen, setPinsOpen] = useState(false);
@@ -86,13 +75,9 @@ export const WatchScreen: React.FC = () => {
   const channelId = currentStream?.user_id;
 
   useEffect(() => {
-    const t = setInterval(() => setNowMs(Date.now()), 60_000);
     const onResize = () => setViewport({ w: window.innerWidth, h: window.innerHeight });
     window.addEventListener('resize', onResize);
-    return () => {
-      clearInterval(t);
-      window.removeEventListener('resize', onResize);
-    };
+    return () => window.removeEventListener('resize', onResize);
   }, []);
 
   // System PiP strip-down flag from MainActivity.
@@ -229,7 +214,7 @@ export const WatchScreen: React.FC = () => {
   if (pip) {
     return (
       <div className="absolute inset-0 z-50 bg-black">
-        <MobilePlayer immersive />
+        <MobilePlayer immersive compact />
       </div>
     );
   }
@@ -309,7 +294,7 @@ export const WatchScreen: React.FC = () => {
           onTouchMove={mini ? undefined : onBandTouchMove}
           onTouchEnd={mini ? undefined : onBandTouchEnd}
         >
-          <MobilePlayer onEnterPip={mini ? undefined : enterPip} />
+          <MobilePlayer onEnterPip={mini ? undefined : enterPip} compact={mini} />
           {mini && (
             <>
               {/* Swallow player taps so the whole box reads as one control. */}
@@ -330,9 +315,12 @@ export const WatchScreen: React.FC = () => {
         </div>
 
         <div className={mini ? 'hidden' : 'flex-1 min-h-0 relative flex flex-col'}>
-          {currentStream && (
+          {/* Chat header carries only live, transient signal now: the hype
+              train and the pinned message. The persistent stream info lives in
+              the player overlay, so chat keeps its full height. */}
+          {(currentHypeTrain || pinned.length > 0) && (
             <div
-              className="absolute top-0 left-0 right-0 px-3.5 py-2 border-b border-borderSubtle backdrop-blur-ultra z-10 pointer-events-none shadow-lg overflow-hidden flex flex-col-reverse"
+              className="absolute top-0 left-0 right-0 px-3.5 py-1.5 border-b border-borderSubtle backdrop-blur-ultra z-10 pointer-events-none shadow-lg overflow-hidden flex flex-col-reverse"
               style={{
                 backgroundColor: 'color-mix(in srgb, var(--color-background) 90%, transparent)',
               }}
@@ -346,7 +334,7 @@ export const WatchScreen: React.FC = () => {
               {pinned.length > 0 && (
                 <button
                   onClick={() => setPinsOpen(true)}
-                  className="pointer-events-auto flex items-center gap-1.5 mt-1 text-left"
+                  className="pointer-events-auto flex items-center gap-1.5 text-left"
                 >
                   <PushPin size={12} weight="fill" className="text-accent shrink-0" />
                   <span className="text-[12px] text-textSecondary truncate">
@@ -360,26 +348,6 @@ export const WatchScreen: React.FC = () => {
                   </span>
                 </button>
               )}
-              <div className="relative z-10">
-                <div className="text-[13.5px] font-semibold text-textPrimary truncate leading-snug">
-                  {currentStream.title}
-                </div>
-                <div className="flex items-center gap-2 mt-0.5 min-w-0">
-                  <span className="text-[12.5px] text-textSecondary truncate">
-                    {currentStream.user_name}
-                    {currentStream.game_name ? ` · ${currentStream.game_name}` : ''}
-                  </span>
-                  <span className="ml-auto flex items-center gap-2 shrink-0 text-[12px] text-textMuted">
-                    <span className="flex items-center gap-1 text-live">
-                      <Eye size={13} weight="fill" />
-                      {currentStream.viewer_count.toLocaleString()}
-                    </span>
-                    {currentStream.started_at && (
-                      <span>{formatUptime(currentStream.started_at, nowMs)}</span>
-                    )}
-                  </span>
-                </div>
-              </div>
             </div>
           )}
 

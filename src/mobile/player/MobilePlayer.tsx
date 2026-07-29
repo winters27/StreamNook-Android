@@ -1,12 +1,23 @@
 // Touch-first player surface: the video element plus a tap-driven glass control
 // overlay. No Plyr; hls.js runs via useMobileHlsEngine.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowsOut, Gear, Pause, PictureInPicture, Play, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
+import { ArrowsOut, Eye, Gear, Pause, PictureInPicture, Play, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileHlsEngine } from './useMobileHlsEngine';
 import { QualitySheet } from './QualitySheet';
 
 const CONTROLS_HIDE_MS = 3000;
+
+// "2h 14m" since the broadcast started, refreshed while the overlay is up.
+function formatUptime(startedAt: string | undefined, nowMs: number): string {
+  if (!startedAt) return '';
+  const start = Date.parse(startedAt);
+  if (!Number.isFinite(start)) return '';
+  const totalSec = Math.max(0, Math.floor((nowMs - start) / 1000));
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
 
 export const MobilePlayer: React.FC<{
   /** Landscape immersive mode: overlay carries no bottom rounding, adds insets. */
@@ -14,7 +25,9 @@ export const MobilePlayer: React.FC<{
   onToggleFullscreen?: () => void;
   /** Hands playback to the OS picture-in-picture window. */
   onEnterPip?: () => void;
-}> = ({ immersive = false, onToggleFullscreen, onEnterPip }) => {
+  /** Mini/PiP presentation: video only, no overlay chrome. */
+  compact?: boolean;
+}> = ({ immersive = false, onToggleFullscreen, onEnterPip, compact = false }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const { state } = useMobileHlsEngine(videoRef);
   const restartStream = useAppStore((s) => s.restartStream);
@@ -24,7 +37,15 @@ export const MobilePlayer: React.FC<{
   const [paused, setPaused] = useState(false);
   const [muted, setMuted] = useState(false);
   const [qualityOpen, setQualityOpen] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Uptime ticks while the overlay chrome exists at all.
+  useEffect(() => {
+    if (compact) return;
+    const t = setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, [compact]);
 
   const scheduleHide = useCallback(() => {
     if (hideTimer.current) clearTimeout(hideTimer.current);
@@ -102,16 +123,71 @@ export const MobilePlayer: React.FC<{
         </div>
       )}
 
-      {/* Control overlay */}
+      {/* Control overlay. Carries the persistent stream info (channel, title,
+          category, viewers, uptime) so nothing has to sit between the player
+          and chat, matching how the Twitch app does it. */}
       <div
         className={`absolute inset-0 transition-opacity duration-200 ${
-          controlsVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'
+          controlsVisible && !compact ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
         style={{
           background:
-            'linear-gradient(to bottom, rgba(0,0,0,0.45) 0%, transparent 30%, transparent 65%, rgba(0,0,0,0.55) 100%)',
+            'linear-gradient(to bottom, rgba(0,0,0,0.72) 0%, rgba(0,0,0,0.28) 26%, transparent 46%, transparent 62%, rgba(0,0,0,0.6) 100%)',
         }}
       >
+        {/* Stream info, top-left */}
+        {currentStream && (
+          <div
+            className="absolute inset-x-0 top-0 px-3 pt-2 flex items-start gap-2"
+            style={immersive ? { paddingTop: 'calc(var(--sn-safe-t, 0px) + 8px)' } : undefined}
+          >
+            {currentStream.profile_image_url ? (
+              <img
+                src={currentStream.profile_image_url}
+                alt=""
+                draggable={false}
+                className="w-8 h-8 rounded-full object-cover shrink-0 ring-2 ring-live/80"
+              />
+            ) : (
+              <div className="w-8 h-8 rounded-full bg-white/15 shrink-0 flex items-center justify-center text-[13px] font-bold text-white ring-2 ring-live/80">
+                {currentStream.user_name?.charAt(0).toUpperCase()}
+              </div>
+            )}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className="text-[13.5px] font-semibold text-white truncate">
+                  {currentStream.user_name}
+                </span>
+                {currentStream.broadcaster_type === 'partner' && (
+                  <svg className="w-3 h-3 shrink-0" viewBox="0 0 16 16" fill="#9146FF">
+                    <path
+                      fillRule="evenodd"
+                      d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z"
+                      clipRule="evenodd"
+                    ></path>
+                  </svg>
+                )}
+                <span className="ml-auto flex items-center gap-2 shrink-0 pl-2">
+                  <span className="flex items-center gap-1 text-[12px] font-medium text-live">
+                    <Eye size={12} weight="fill" />
+                    {currentStream.viewer_count.toLocaleString()}
+                  </span>
+                  <span className="text-[12px] text-white/70">
+                    {formatUptime(currentStream.started_at, nowMs)}
+                  </span>
+                </span>
+              </div>
+              <div className="text-[12.5px] text-white/85 truncate leading-snug mt-0.5">
+                {currentStream.title}
+              </div>
+              {currentStream.game_name && (
+                <div className="text-[11.5px] text-white/60 truncate leading-snug">
+                  {currentStream.game_name}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
         {/* Center play/pause */}
         <button
           onClick={togglePlay}
@@ -130,11 +206,6 @@ export const MobilePlayer: React.FC<{
             <span className="px-1.5 py-0.5 rounded text-[11px] font-semibold bg-live/90 text-white leading-none">
               LIVE
             </span>
-            {currentStream && (
-              <span className="ml-1.5 text-[13px] text-white/90 font-medium truncate max-w-[45vw]">
-                {currentStream.user_name}
-              </span>
-            )}
           </div>
           <div className="flex items-center">
             <button
