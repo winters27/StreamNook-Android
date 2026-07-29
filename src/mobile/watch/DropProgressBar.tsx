@@ -1,62 +1,113 @@
 // Live drop progress for the stream you are watching.
 //
-// The Rust watch heartbeat credits minutes while the player reports playing;
-// this reads back the resulting per-drop progress so the earn is visible
-// instead of silent. Sits in the chat header stack, above the pinned strip.
+// Where the numbers come from, because it is not the obvious place: the live
+// `drop-progress` / `drops-progress-update` events are emitted by the desktop
+// automation controller (a plugin component), not by Rust, so on mobile they
+// never fire. `get_drop_progress` is not the answer either — it returns a
+// zero-filled entry per drop in this build, which would render a bar stuck at
+// 0%. The real accrued minutes ride along on each inventory drop's own embedded
+// `progress`, which is what the desktop controller prefers for the same reason.
+//
+// So this polls the inventory and matches it to the category being watched.
 import React, { useCallback, useEffect, useState } from 'react';
 import { Gift } from 'phosphor-react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../../stores/AppStore';
 import { Logger } from '../../utils/logger';
-import type { DropProgress } from '../../types';
+import type { InventoryResponse, TimeBasedDrop } from '../../types';
 
-const POLL_MS = 30_000;
+// Inventory is a network round trip, and drop minutes tick once a minute at
+// best, so this is deliberately slow.
+const POLL_MS = 120_000;
+
+interface Shown {
+  dropId: string;
+  /** Twitch wants this alongside the drop id to claim; absent on some entries. */
+  dropInstanceId?: string;
+  name: string;
+  image?: string;
+  current: number;
+  required: number;
+}
 
 export const DropProgressBar: React.FC = () => {
+  const currentStream = useAppStore((s) => s.currentStream);
   const addToast = useAppStore((s) => s.addToast);
-  const [drop, setDrop] = useState<DropProgress | null>(null);
+  const [shown, setShown] = useState<Shown | null>(null);
   const [claiming, setClaiming] = useState(false);
 
+  const gameName = currentStream?.game_name;
+
   const refresh = useCallback(async () => {
-    try {
-      const all = await invoke<DropProgress[]>('get_drop_progress');
-      // The campaign actively being watched: unclaimed, with a real
-      // requirement. Furthest along wins when a campaign has several drops.
-      const active = (all ?? [])
-        .filter((d) => !d.is_claimed && d.required_minutes_watched > 0)
-        .sort((a, b) => b.current_minutes_watched - a.current_minutes_watched)[0];
-      setDrop(active ?? null);
-    } catch (err) {
-      Logger.warn('[DropProgress] read failed:', err);
+    if (!gameName) {
+      setShown(null);
+      return;
     }
-  }, []);
+    try {
+      const connected = await invoke<boolean>('is_drops_authenticated').catch(() => false);
+      if (!connected) {
+        setShown(null);
+        return;
+      }
+      const inv = await invoke<InventoryResponse>('get_drops_inventory').catch(() => null);
+      if (!inv) return;
+
+      // Only campaigns for the category actually on screen. Watching Rust does
+      // not earn a Fortnite drop, and showing one would imply it does.
+      const target = gameName.toLowerCase();
+      const drops: TimeBasedDrop[] = inv.items
+        .filter((it) => (it.campaign.game_name || '').toLowerCase() === target)
+        .flatMap((it) => it.campaign.time_based_drops || []);
+
+      // The tier being earned right now is the unclaimed collectible one with
+      // the fewest minutes left, matching the backend's own choice rule.
+      const candidates = drops
+        .filter((d) => d.required_minutes_watched > 0 && !d.progress?.is_claimed)
+        .map((d) => ({
+          d,
+          current: Math.min(d.progress?.current_minutes_watched ?? 0, d.required_minutes_watched),
+          required: d.required_minutes_watched,
+        }))
+        .filter((c) => c.current < c.required);
+
+      if (candidates.length === 0) {
+        setShown(null);
+        return;
+      }
+      candidates.sort((a, b) => a.required - a.current - (b.required - b.current));
+      const best = candidates[0];
+      setShown({
+        dropId: best.d.id,
+        dropInstanceId: best.d.progress?.drop_instance_id,
+        name: best.d.benefit_edges?.[0]?.name || best.d.name || 'Drop',
+        image: best.d.benefit_edges?.[0]?.image_url,
+        current: best.current,
+        required: best.required,
+      });
+    } catch (err) {
+      Logger.warn('[DropProgress] inventory read failed:', err);
+    }
+  }, [gameName]);
 
   useEffect(() => {
     void refresh();
     const t = setInterval(() => void refresh(), POLL_MS);
-    // The backend announces progress ticks; refresh promptly on those rather
-    // than waiting out the poll.
-    const un = listen('drop-progress', () => void refresh());
-    return () => {
-      clearInterval(t);
-      void un.then((f) => f());
-    };
+    return () => clearInterval(t);
   }, [refresh]);
 
-  if (!drop) return null;
+  if (!shown) return null;
 
-  const current = Math.min(drop.current_minutes_watched, drop.required_minutes_watched);
-  const pct = Math.min(100, (current / drop.required_minutes_watched) * 100);
-  const complete = current >= drop.required_minutes_watched;
+  const pct = Math.min(100, (shown.current / shown.required) * 100);
+  const complete = shown.current >= shown.required;
+  const remaining = Math.max(0, shown.required - shown.current);
 
   const claim = async () => {
-    if (!drop.drop_instance_id || claiming) return;
+    if (claiming) return;
     setClaiming(true);
     try {
       await invoke('claim_drop', {
-        dropId: drop.drop_id,
-        dropInstanceId: drop.drop_instance_id,
+        dropId: shown.dropId,
+        dropInstanceId: shown.dropInstanceId ?? null,
       });
       addToast('Drop claimed', 'success');
       await refresh();
@@ -70,35 +121,33 @@ export const DropProgressBar: React.FC = () => {
 
   return (
     <div className="pointer-events-auto flex items-center gap-2 mt-1">
-      {drop.drop_image ? (
+      {shown.image ? (
         <img
-          src={drop.drop_image}
+          src={shown.image}
           alt=""
           className="w-6 h-6 rounded object-cover shrink-0"
           draggable={false}
         />
       ) : (
-        <Gift size={14} className="text-accent shrink-0" />
+        <Gift size={16} className="text-accent shrink-0" />
       )}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <span className="text-[11.5px] text-textSecondary truncate">
-            {drop.drop_name || 'Drop progress'}
-          </span>
+          <span className="text-[11.5px] text-textSecondary truncate">{shown.name}</span>
           <span className="ml-auto text-[11px] text-textMuted shrink-0 tabular-nums">
-            {current}/{drop.required_minutes_watched}m
+            {complete ? 'Ready' : `${remaining}m left`}
           </span>
         </div>
         <div className="h-1 rounded-full bg-surface overflow-hidden mt-1">
           <div
-            className={`h-full rounded-full transition-[width] duration-500 ${
+            className={`h-full rounded-full transition-[width] duration-700 ${
               complete ? 'bg-success' : 'bg-accent'
             }`}
             style={{ width: `${pct}%` }}
           />
         </div>
       </div>
-      {complete && drop.drop_instance_id && (
+      {complete && (
         <button
           onClick={() => void claim()}
           disabled={claiming}
