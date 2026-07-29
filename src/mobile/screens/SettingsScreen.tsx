@@ -9,7 +9,9 @@ const PANELS: Record<string, React.LazyExoticComponent<React.ComponentType>> = {
   Player: lazy(() => import('../../components/settings/PlayerSettings')),
   Chat: lazy(() => import('../../components/settings/ChatSettings')),
   Theme: lazy(() => import('../../components/settings/ThemeSettings')),
-  Notifications: lazy(() => import('../../components/settings/NotificationsSettings')),
+  // Mobile gets its own notifications panel: the desktop one configures
+  // toasts and the Dynamic Island, which do not exist here.
+  Notifications: lazy(() => import('./MobileNotificationsSettings')),
   Cache: lazy(() => import('../../components/settings/CacheSettings')),
   Support: lazy(() => import('../../components/settings/SupportSettings')),
   "What's New": lazy(() => import('../../components/settings/WhatsNewSettings')),
@@ -26,7 +28,12 @@ export const SETTINGS_ROWS: {
   { id: 'Player', label: 'Player', icon: PlayCircle, description: 'Video quality, latency, and behavior' },
   { id: 'Chat', label: 'Chat', icon: MessageSquare, description: 'Chat design and behavior' },
   { id: 'Theme', label: 'Theme', icon: Palette, description: 'Color theme, glass, and fonts' },
-  { id: 'Notifications', label: 'Notifications', icon: Bell, description: 'Alerts and sounds' },
+  {
+    id: 'Notifications',
+    label: 'Notifications',
+    icon: Bell,
+    description: 'System alerts for live channels and drops',
+  },
   { id: 'Cache', label: 'Cache', icon: Database, description: 'Emote, badge, and metadata caches' },
   { id: 'Support', label: 'Support', icon: HelpCircle, description: 'Logs, diagnostics, and feedback' },
   { id: "What's New", label: "What's New", icon: Sparkles, description: 'Recent releases' },

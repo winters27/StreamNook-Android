@@ -1,7 +1,8 @@
 // Touch-first player surface: the video element plus a tap-driven glass control
 // overlay. No Plyr; hls.js runs via useMobileHlsEngine.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowsOut, Eye, Gear, Pause, PictureInPicture, Play, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
+import { ArrowsOut, Eye, Gear, Pause, PictureInPicture, Play, ShareNetwork, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
+import { shareText } from '../nativeBridge';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileHlsEngine } from './useMobileHlsEngine';
 import { QualitySheet } from './QualitySheet';
@@ -215,6 +216,22 @@ export const MobilePlayer: React.FC<{
             >
               {muted ? <SpeakerSlash size={21} /> : <SpeakerHigh size={21} />}
             </button>
+            {currentStream && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const url = `https://twitch.tv/${currentStream.user_login}`;
+                  shareText(
+                    `${currentStream.user_name} on Twitch: ${url}`,
+                    currentStream.title || currentStream.user_name,
+                  );
+                }}
+                className="sn-touch flex items-center justify-center text-white"
+                aria-label="Share stream"
+              >
+                <ShareNetwork size={21} />
+              </button>
+            )}
             {onEnterPip && (
               <button
                 onClick={(e) => {

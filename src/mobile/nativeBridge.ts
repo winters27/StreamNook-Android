@@ -6,6 +6,7 @@ interface SNBridge {
   setKeepScreenOn?(on: boolean): void;
   setPipEligible?(eligible: boolean): void;
   enterPip?(): void;
+  share?(text: string, subject: string): void;
 }
 
 function bridge(): SNBridge | undefined {
@@ -42,4 +43,19 @@ export function enterPip(): void {
   } catch {
     /* bridge absent */
   }
+}
+
+/** Opens the system share sheet. Falls back to the clipboard if unavailable. */
+export function shareText(text: string, subject = ''): boolean {
+  try {
+    const b = bridge();
+    if (b?.share) {
+      b.share(text, subject);
+      return true;
+    }
+  } catch {
+    /* fall through */
+  }
+  void navigator.clipboard?.writeText(text).catch(() => {});
+  return false;
 }

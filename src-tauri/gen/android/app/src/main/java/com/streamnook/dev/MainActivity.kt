@@ -1,6 +1,7 @@
 package com.streamnook.dev
 
 import android.app.PictureInPictureParams
+import android.content.Intent
 import android.os.Bundle
 import android.util.Rational
 import android.webkit.JavascriptInterface
@@ -51,6 +52,23 @@ class MainActivity : TauriActivity() {
     @JavascriptInterface
     fun setPipEligible(eligible: Boolean) {
       pipEligible = eligible
+    }
+
+    /** Hand text (a stream link) to the system share sheet. */
+    @JavascriptInterface
+    fun share(text: String, subject: String) {
+      runOnUiThread {
+        try {
+          val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, text)
+            if (subject.isNotEmpty()) putExtra(Intent.EXTRA_SUBJECT, subject)
+          }
+          startActivity(Intent.createChooser(send, null))
+        } catch (_: Exception) {
+          /* no share target available */
+        }
+      }
     }
 
     /** Enter TRUE system picture-in-picture on demand (drag-down, PiP button).

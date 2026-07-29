@@ -29,6 +29,7 @@ import {
   subscribeToStreamNookRegistry,
   trackPresence,
 } from '../../services/supabaseService';
+import { postSystemNotification } from '../notifications';
 import { Logger } from '../../utils/logger';
 
 export function useMobileBoot(): void {
@@ -135,6 +136,26 @@ export function useMobileBoot(): void {
       // Follow/unfollow actions elsewhere ask the shell to refresh the list.
       await addListener<void>('refresh-following-list', () => {
         void useAppStore.getState().loadFollowedStreams();
+      });
+
+      // Live channel alerts land in the system shade, which is the only
+      // surface that works when the app is backgrounded. The desktop routes
+      // this same event to a toast / Dynamic Island; on a phone the OS owns it.
+      await addListener<{
+        streamer_name: string;
+        game_name?: string;
+        stream_title?: string;
+        streamer_avatar?: string;
+        is_test?: boolean;
+      }>('show-live-toast', (event) => {
+        const n = event.payload;
+        const prefs = useAppStore.getState().settings.live_notifications;
+        if (prefs?.show_live_notifications === false) return;
+        void postSystemNotification({
+          title: `${n.streamer_name} is live`,
+          body: n.stream_title || (n.game_name ? `Playing ${n.game_name}` : undefined),
+          icon: n.streamer_avatar,
+        });
       });
 
       // Supabase presence + the server-driven registries (membership, cosmetics
