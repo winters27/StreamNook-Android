@@ -111,8 +111,15 @@ export const AddChatSheet: React.FC<{ open: boolean; onClose: () => void }> = ({
                   <span className="text-[12px] text-textMuted shrink-0">Open</span>
                 ) : (
                   stream.viewer_count > 0 && (
-                    <span className="flex items-center gap-1 shrink-0 text-[12px] text-textMuted">
-                      <span className="live-dot" />
+                    <span className="flex items-center gap-1.5 shrink-0 text-[12px] text-textMuted">
+                      {/* NOT `.live-dot`: that class is the whole LIVE badge
+                          (padded pill, gradient, border, dot via ::before), so
+                          an empty span renders as an empty pill. A row this
+                          compact wants just the dot, in the same token colour. */}
+                      <span
+                        className="w-1.5 h-1.5 rounded-full"
+                        style={{ backgroundColor: 'var(--color-live)' }}
+                      />
                       {stream.viewer_count.toLocaleString()}
                     </span>
                   )
