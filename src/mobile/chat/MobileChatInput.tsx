@@ -20,6 +20,7 @@ import { EmotePickerPanel, useSwappingSmiley } from '../../components/chat/Emote
 import ChannelPointsMenu from '../../components/ChannelPointsMenu';
 import { ChannelPointsIcon } from '../../components/ChannelPointsIcon';
 import { useChannelPoints } from './useChannelPoints';
+import { useEmoteOwnerNames } from './useEmoteOwnerNames';
 
 // Shorter than the desktop's 520px so the panel still clears the soft keyboard,
 // and opaque rather than the panel's own 95%. That 5% reads as solid over a
@@ -30,8 +31,12 @@ import { useChannelPoints } from './useChannelPoints';
 // Deliberately NOT solved with a backdrop blur: that gets stripped entirely
 // when Glassiness is off, so it cannot be what keeps text legible, and a large
 // blur is exactly the per-frame cost just removed from chat rows for phone GPUs.
+// The height clamp is keyboard-aware on purpose. `vh` is the whole screen here
+// (edge-to-edge means the soft keyboard does not resize the viewport, the native
+// inset bridge reports it as --sn-kb instead), so a fixed 52vh panel grows
+// straight up past the status bar once the keyboard opens.
 const PANEL_CLASS =
-  'absolute bottom-full left-0 right-0 mb-2 h-[52vh] max-h-[420px] border border-borderSubtle rounded-xl shadow-lg flex flex-col overflow-hidden origin-bottom z-50 !bg-background';
+  'absolute bottom-full left-0 right-0 mb-2 h-[52vh] max-h-[min(420px,calc(100dvh-var(--sn-kb,0px)-var(--sn-safe-t,0px)-140px))] border border-borderSubtle rounded-xl shadow-lg flex flex-col overflow-hidden origin-bottom z-50 !bg-background';
 
 function formatPoints(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -55,6 +60,7 @@ export const MobileChatInput: React.FC<{
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const { currentSmiley, isSmileyTransitioning, cycleEmoteSmiley } = useSwappingSmiley();
   const points = useChannelPoints(currentStream?.user_login);
+  const emoteOwnerNames = useEmoteOwnerNames(emotes);
 
   const send = async () => {
     const message = text.trim();
@@ -205,6 +211,7 @@ export const MobileChatInput: React.FC<{
         channelId={currentStream?.user_id}
         channelLogin={currentStream?.user_login}
         isLoadingEmotes={!emotes}
+        channelNameCache={emoteOwnerNames}
         onInsert={insertEmote}
         className={PANEL_CLASS}
       />
