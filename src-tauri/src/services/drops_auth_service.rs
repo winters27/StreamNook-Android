@@ -58,8 +58,16 @@ pub struct DropsAuthService;
 
 impl DropsAuthService {
     fn get_token_file_path() -> Result<PathBuf> {
-        let mut path =
-            dirs::config_dir().ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?;
+        // Mobile: the app-private sandbox dir (see services::app_paths). This
+        // resolver was missed when the other file-backed stores were routed
+        // through it, so on Android `dirs::config_dir()` returned None, the
+        // drops token was never written, and every drops call reported "not
+        // authenticated" immediately after a successful device-code connect.
+        let mut path = match crate::services::app_paths::mobile_base() {
+            Some(base) => base,
+            None => dirs::config_dir()
+                .ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?,
+        };
         path.push("StreamNook");
 
         if !path.exists() {
