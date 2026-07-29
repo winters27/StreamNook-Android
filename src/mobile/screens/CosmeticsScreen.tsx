@@ -7,6 +7,7 @@ import { ArrowLeft, Check, Lock } from 'phosphor-react';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileNavStore } from '../navStore';
 import {
+  getAccolades,
   getActiveCosmeticSlug,
   getAllCosmetics,
   getOwnedCosmeticSlugs,
@@ -15,7 +16,7 @@ import {
   setProfileTheme,
 } from '../../services/supabaseService';
 import { listAtmospheres, type Atmosphere } from '../../services/atmospheres';
-import { resolveEntitlement } from '../../services/cosmetics/ownership';
+import { isCologneTheme } from '../../services/cologneEvent';
 import { isSubscriber } from '../../services/subscriberService';
 import { resolveCosmeticAsset } from '../../components/cosmeticAssets';
 import { Logger } from '../../utils/logger';
@@ -30,7 +31,8 @@ export const CosmeticsScreen: React.FC = () => {
   const [ownedSlugs, setOwnedSlugs] = useState<Set<string>>(new Set());
   const [activeBadge, setActiveBadge] = useState<string | null>(null);
   const [profileTheme, setProfileThemeState] = useState<string>('tier');
-  const [canAtmosphere, setCanAtmosphere] = useState(false);
+  const [subscribed, setSubscribed] = useState(false);
+  const [earnedAccolades, setEarnedAccolades] = useState<Set<string>>(new Set());
 
   const refresh = useCallback(async () => {
     if (!userId) return;
@@ -44,17 +46,26 @@ export const CosmeticsScreen: React.FC = () => {
     } catch (err) {
       Logger.warn('[Cosmetics] prefs read failed:', err);
     }
-    let canAtm = false;
+    let sub = false;
     try {
-      const activeSubscription = await isSubscriber(userId);
-      canAtm = resolveEntitlement({ ownedSlugs: owned, activeSubscription }).canAtmosphere;
+      sub = await isSubscriber(userId);
     } catch {
-      canAtm = false;
+      sub = false;
+    }
+    // Accolade-gated atmospheres unlock off user_accolades, NOT owned cosmetic
+    // slugs, and stay hidden until earned (the unlock is meant to be a
+    // surprise). Same rule the desktop cosmetics panel uses.
+    let accolades = new Set<string>();
+    try {
+      accolades = new Set(await getAccolades(userId));
+    } catch {
+      /* leave empty; accolade atmospheres simply stay hidden */
     }
     setOwnedSlugs(owned);
     setActiveBadge(active);
     setProfileThemeState(theme);
-    setCanAtmosphere(canAtm);
+    setSubscribed(sub);
+    setEarnedAccolades(accolades);
   }, [userId]);
 
   useEffect(() => {
@@ -83,11 +94,21 @@ export const CosmeticsScreen: React.FC = () => {
     }
   };
 
-  const atmosphereAllowed = (atm: Atmosphere): boolean => {
-    const unlock = atm.unlock ?? { kind: 'subscriber' as const };
-    if (unlock.kind === 'subscriber') return canAtmosphere;
-    return ownedSlugs.has(atm.id);
-  };
+  // Mirrors the desktop rule: accolade atmospheres unlock for ANY member who
+  // earned the accolade (no subscription); subscriber atmospheres are owned
+  // per-item, so lapsing keeps everything already unlocked.
+  const atmosphereAllowed = (atm: Atmosphere): boolean =>
+    atm.unlock?.kind === 'accolade'
+      ? earnedAccolades.has(atm.unlock.accoladeId)
+      : ownedSlugs.has(atm.id) || subscribed;
+
+  // Accolade-gated atmospheres stay hidden until earned, and Cologne renders
+  // through its own event chrome rather than as a plain swatch.
+  const visibleAtmospheres = atmospheres.filter(
+    (a) =>
+      !isCologneTheme(a.id) &&
+      (a.unlock?.kind !== 'accolade' || earnedAccolades.has(a.unlock.accoladeId)),
+  );
 
   const equipTheme = async (theme: string) => {
     const prev = profileTheme;
@@ -175,7 +196,7 @@ export const CosmeticsScreen: React.FC = () => {
               {profileTheme === 'tier' && <Check size={13} weight="bold" className="text-accent" />}
             </div>
           </button>
-          {atmospheres.map((atm) => {
+          {visibleAtmospheres.map((atm) => {
             const allowed = atmosphereAllowed(atm);
             const isActive = profileTheme === atm.id || profileTheme.startsWith(`${atm.id}+`);
             return (

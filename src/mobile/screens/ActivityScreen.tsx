@@ -7,16 +7,24 @@ import { ArrowSquareOut, CheckCircle, Gift } from 'phosphor-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import { PullToRefresh } from '../ui/PullToRefresh';
+import { getAllUserBadgesWithEarned, type TwitchBadge } from '../../services/badgeService';
 import { Logger } from '../../utils/logger';
 import type { DropsDeviceCodeInfo, InventoryItem, InventoryResponse } from '../../types';
 
+type ActivityTab = 'drops' | 'badges';
+
 export const ActivityScreen: React.FC = () => {
   const addToast = useAppStore((s) => s.addToast);
+  const currentUser = useAppStore((s) => s.currentUser);
+  const [tab, setTab] = useState<ActivityTab>('drops');
+  const [badges, setBadges] = useState<TwitchBadge[]>([]);
+  const [badgesLoading, setBadgesLoading] = useState(false);
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [inventory, setInventory] = useState<InventoryResponse | null>(null);
   const [deviceCode, setDeviceCode] = useState<DropsDeviceCodeInfo | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -36,8 +44,30 @@ export const ActivityScreen: React.FC = () => {
     void load();
   }, [load]);
 
+  // Your earned Twitch badge collection (the same unified badge engine the
+  // desktop badge wall uses).
+  const loadBadges = useCallback(async () => {
+    const uid = currentUser?.user_id;
+    const login = currentUser?.login || currentUser?.username;
+    if (!uid || !login) return;
+    setBadgesLoading(true);
+    try {
+      const res = await getAllUserBadgesWithEarned(uid, login, uid, login);
+      setBadges(res.earnedBadges ?? []);
+    } catch (err) {
+      Logger.warn('[Activity] badge load failed:', err);
+    } finally {
+      setBadgesLoading(false);
+    }
+  }, [currentUser?.user_id, currentUser?.login, currentUser?.username]);
+
+  useEffect(() => {
+    if (tab === 'badges' && badges.length === 0) void loadBadges();
+  }, [tab, badges.length, loadBadges]);
+
   const connect = async () => {
     setConnecting(true);
+    setConnectError(null);
     try {
       const info = await invoke<DropsDeviceCodeInfo>('start_drops_device_flow');
       setDeviceCode(info);
@@ -62,8 +92,12 @@ export const ActivityScreen: React.FC = () => {
       setAuthed(true);
       await load();
     } catch (err) {
+      // Surface the real backend reason (expired code, denied, network) instead
+      // of a generic failure, so a stuck connect is diagnosable from the phone.
+      const reason = err instanceof Error ? err.message : String(err);
       Logger.error('[Activity] drops connect failed:', err);
-      addToast('Drops connection failed. Try again.', 'error');
+      setConnectError(reason);
+      addToast(`Drops connection failed: ${reason}`, 'error');
       setDeviceCode(null);
     } finally {
       await invoke('close_mobile_login').catch(() => {});
@@ -90,10 +124,52 @@ export const ActivityScreen: React.FC = () => {
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       <div className="px-4 pt-3 pb-2 shrink-0">
-        <h1 className="text-xl font-bold text-textPrimary">Activity</h1>
+        <h1 className="text-xl font-bold text-textPrimary mb-2.5">Activity</h1>
+        <div className="flex gap-1">
+          {(['drops', 'badges'] as ActivityTab[]).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`px-3.5 py-1.5 rounded-full text-sm transition-colors ${
+                tab === t ? 'glass-button-static text-textPrimary font-semibold' : 'text-textMuted'
+              }`}
+            >
+              {t === 'drops' ? 'Drops' : 'Badges'}
+            </button>
+          ))}
+        </div>
       </div>
-      <PullToRefresh onRefresh={load}>
-        <div className="px-4 sn-tabbar-clearance">
+      <PullToRefresh onRefresh={tab === 'drops' ? load : loadBadges}>
+        <div className={`px-4 sn-tabbar-clearance ${tab === 'badges' ? '' : 'hidden'}`}>
+          {badgesLoading && badges.length === 0 ? (
+            <div className="py-10 text-center text-sm text-textMuted">Loading badges…</div>
+          ) : badges.length === 0 ? (
+            <div className="py-10 text-center text-sm text-textMuted">
+              No badges earned yet.
+            </div>
+          ) : (
+            <div className="grid grid-cols-4 gap-2 pt-1">
+              {badges.map((badge) => (
+                <div
+                  key={`${badge.setID}-${badge.version}`}
+                  className="glass-panel p-2 flex flex-col items-center gap-1.5"
+                >
+                  <img
+                    src={badge.localUrl || badge.image4x || badge.image2x}
+                    alt=""
+                    loading="lazy"
+                    className="w-10 h-10 object-contain"
+                    draggable={false}
+                  />
+                  <span className="text-[10.5px] text-textSecondary text-center line-clamp-2 leading-tight">
+                    {badge.title}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className={`px-4 sn-tabbar-clearance ${tab === 'drops' ? '' : 'hidden'}`}>
           {authed === false && (
             <div className="glass-panel p-4 mt-2">
               <div className="flex items-center gap-2 mb-1.5">
@@ -120,14 +196,21 @@ export const ActivityScreen: React.FC = () => {
                   </div>
                 </div>
               ) : (
-                <button
-                  onClick={() => void connect()}
-                  disabled={connecting}
-                  className="glass-button sn-touch w-full text-[14px] font-semibold text-textPrimary disabled:opacity-60 flex items-center justify-center gap-1.5"
-                >
-                  Connect drops
-                  <ArrowSquareOut size={15} />
-                </button>
+                <>
+                  <button
+                    onClick={() => void connect()}
+                    disabled={connecting}
+                    className="glass-button sn-touch w-full text-[14px] font-semibold text-textPrimary disabled:opacity-60 flex items-center justify-center gap-1.5"
+                  >
+                    Connect drops
+                    <ArrowSquareOut size={15} />
+                  </button>
+                  {connectError && (
+                    <div className="mt-2 text-[12px] text-error leading-snug break-words">
+                      {connectError}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}
