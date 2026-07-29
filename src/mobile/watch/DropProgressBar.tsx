@@ -72,9 +72,14 @@ export const DropProgressBar: React.FC = () => {
         );
       });
       const drops: TimeBasedDrop[] = relevant.flatMap((it) => it.campaign.time_based_drops || []);
-      Logger.debug(
-        `[DropProgress] game="${gameName}" channel="${login}" campaigns=${inv.items.length} relevant=${relevant.length} drops=${drops.length}`,
-      );
+      // Warn, not debug: debug is silenced by default, and a stream that Twitch
+      // flags as drops-enabled but that we cannot match to a campaign is the one
+      // case worth seeing in logcat without a devtools session.
+      if (relevant.length === 0 || drops.length === 0) {
+        Logger.warn(
+          `[DropProgress] no match: game="${gameName}" channel="${login}" campaigns=${inv.items.length} relevant=${relevant.length} drops=${drops.length}`,
+        );
+      }
 
       // The tier being earned right now is the unclaimed collectible one with
       // the fewest minutes left, matching the backend's own choice rule.
@@ -88,7 +93,9 @@ export const DropProgressBar: React.FC = () => {
         .filter((c) => c.current < c.required);
 
       if (candidates.length === 0) {
-        Logger.debug('[DropProgress] no unclaimed collectible tier for this stream');
+        Logger.warn(
+          `[DropProgress] matched ${drops.length} drop(s) but none collectible+unclaimed+incomplete`,
+        );
         setShown(null);
         return;
       }
