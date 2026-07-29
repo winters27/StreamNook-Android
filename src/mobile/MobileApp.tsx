@@ -20,6 +20,7 @@ import { WatchScreen } from './screens/WatchScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { CategoryStreamsScreen } from './screens/CategoryStreamsScreen';
 import { ActivityScreen } from './screens/ActivityScreen';
+import { CosmeticsScreen } from './screens/CosmeticsScreen';
 import LoadingWidget from '../components/LoadingWidget';
 import DeviceLoginOverlay from '../components/DeviceLoginOverlay';
 import ToastManager from '../components/ToastManager';
@@ -84,6 +85,7 @@ const MobileApp: React.FC = () => {
           <MobileTabBar />
           <CategoryStreamsScreen />
           <WatchScreen />
+          <CosmeticsScreen />
           <SettingsScreen />
         </>
       )}

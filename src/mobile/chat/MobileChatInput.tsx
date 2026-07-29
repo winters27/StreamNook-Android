@@ -2,7 +2,7 @@
 // desktop input's slash commands, user-command expansion, resub/streak modes,
 // send-as switching, and arrow history; those are desktop affordances.
 import React, { useRef, useState } from 'react';
-import { PaperPlaneRight, Smiley } from 'phosphor-react';
+import { Smiley } from 'phosphor-react';
 import { useAppStore } from '../../stores/AppStore';
 import { incrementStat } from '../../services/supabaseService';
 import type { UseTwitchChatReturn } from '../../hooks/useTwitchChat';
@@ -51,11 +51,14 @@ export const MobileChatInput: React.FC<{
   return (
     // Bottom padding: ride the soft keyboard (--sn-kb, pushed by the native
     // WindowInsets bridge; targetSdk 36 edge-to-edge ignores adjustResize) and
-    // clear the gesture pill when the keyboard is closed.
+    // clear the gesture pill when the keyboard is closed. SUM, not max: the
+    // bridge reports the keyboard height minus the gesture bar, so the full
+    // lift above the keyboard is kb + safe-b (max left the input clipped by
+    // exactly the gesture-bar height).
     <div
       className="shrink-0 flex items-end gap-1.5 px-2.5 pt-2 border-t border-borderSubtle"
       style={{
-        paddingBottom: 'calc(max(var(--sn-kb, 0px), var(--sn-safe-b, 0px)) + 10px)',
+        paddingBottom: 'calc(var(--sn-kb, 0px) + var(--sn-safe-b, 0px) + 10px)',
         transition: 'padding-bottom 0.15s ease-out',
       }}
     >
@@ -81,13 +84,17 @@ export const MobileChatInput: React.FC<{
         className="glass-input flex-1 resize-none px-3 py-2 text-[15px] leading-[1.4] text-textPrimary placeholder:text-textMuted bg-transparent outline-none max-h-[96px]"
         enterKeyHint="send"
       />
+      {/* Same send control as the desktop chat: glass button + the app's own
+          send glyph. */}
       <button
         onClick={() => void send()}
         disabled={!text.trim() || sending}
-        className="sn-touch flex items-center justify-center text-accent disabled:text-textMuted"
+        className="glass-button flex-shrink-0 flex items-center justify-center self-end w-10 h-10 text-white rounded transition-all duration-300 disabled:opacity-50"
         aria-label="Send"
       >
-        <PaperPlaneRight size={22} weight="fill" />
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+        </svg>
       </button>
       <EmoteSheet
         open={emotesOpen}

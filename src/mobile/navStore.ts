@@ -19,12 +19,15 @@ interface MobileNavState {
   settingsView: string | null;
   /** Browse category drill: the open category's streams screen, or null. */
   browseCategory: TwitchCategory | null;
+  /** The cosmetics (equip) screen. */
+  cosmeticsOpen: boolean;
   setTab: (tab: MobileTab) => void;
   pushSheet: (id: string) => void;
   popSheet: (id?: string) => void;
   openSettings: (tab: string) => void;
   closeSettings: () => void;
   openBrowseCategory: (category: TwitchCategory | null) => void;
+  setCosmeticsOpen: (open: boolean) => void;
   /** Back chain: top sheet -> settings tab -> settings list -> exit stream ->
    *  non-default tab -> not consumed (native backgrounds the task). */
   handleBack: () => boolean;
@@ -35,6 +38,7 @@ export const useMobileNavStore = create<MobileNavState>((set, get) => ({
   sheetStack: [],
   settingsView: null,
   browseCategory: null,
+  cosmeticsOpen: false,
 
   setTab: (tab) => set({ activeTab: tab }),
 
@@ -49,9 +53,10 @@ export const useMobileNavStore = create<MobileNavState>((set, get) => ({
   openSettings: (tab) => set({ settingsView: tab }),
   closeSettings: () => set({ settingsView: null }),
   openBrowseCategory: (category) => set({ browseCategory: category }),
+  setCosmeticsOpen: (open) => set({ cosmeticsOpen: open }),
 
   handleBack: () => {
-    const { sheetStack, activeTab, settingsView, browseCategory } = get();
+    const { sheetStack, activeTab, settingsView, browseCategory, cosmeticsOpen } = get();
     if (sheetStack.length > 0) {
       const top = sheetStack[sheetStack.length - 1];
       window.dispatchEvent(new CustomEvent('sn:close-sheet', { detail: top }));
@@ -59,6 +64,10 @@ export const useMobileNavStore = create<MobileNavState>((set, get) => ({
     }
     if (settingsView) {
       set({ settingsView: null });
+      return true;
+    }
+    if (cosmeticsOpen) {
+      set({ cosmeticsOpen: false });
       return true;
     }
     const app = useAppStore.getState();

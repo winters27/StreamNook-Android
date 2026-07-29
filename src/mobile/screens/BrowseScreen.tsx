@@ -1,10 +1,11 @@
 // Discover: Live streams and Categories, with search covering both modes.
 import React, { useEffect, useRef, useState } from 'react';
-import { MagnifyingGlass, X } from 'phosphor-react';
+import { ListBullets, MagnifyingGlass, SquaresFour, X } from 'phosphor-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileNavStore } from '../navStore';
 import { MobileStreamCard, useDropsGameNames } from '../ui/MobileStreamCard';
+import { readStreamView, writeStreamView, type StreamViewMode } from './FollowingScreen';
 import { PullToRefresh } from '../ui/PullToRefresh';
 import { SkeletonCards } from '../ui/SkeletonCards';
 import { Logger } from '../../utils/logger';
@@ -27,6 +28,14 @@ export const BrowseScreen: React.FC = () => {
   const dropsGameNames = useDropsGameNames();
 
   const [mode, setMode] = useState<BrowseMode>('live');
+  const [view, setView] = useState<StreamViewMode>(readStreamView);
+  const activeHypeTrainChannels = useAppStore((s) => s.activeHypeTrainChannels);
+  const watchStreaks = useAppStore((s) => s.watchStreaks);
+
+  const setViewPersisted = (v: StreamViewMode) => {
+    setView(v);
+    writeStreamView(v);
+  };
   const [query, setQuery] = useState('');
   const [streamResults, setStreamResults] = useState<TwitchStream[] | null>(null);
   const [categoryResults, setCategoryResults] = useState<TwitchCategory[] | null>(null);
@@ -102,7 +111,6 @@ export const BrowseScreen: React.FC = () => {
     const seq = ++searchSeq.current;
     const t = setTimeout(() => void runSearch(trimmed, seq, mode), 350);
     return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, mode]);
 
   const refresh = async () => {
@@ -128,7 +136,7 @@ export const BrowseScreen: React.FC = () => {
         <div className="relative mb-2.5">
           <MagnifyingGlass
             size={17}
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-textMuted pointer-events-none"
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-textMuted pointer-events-none z-10"
           />
           <input
             value={query}
@@ -151,7 +159,7 @@ export const BrowseScreen: React.FC = () => {
         </div>
         {/* Mode segments: borderless text buttons with the sliding active pill
             look shared with the desktop Home nav. */}
-        <div className="flex gap-1">
+        <div className="flex items-center gap-1">
           {(['live', 'categories'] as BrowseMode[]).map((m) => (
             <button
               key={m}
@@ -165,6 +173,28 @@ export const BrowseScreen: React.FC = () => {
               {m === 'live' ? 'Live' : 'Categories'}
             </button>
           ))}
+          {mode === 'live' && (
+            <div className="flex ml-auto">
+              <button
+                onClick={() => setViewPersisted('cards')}
+                className={`sn-touch flex items-center justify-center ${
+                  view === 'cards' ? 'text-accent' : 'text-textMuted'
+                }`}
+                aria-label="Card view"
+              >
+                <SquaresFour size={20} weight={view === 'cards' ? 'fill' : 'regular'} />
+              </button>
+              <button
+                onClick={() => setViewPersisted('list')}
+                className={`sn-touch flex items-center justify-center ${
+                  view === 'list' ? 'text-accent' : 'text-textMuted'
+                }`}
+                aria-label="List view"
+              >
+                <ListBullets size={20} weight={view === 'list' ? 'bold' : 'regular'} />
+              </button>
+            </div>
+          )}
         </div>
       </div>
       <PullToRefresh onRefresh={refresh}>
@@ -179,13 +209,20 @@ export const BrowseScreen: React.FC = () => {
               <div className="text-[13px] text-textMuted">Pull down to refresh.</div>
             </div>
           ) : (
-            <div className="flex flex-col gap-3 px-4 sn-tabbar-clearance">
+            <div
+              className={`flex flex-col px-4 sn-tabbar-clearance ${
+                view === 'list' ? 'gap-2' : 'gap-3'
+              }`}
+            >
               {shownStreams.map((s) => (
                 <MobileStreamCard
                   key={s.id}
                   stream={s}
                   dropsGameNames={dropsGameNames}
+                  hypeTrain={activeHypeTrainChannels.get(s.user_id) ?? undefined}
+                  watchStreak={watchStreaks[s.user_id]}
                   onPress={(stream) => void startStream(stream.user_login, stream)}
+                  variant={view === 'list' ? 'row' : 'card'}
                 />
               ))}
             </div>

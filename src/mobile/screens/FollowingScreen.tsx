@@ -7,34 +7,57 @@ import { PullToRefresh } from '../ui/PullToRefresh';
 import { SkeletonCards } from '../ui/SkeletonCards';
 import type { TwitchStream } from '../../types';
 
-type ViewMode = 'cards' | 'list';
-const VIEW_KEY = 'sn-following-view';
+export type StreamViewMode = 'cards' | 'list';
+// One shared view preference for every stream list (Following + Browse).
+const VIEW_KEY = 'sn-stream-view';
+const LEGACY_VIEW_KEY = 'sn-following-view';
+
+export function readStreamView(): StreamViewMode {
+  const v = localStorage.getItem(VIEW_KEY) ?? localStorage.getItem(LEGACY_VIEW_KEY);
+  return v === 'list' ? 'list' : 'cards';
+}
+
+export function writeStreamView(mode: StreamViewMode): void {
+  localStorage.setItem(VIEW_KEY, mode);
+}
 
 export const FollowingScreen: React.FC = () => {
   const followedStreams = useAppStore((s) => s.followedStreams);
   const loadFollowedStreams = useAppStore((s) => s.loadFollowedStreams);
   const startStream = useAppStore((s) => s.startStream);
+  const activeHypeTrainChannels = useAppStore((s) => s.activeHypeTrainChannels);
+  const refreshHypeTrainStatuses = useAppStore((s) => s.refreshHypeTrainStatuses);
+  const watchStreaks = useAppStore((s) => s.watchStreaks);
   const [firstLoad, setFirstLoad] = useState(followedStreams.length === 0);
   // View choice persists: if a user can choose it, it survives restart.
-  const [view, setView] = useState<ViewMode>(
-    () => (localStorage.getItem(VIEW_KEY) === 'list' ? 'list' : 'cards'),
-  );
+  const [view, setView] = useState<StreamViewMode>(readStreamView);
   const dropsGameNames = useDropsGameNames();
 
-  const setViewPersisted = (mode: ViewMode) => {
+  const setViewPersisted = (mode: StreamViewMode) => {
     setView(mode);
-    localStorage.setItem(VIEW_KEY, mode);
+    writeStreamView(mode);
   };
 
   useEffect(() => {
-    if (followedStreams.length === 0) {
-      void loadFollowedStreams().finally(() => setFirstLoad(false));
-    } else {
-      setFirstLoad(false);
-    }
+    const boot = async () => {
+      if (useAppStore.getState().followedStreams.length === 0) {
+        await loadFollowedStreams().catch(() => {});
+        setFirstLoad(false);
+      }
+      // Hype train badges ride a separate status poll, same as desktop Home.
+      const ids = useAppStore.getState().followedStreams.map((s) => s.user_id);
+      if (ids.length) void refreshHypeTrainStatuses(ids);
+    };
+    void boot();
     // Load once on mount; pull-to-refresh and the boot listener keep it fresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const refresh = async () => {
+    await loadFollowedStreams();
+    const ids = useAppStore.getState().followedStreams.map((s) => s.user_id);
+    if (ids.length) await refreshHypeTrainStatuses(ids);
+  };
 
   const onPress = (stream: TwitchStream) => {
     void startStream(stream.user_login, stream);
@@ -66,7 +89,7 @@ export const FollowingScreen: React.FC = () => {
         </div>
       </div>
       <PullToRefresh
-        onRefresh={loadFollowedStreams}
+        onRefresh={refresh}
         className="px-0 [padding-left:var(--sn-safe-l)] [padding-right:var(--sn-safe-r)]"
       >
         {firstLoad ? (
@@ -87,6 +110,8 @@ export const FollowingScreen: React.FC = () => {
                 key={s.id}
                 stream={s}
                 dropsGameNames={dropsGameNames}
+                hypeTrain={activeHypeTrainChannels.get(s.user_id) ?? undefined}
+                watchStreak={watchStreaks[s.user_id]}
                 onPress={onPress}
                 variant={view === 'list' ? 'row' : 'card'}
               />

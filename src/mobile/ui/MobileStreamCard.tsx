@@ -1,12 +1,13 @@
 // Touch-native stream card in StreamNook's own card language, matching the
 // desktop Home cards: padded glass panel, rounded thumbnail, the canonical
-// .live-dot, .drops-badge-glass, .glass-badge viewer chip, partner verified
-// mark, and Apple-style emoji titles. Only the sizing is phone-tuned.
+// .live-dot, .drops-badge-glass, hype-train badge, watch-streak flame,
+// .glass-badge viewer chip, partner verified mark, and Apple-style emoji
+// titles. Only the sizing is phone-tuned.
 import React, { useEffect, useState } from 'react';
-import { Gift } from 'lucide-react';
+import { Flame, Gift } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import StreamTitleWithEmojis from '../../components/StreamTitleWithEmojis';
-import type { TwitchStream, DropCampaign } from '../../types';
+import type { DropCampaign, TwitchStream } from '../../types';
 
 function thumbUrl(stream: TwitchStream): string {
   return stream.thumbnail_url.replace('{width}', '640').replace('{height}', '360');
@@ -40,13 +41,41 @@ export function useDropsGameNames(): Map<string, DropCampaign> {
   return map;
 }
 
+export interface HypeTrainBadgeInfo {
+  level: number;
+  isGolden?: boolean;
+}
+
+const HypeTrainBadge: React.FC<{ info: HypeTrainBadgeInfo }> = ({ info }) => (
+  <div className={info.isGolden ? 'hype-train-badge-glass-golden' : 'hype-train-badge-glass'}>
+    <svg className="w-2.5 h-2.5" viewBox="0 0 15 13" fill="none">
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M4.10001 0.549988H2.40001V4.79999H0.700012V10.75H1.55001C1.55001 11.6889 2.31113 12.45 3.25001 12.45C4.1889 12.45 4.95001 11.6889 4.95001 10.75H5.80001C5.80001 11.6889 6.56113 12.45 7.50001 12.45C8.4389 12.45 9.20001 11.6889 9.20001 10.75H10.05C10.05 11.6889 10.8111 12.45 11.75 12.45C12.6889 12.45 13.45 11.6889 13.45 10.75H14.3V0.549988H6.65001V2.24999H7.50001V4.79999H4.10001V0.549988ZM12.6 9.04999V6.49999H2.40001V9.04999H12.6ZM9.20001 4.79999H12.6V2.24999H9.20001V4.79999Z"
+        fill="currentColor"
+      />
+    </svg>
+    <span>LVL {info.level}</span>
+  </div>
+);
+
+const StreakBadge: React.FC<{ streak: number }> = ({ streak }) => (
+  <div className="flex items-center gap-1 font-bold text-[10px] leading-tight px-1.5 py-0.5 rounded shadow-[0_0_10px_color-mix(in_srgb,var(--color-warning)_25%,transparent)] bg-amber-500/10 text-amber-400 border border-amber-500/30 backdrop-blur-md">
+    <Flame size={10} className="stroke-[2.5]" />
+    <span>{streak}</span>
+  </div>
+);
+
 export const MobileStreamCard: React.FC<{
   stream: TwitchStream;
   dropsGameNames?: Map<string, DropCampaign>;
+  hypeTrain?: HypeTrainBadgeInfo;
+  watchStreak?: number;
   onPress: (stream: TwitchStream) => void;
   /** 'card' = big thumbnail stack; 'row' = compact list row (thumb left). */
   variant?: 'card' | 'row';
-}> = ({ stream, dropsGameNames, onPress, variant = 'card' }) => {
+}> = ({ stream, dropsGameNames, hypeTrain, watchStreak, onPress, variant = 'card' }) => {
   const hasDrops = !!(
     stream.game_name && dropsGameNames?.has(stream.game_name.toLowerCase())
   );
@@ -57,7 +86,7 @@ export const MobileStreamCard: React.FC<{
         onClick={() => onPress(stream)}
         className="w-full text-left glass-panel media-card p-2 flex gap-2.5 active:opacity-80 transition-opacity"
       >
-        <div className="w-[136px] shrink-0 overflow-hidden rounded self-center">
+        <div className="w-[156px] shrink-0 overflow-hidden rounded self-center">
           <img
             loading="lazy"
             src={thumbUrl(stream)}
@@ -88,11 +117,13 @@ export const MobileStreamCard: React.FC<{
               {hasDrops && <Gift size={10} className="text-accent flex-shrink-0" />}
             </div>
           )}
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 flex-wrap">
             <span className="live-dot text-[9px] px-1 py-px leading-none">LIVE</span>
             <span className="text-[11.5px] text-textMuted">
               {stream.viewer_count.toLocaleString()} viewers
             </span>
+            {hypeTrain && <HypeTrainBadge info={hypeTrain} />}
+            {!!watchStreak && watchStreak > 0 && <StreakBadge streak={watchStreak} />}
           </div>
         </div>
       </button>
@@ -102,7 +133,7 @@ export const MobileStreamCard: React.FC<{
   return (
     <button
       onClick={() => onPress(stream)}
-      className="w-full text-left glass-panel media-card p-2.5 active:opacity-80 transition-opacity"
+      className="w-full text-left glass-panel media-card p-2 active:opacity-80 transition-opacity"
     >
       <div className="relative mb-2 overflow-hidden rounded">
         <img
@@ -120,13 +151,19 @@ export const MobileStreamCard: React.FC<{
               <span>DROPS</span>
             </div>
           )}
+          {hypeTrain && <HypeTrainBadge info={hypeTrain} />}
         </div>
         <div className="absolute bottom-1.5 left-1.5 px-2 py-0.5 glass-badge text-white text-xs font-medium rounded">
           {stream.viewer_count.toLocaleString()} viewers
         </div>
+        {!!watchStreak && watchStreak > 0 && (
+          <div className="absolute bottom-1.5 right-1.5">
+            <StreakBadge streak={watchStreak} />
+          </div>
+        )}
       </div>
-      <div className="space-y-0.5">
-        <h3 className="text-textPrimary font-medium text-[15px] leading-snug line-clamp-1">
+      <div className="space-y-0.5 px-0.5 pb-0.5">
+        <h3 className="text-textPrimary font-medium text-[13.5px] leading-snug line-clamp-2">
           <StreamTitleWithEmojis title={stream.title} />
         </h3>
         <div className="flex items-center gap-1 text-textSecondary text-[13px]">
