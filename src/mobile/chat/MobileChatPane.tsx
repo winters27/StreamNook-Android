@@ -233,10 +233,10 @@ export const MobileChatPane: React.FC = () => {
         {isPaused && (
           <button
             onClick={resumeLive}
-            className="absolute bottom-2 left-1/2 -translate-x-1/2 glass-button flex items-center gap-1.5 px-4 py-2 text-[13px] font-semibold text-textPrimary z-10"
+            className="absolute bottom-2 left-1/2 -translate-x-1/2 glass-button flex items-center gap-1 whitespace-nowrap rounded-full px-3 py-1 text-[12px] font-medium text-textPrimary z-10"
           >
-            <CaretDown size={13} weight="bold" />
-            Chat paused, tap for live
+            <CaretDown size={11} weight="bold" />
+            Resume live
           </button>
         )}
       </div>
