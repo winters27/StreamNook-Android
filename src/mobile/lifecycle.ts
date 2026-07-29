@@ -6,10 +6,15 @@
 // pulling segments for a stream nobody is watching. That is battery and data
 // spent on nothing, and on resume the backlogged timers all fire at once.
 //
-// So: stand everything down when hidden and bring it back on resume. The one
-// deliberate exception is picture-in-picture, where the video IS still on
-// screen and must keep playing.
-import { getActiveVideo } from '../utils/activeVideo';
+// So: stand the background chatter down when hidden and bring it back on
+// resume. The one deliberate exception is picture-in-picture, where the app is
+// reported hidden but is still very much on screen.
+//
+// Playback is deliberately NOT touched. Backgrounding a stream to keep
+// listening is a normal thing to do with a Twitch client, and pausing the video
+// (or calling hls stopLoad, which stalls it once the buffer drains) would take
+// that away. The sockets are pure background chatter with no user-visible
+// value while hidden; the audio is not.
 import { refreshEntitlementRegistries } from '../services/supabaseService';
 import { Logger } from '../utils/logger';
 
@@ -26,16 +31,6 @@ async function onHidden(): Promise<void> {
     stopBadgeFeed();
   } catch (err) {
     Logger.warn('[Lifecycle] badge feed pause failed:', err);
-  }
-  // hls.js keeps fetching segments while hidden; stopping the load leaves the
-  // element and instance intact so resume is a startLoad, not a re-attach.
-  const video = getActiveVideo();
-  if (video && !video.paused) {
-    try {
-      video.pause();
-    } catch {
-      /* element already gone */
-    }
   }
 }
 
