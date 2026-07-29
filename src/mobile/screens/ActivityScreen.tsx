@@ -2,11 +2,12 @@
 // desktop Drops Center; connecting uses the device-code flow directly (the
 // desktop's authorize popup is desktop-gated), showing the code here and
 // opening the browser, mirroring the main Twitch login pattern on mobile.
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowSquareOut, CheckCircle, Gift } from 'phosphor-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import { PullToRefresh } from '../ui/PullToRefresh';
+import { MobileSheet } from '../ui/MobileSheet';
 import { getAllUserBadgesWithEarned } from '../../services/badgeService';
 import {
   deriveBadgeStatus,
@@ -22,16 +23,48 @@ type ActivityTab = 'drops' | 'badges';
 // badge's live earn status derived from its BadgeBase window.
 interface GlobalBadge {
   key: string;
+  setId: string;
+  versionId: string;
   title: string;
+  description: string;
   image: string;
   /** Precomputed newest-first rank from the badge metadata cache. */
   position: number;
+  /** Parsed date_added, the authoritative newest-first key. */
+  addedMs: number;
+  usage: number;
   status: BadgeWindowStatus | null;
   dateInfo: string;
+  moreInfo: string;
+  infoUrl: string;
+}
+
+type BadgeSort = 'newest' | 'oldest' | 'available' | 'soon' | 'usage';
+
+const BADGE_SORTS: { id: BadgeSort; label: string }[] = [
+  { id: 'newest', label: 'Newest' },
+  { id: 'available', label: 'Available' },
+  { id: 'soon', label: 'Coming soon' },
+  { id: 'usage', label: 'Most used' },
+  { id: 'oldest', label: 'Oldest' },
+];
+
+// "1,234 users" -> 1234, so the usage sort has something numeric to work with.
+function parseUsage(raw: string | null | undefined): number {
+  if (!raw) return 0;
+  const digits = raw.replace(/[^0-9]/g, '');
+  return digits ? parseInt(digits, 10) : 0;
+}
+
+function parseAdded(raw: string | null | undefined): number {
+  if (!raw) return 0;
+  const ms = new Date(raw).getTime();
+  return Number.isNaN(ms) ? 0 : ms;
 }
 interface GlobalBadgeVersion {
   id?: string;
   title?: string;
+  description?: string;
   image_url_2x?: string;
   image_url_4x?: string;
 }
@@ -43,7 +76,13 @@ interface GlobalBadgeResponse {
   data?: GlobalBadgeSet[];
 }
 interface CachedBadgeMeta {
-  data?: { more_info?: string | null; enrichment?: Record<string, unknown> | null };
+  data?: {
+    date_added?: string | null;
+    usage_stats?: string | null;
+    more_info?: string | null;
+    enrichment?: Record<string, unknown> | null;
+    info_url?: string;
+  };
   position?: number;
 }
 
@@ -54,6 +93,9 @@ export const ActivityScreen: React.FC = () => {
   const [globalBadges, setGlobalBadges] = useState<GlobalBadge[]>([]);
   const [ownedTitles, setOwnedTitles] = useState<Set<string>>(new Set());
   const [badgesLoading, setBadgesLoading] = useState(false);
+  const [badgeSort, setBadgeSort] = useState<BadgeSort>('newest');
+  const [badgeDetail, setBadgeDetail] = useState<GlobalBadge | null>(null);
+  const [metaProgress, setMetaProgress] = useState(0);
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [inventory, setInventory] = useState<InventoryResponse | null>(null);
   const [deviceCode, setDeviceCode] = useState<DropsDeviceCodeInfo | null>(null);
@@ -104,29 +146,38 @@ export const ActivityScreen: React.FC = () => {
         Logger.warn('[Activity] badge metadata cache unavailable:', err);
       }
 
-      const seen = new Set<string>();
-      const all: GlobalBadge[] = [];
-      for (const set of global?.data ?? []) {
-        for (const v of set.versions ?? []) {
-          const image = v.image_url_4x || v.image_url_2x;
-          if (!v.title || !image) continue;
-          if (seen.has(v.title)) continue; // same badge repeats across sets
-          seen.add(v.title);
-          const cached = meta[`metadata:${set.set_id}-v${v.id}`];
-          all.push({
-            key: `${set.set_id}-${v.id}`,
-            title: v.title,
-            image,
-            position: typeof cached?.position === 'number' ? cached.position : Number.MAX_SAFE_INTEGER,
-            status: deriveBadgeStatus(cached?.data?.more_info, cached?.data?.enrichment),
-            dateInfo: formatBadgeDateInfo(cached?.data?.more_info),
-          });
+      const build = (metaMap: Record<string, CachedBadgeMeta>): GlobalBadge[] => {
+        const seen = new Set<string>();
+        const out: GlobalBadge[] = [];
+        for (const set of global?.data ?? []) {
+          for (const v of set.versions ?? []) {
+            const image = v.image_url_4x || v.image_url_2x;
+            if (!v.title || !image || !set.set_id || !v.id) continue;
+            if (seen.has(v.title)) continue; // same badge repeats across sets
+            seen.add(v.title);
+            const cached = metaMap[`metadata:${set.set_id}-v${v.id}`];
+            out.push({
+              key: `${set.set_id}-${v.id}`,
+              setId: set.set_id,
+              versionId: v.id,
+              title: v.title,
+              description: v.description ?? '',
+              image,
+              position:
+                typeof cached?.position === 'number' ? cached.position : Number.MAX_SAFE_INTEGER,
+              addedMs: parseAdded(cached?.data?.date_added),
+              usage: parseUsage(cached?.data?.usage_stats),
+              status: deriveBadgeStatus(cached?.data?.more_info, cached?.data?.enrichment),
+              dateInfo: formatBadgeDateInfo(cached?.data?.more_info),
+              moreInfo: cached?.data?.more_info ?? '',
+              infoUrl: cached?.data?.info_url ?? '',
+            });
+          }
         }
-      }
-      // Newest first by the precomputed position, exactly like the desktop
-      // gallery's default sort; anything without metadata sinks to the end.
-      all.sort((a, b) => a.position - b.position || a.title.localeCompare(b.title));
-      setGlobalBadges(all);
+        return out;
+      };
+
+      setGlobalBadges(build(meta));
 
       const uid = currentUser?.user_id;
       const login = currentUser?.login || currentUser?.username;
@@ -134,6 +185,37 @@ export const ActivityScreen: React.FC = () => {
         const mine = await getAllUserBadgesWithEarned(uid, login, uid, login);
         setOwnedTitles(new Set((mine.earnedBadges ?? []).map((b) => b.title)));
       }
+      setBadgesLoading(false);
+
+      // Mobile had never populated the badge metadata cache, which is why the
+      // gallery had almost no dates or earn windows to sort by. Fetch what is
+      // missing in batches (same commands the desktop gallery uses), then
+      // rebuild from the refreshed cache.
+      try {
+        const missing = await invoke<[string, string][]>('get_badges_missing_metadata');
+        if (missing.length > 0) {
+          setMetaProgress(missing.length);
+          const batchSize = 5;
+          for (let i = 0; i < missing.length; i += batchSize) {
+            await Promise.allSettled(
+              missing.slice(i, i + batchSize).map(([setId, version]) =>
+                invoke('fetch_badge_metadata', { badgeSetId: setId, badgeVersion: version }),
+              ),
+            );
+            setMetaProgress(Math.max(0, missing.length - (i + batchSize)));
+          }
+          const refreshed =
+            (await invoke<Record<string, CachedBadgeMeta>>('get_all_universal_cached_items', {
+              cacheType: 'badge',
+            })) ?? {};
+          setGlobalBadges(build(refreshed));
+        }
+      } catch (err) {
+        Logger.warn('[Activity] badge metadata backfill failed:', err);
+      } finally {
+        setMetaProgress(0);
+      }
+      return;
     } catch (err) {
       Logger.warn('[Activity] badge load failed:', err);
     } finally {
@@ -200,6 +282,38 @@ export const ActivityScreen: React.FC = () => {
     (b) => b.status === 'available' && !ownedTitles.has(b.title),
   ).length;
 
+  // Same ordering rules as the desktop gallery: prefer the precomputed
+  // positions when the cache has them broadly, otherwise fall back to
+  // date_added, with a stable key as the final tiebreak.
+  const sortedBadges = useMemo(() => {
+    const withPos = globalBadges.filter((b) => b.position !== Number.MAX_SAFE_INTEGER).length;
+    const usePositions = withPos >= globalBadges.length * 0.9 && globalBadges.length > 0;
+    const byNewest = (a: GlobalBadge, b: GlobalBadge) =>
+      (usePositions ? a.position - b.position : b.addedMs - a.addedMs) || a.key.localeCompare(b.key);
+
+    return [...globalBadges].sort((a, b) => {
+      switch (badgeSort) {
+        case 'oldest':
+          return (
+            (usePositions ? b.position - a.position : a.addedMs - b.addedMs) ||
+            a.key.localeCompare(b.key)
+          );
+        case 'available': {
+          const rank = (x: GlobalBadge) => (x.status === 'available' ? 1 : 0);
+          return rank(b) - rank(a) || byNewest(a, b);
+        }
+        case 'soon': {
+          const rank = (x: GlobalBadge) => (x.status === 'coming-soon' ? 1 : 0);
+          return rank(b) - rank(a) || byNewest(a, b);
+        }
+        case 'usage':
+          return b.usage - a.usage || byNewest(a, b);
+        default:
+          return byNewest(a, b);
+      }
+    });
+  }, [globalBadges, badgeSort]);
+
   const inProgress = (inventory?.items ?? []).filter(
     (i: InventoryItem) => i.status === 'Active' || i.drops_in_progress > 0,
   );
@@ -242,16 +356,38 @@ export const ActivityScreen: React.FC = () => {
                     {availableCount} available now
                   </span>
                 )}
+                {metaProgress > 0 && (
+                  <span className="ml-auto text-[11.5px] text-textMuted">
+                    {metaProgress} to sync
+                  </span>
+                )}
+              </div>
+              {/* Sort options, mirroring the desktop gallery's set. */}
+              <div className="flex gap-1 overflow-x-auto pb-2 -mx-1 px-1">
+                {BADGE_SORTS.map((s) => (
+                  <button
+                    key={s.id}
+                    onClick={() => setBadgeSort(s.id)}
+                    className={`shrink-0 px-3 py-1 rounded-full text-[12.5px] transition-colors ${
+                      badgeSort === s.id
+                        ? 'glass-button-static text-textPrimary font-semibold'
+                        : 'text-textMuted'
+                    }`}
+                  >
+                    {s.label}
+                  </button>
+                ))}
               </div>
               <div className="grid grid-cols-3 gap-2">
-                {globalBadges.map((badge) => {
+                {sortedBadges.map((badge) => {
                   const owned = ownedTitles.has(badge.title);
                   const available = badge.status === 'available';
                   const comingSoon = badge.status === 'coming-soon';
                   return (
-                    <div
+                    <button
                       key={badge.key}
-                      className={`glass-panel p-2 flex flex-col items-center gap-1.5 relative ${
+                      onClick={() => setBadgeDetail(badge)}
+                      className={`glass-panel p-2 flex flex-col items-center gap-1.5 relative active:opacity-80 ${
                         available && !owned ? 'ring-1 ring-success/70' : ''
                       } ${owned ? 'ring-1 ring-accent/60' : ''}`}
                     >
@@ -289,7 +425,7 @@ export const ActivityScreen: React.FC = () => {
                           {badge.dateInfo ? 'ENDED' : ''}
                         </span>
                       )}
-                    </div>
+                    </button>
                   );
                 })}
               </div>
@@ -425,6 +561,54 @@ export const ActivityScreen: React.FC = () => {
           )}
         </div>
       </PullToRefresh>
+
+      {/* Badge detail: art, status, when it was added, how it is earned. */}
+      <MobileSheet
+        open={!!badgeDetail}
+        onClose={() => setBadgeDetail(null)}
+        maxHeightFraction={0.66}
+      >
+        {badgeDetail && (
+          <div className="flex flex-col items-center text-center pb-1">
+            <img
+              src={badgeDetail.image}
+              alt=""
+              className="w-20 h-20 object-contain mb-2.5"
+              draggable={false}
+            />
+            <div className="text-[16px] font-semibold text-textPrimary">{badgeDetail.title}</div>
+            <div className="mt-1 mb-2.5">
+              {ownedTitles.has(badgeDetail.title) ? (
+                <span className="text-[11px] font-semibold text-accent">OWNED</span>
+              ) : badgeDetail.status === 'available' ? (
+                <span className="text-[11px] font-semibold text-success">AVAILABLE NOW</span>
+              ) : badgeDetail.status === 'coming-soon' ? (
+                <span className="text-[11px] font-semibold text-warning">COMING SOON</span>
+              ) : badgeDetail.status === 'expired' ? (
+                <span className="text-[11px] font-semibold text-textMuted">NO LONGER EARNABLE</span>
+              ) : null}
+            </div>
+            {badgeDetail.description && (
+              <p className="text-[13.5px] text-textSecondary leading-relaxed">
+                {badgeDetail.description}
+              </p>
+            )}
+            {badgeDetail.dateInfo && (
+              <p className="text-[12.5px] text-textMuted mt-2">{badgeDetail.dateInfo}</p>
+            )}
+            {badgeDetail.moreInfo && (
+              <p className="text-[12.5px] text-textSecondary leading-relaxed mt-3 text-left w-full">
+                {badgeDetail.moreInfo}
+              </p>
+            )}
+            {badgeDetail.usage > 0 && (
+              <p className="text-[12px] text-textMuted mt-3">
+                {badgeDetail.usage.toLocaleString()} users have this badge
+              </p>
+            )}
+          </div>
+        )}
+      </MobileSheet>
     </div>
   );
 };
