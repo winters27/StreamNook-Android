@@ -32,14 +32,19 @@ interface Shown {
 
 export const DropProgressBar: React.FC = () => {
   const currentStream = useAppStore((s) => s.currentStream);
+  const originCategory = useAppStore((s) => s.streamOriginCategory);
   const addToast = useAppStore((s) => s.addToast);
   const [shown, setShown] = useState<Shown | null>(null);
   const [claiming, setClaiming] = useState(false);
 
-  const gameName = currentStream?.game_name;
+  // `currentStream.game_name` is '' whenever startStream fell back to the
+  // channel-info path, so the category the stream was opened from is a real
+  // second source rather than a nicety.
+  const gameName = currentStream?.game_name || originCategory?.name || '';
+  const channelLogin = currentStream?.user_login;
 
   const refresh = useCallback(async () => {
-    if (!gameName) {
+    if (!gameName && !channelLogin) {
       setShown(null);
       return;
     }
@@ -52,12 +57,24 @@ export const DropProgressBar: React.FC = () => {
       const inv = await invoke<InventoryResponse>('get_drops_inventory').catch(() => null);
       if (!inv) return;
 
-      // Only campaigns for the category actually on screen. Watching Rust does
-      // not earn a Fortnite drop, and showing one would imply it does.
+      // Only campaigns that this stream can actually advance. Watching Rust
+      // does not earn a Fortnite drop, and showing one would imply it does.
+      // Category is the primary test; an ACL campaign that explicitly lists
+      // this channel counts too, since those earn regardless of how the
+      // category string happens to be spelled.
       const target = gameName.toLowerCase();
-      const drops: TimeBasedDrop[] = inv.items
-        .filter((it) => (it.campaign.game_name || '').toLowerCase() === target)
-        .flatMap((it) => it.campaign.time_based_drops || []);
+      const login = (channelLogin || '').toLowerCase();
+      const relevant = inv.items.filter((it) => {
+        if (target && (it.campaign.game_name || '').toLowerCase() === target) return true;
+        if (!login) return false;
+        return (it.campaign.allowed_channels || []).some(
+          (c) => (c.name || '').toLowerCase() === login,
+        );
+      });
+      const drops: TimeBasedDrop[] = relevant.flatMap((it) => it.campaign.time_based_drops || []);
+      Logger.debug(
+        `[DropProgress] game="${gameName}" channel="${login}" campaigns=${inv.items.length} relevant=${relevant.length} drops=${drops.length}`,
+      );
 
       // The tier being earned right now is the unclaimed collectible one with
       // the fewest minutes left, matching the backend's own choice rule.
@@ -71,6 +88,7 @@ export const DropProgressBar: React.FC = () => {
         .filter((c) => c.current < c.required);
 
       if (candidates.length === 0) {
+        Logger.debug('[DropProgress] no unclaimed collectible tier for this stream');
         setShown(null);
         return;
       }
@@ -87,7 +105,7 @@ export const DropProgressBar: React.FC = () => {
     } catch (err) {
       Logger.warn('[DropProgress] inventory read failed:', err);
     }
-  }, [gameName]);
+  }, [gameName, channelLogin]);
 
   useEffect(() => {
     void refresh();
