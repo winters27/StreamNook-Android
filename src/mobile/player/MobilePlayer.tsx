@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowsOut, Eye, Gear, Pause, PictureInPicture, Play, ShareNetwork, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
 import { shareText } from '../nativeBridge';
+import { buildShareUrl } from '../../utils/shareLink';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileHlsEngine } from './useMobileHlsEngine';
 import { QualitySheet } from './QualitySheet';
@@ -220,9 +221,13 @@ export const MobilePlayer: React.FC<{
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  const url = `https://twitch.tv/${currentStream.user_login}`;
+                  // Our own share link, not a raw twitch.tv URL: the landing
+                  // page hands off to StreamNook when it is installed and
+                  // falls back to Twitch when it is not. buildShareUrl also
+                  // carries the day tag that keeps Discord from serving a
+                  // stale preview card. Same helper the desktop share uses.
                   shareText(
-                    `${currentStream.user_name} on Twitch: ${url}`,
+                    `${currentStream.user_name} is live: ${buildShareUrl(currentStream.user_login)}`,
                     currentStream.title || currentStream.user_name,
                   );
                 }}
