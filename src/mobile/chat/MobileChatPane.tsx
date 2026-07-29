@@ -3,6 +3,7 @@
 // component drags mod tools, mod rooms, and MultiNook into the bundle. This
 // pane speaks to chatConnectionStore through the same APIs.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { CaretDown } from 'phosphor-react';
 import ChatMessageList from '../../components/ChatMessageList';
 import { useTwitchChat } from '../../hooks/useTwitchChat';
 import { useChannelEmotes } from '../../stores/chatConnectionStore';
@@ -154,6 +155,17 @@ export const MobileChatPane: React.FC = () => {
     [isPaused, pause],
   );
 
+  // Returning to live: unpause, then let the list glide smoothly to the bottom
+  // (ChatMessageList exposes its eased scroll for exactly this).
+  const resumeLive = useCallback(() => {
+    pause(false);
+    requestAnimationFrame(() => {
+      (
+        window as Window & typeof globalThis & { __chatScrollToBottom?: () => void }
+      ).__chatScrollToBottom?.();
+    });
+  }, [pause]);
+
   const onUsernameClick = useCallback(
     (userId: string, username: string, displayName: string, color: string) => {
       setSheetUser({ userId, username, displayName, color });
@@ -220,10 +232,11 @@ export const MobileChatPane: React.FC = () => {
         />
         {isPaused && (
           <button
-            onClick={() => pause(false)}
-            className="absolute bottom-2 left-1/2 -translate-x-1/2 glass-button px-4 py-2 text-[13px] font-semibold text-textPrimary z-10"
+            onClick={resumeLive}
+            className="absolute bottom-2 left-1/2 -translate-x-1/2 glass-button flex items-center gap-1.5 px-4 py-2 text-[13px] font-semibold text-textPrimary z-10"
           >
-            Chat paused, tap to resume
+            <CaretDown size={13} weight="bold" />
+            Chat paused, tap for live
           </button>
         )}
       </div>
