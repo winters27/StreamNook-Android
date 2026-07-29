@@ -21,10 +21,17 @@ import ChannelPointsMenu from '../../components/ChannelPointsMenu';
 import { ChannelPointsIcon } from '../../components/ChannelPointsIcon';
 import { useChannelPoints } from './useChannelPoints';
 
-// Shorter than the desktop's 520px so the panel still clears the soft keyboard
-// on a phone.
+// Shorter than the desktop's 520px so the panel still clears the soft keyboard,
+// and opaque rather than the panel's own 95%. That 5% reads as solid over a
+// desktop-sized popover but lets a whole screen of chat show through at phone
+// size, which is most of what made the old picker hard to read. `!` is needed
+// because the shared panel sets its background inline.
+//
+// Deliberately NOT solved with a backdrop blur: that gets stripped entirely
+// when Glassiness is off, so it cannot be what keeps text legible, and a large
+// blur is exactly the per-frame cost just removed from chat rows for phone GPUs.
 const PANEL_CLASS =
-  'absolute bottom-full left-0 right-0 mb-2 h-[52vh] max-h-[420px] border border-borderSubtle rounded-xl shadow-lg flex flex-col overflow-hidden origin-bottom z-50';
+  'absolute bottom-full left-0 right-0 mb-2 h-[52vh] max-h-[420px] border border-borderSubtle rounded-xl shadow-lg flex flex-col overflow-hidden origin-bottom z-50 !bg-background';
 
 function formatPoints(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
