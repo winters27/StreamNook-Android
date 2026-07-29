@@ -3,7 +3,7 @@
 // desktop's authorize popup is desktop-gated), showing the code here and
 // opening the browser, mirroring the main Twitch login pattern on mobile.
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowSquareOut, CheckCircle, Gift } from 'phosphor-react';
+import { ArrowSquareOut, CalendarBlank, CheckCircle, Gift, Warning } from 'phosphor-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import { PullToRefresh } from '../ui/PullToRefresh';
@@ -60,6 +60,36 @@ function parseAdded(raw: string | null | undefined): number {
   if (!raw) return 0;
   const ms = new Date(raw).getTime();
   return Number.isNaN(ms) ? 0 : ms;
+}
+
+// Split a badge blurb into its parts so each gets its own treatment instead of
+// one wall of text: the earn prose, the event window line, and any
+// eligibility caveat (the "Prime subs don't count" class of parenthetical).
+const WINDOW_LINE_RE = /^\s*(?:event duration|available)\s*:?\s*(.+)$/im;
+const CAVEAT_RE = /\(([^)]*(?:don't count|do not count|not eligible|excluded|doesn't count)[^)]*)\)/i;
+
+function splitBadgeBlurb(text: string): {
+  prose: string;
+  window: string | null;
+  caveat: string | null;
+} {
+  if (!text) return { prose: '', window: null, caveat: null };
+  let rest = text;
+
+  const win = rest.match(WINDOW_LINE_RE);
+  const window = win ? win[1].trim() : null;
+  if (win) rest = rest.replace(win[0], '');
+
+  const cav = rest.match(CAVEAT_RE);
+  const caveat = cav ? cav[1].trim() : null;
+  if (cav) rest = rest.replace(cav[0], '');
+
+  const prose = rest
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s+([.,])/g, '$1')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return { prose, window, caveat };
 }
 interface GlobalBadgeVersion {
   id?: string;
@@ -588,17 +618,41 @@ export const ActivityScreen: React.FC = () => {
                 <span className="text-[11px] font-semibold text-textMuted">NO LONGER EARNABLE</span>
               ) : null}
             </div>
-            {/* ONE body. `dateInfo` is the full more_info blurb with its dates
-                localized, so rendering description + dateInfo + raw more_info
-                printed the same text three times. Prefer the prettified blurb
-                and fall back to Twitch's description only when there is none. */}
+            {/* ONE body, split into parts. `dateInfo` is the full more_info
+                blurb with its dates localized (not a short date label), so it
+                is the source for all three pieces below. */}
             {(() => {
-              const body = badgeDetail.dateInfo || badgeDetail.description;
-              return body ? (
-                <p className="text-[13px] text-textSecondary leading-relaxed whitespace-pre-line text-left w-full">
-                  {body}
-                </p>
-              ) : null;
+              const { prose, window, caveat } = splitBadgeBlurb(
+                badgeDetail.dateInfo || badgeDetail.description,
+              );
+              return (
+                <>
+                  {prose && (
+                    <p className="text-[13px] text-textSecondary leading-relaxed whitespace-pre-line text-left w-full">
+                      {prose}
+                    </p>
+                  )}
+                  {caveat && (
+                    <div className="mt-3 w-full flex items-start gap-2 rounded-lg px-3 py-2 bg-amber-500/10 border border-amber-500/25">
+                      <Warning size={14} weight="fill" className="text-amber-400 shrink-0 mt-px" />
+                      <span className="text-[12.5px] text-amber-300/90 leading-snug text-left">
+                        {caveat}
+                      </span>
+                    </div>
+                  )}
+                  {window && (
+                    <div className="mt-3 w-full glass-tile rounded-lg px-3 py-2.5 flex items-center gap-2.5">
+                      <CalendarBlank size={16} className="text-accent shrink-0" />
+                      <div className="min-w-0 text-left">
+                        <div className="text-[10.5px] font-semibold uppercase tracking-wide text-textMuted leading-none mb-1">
+                          Event duration
+                        </div>
+                        <div className="text-[12.5px] text-textPrimary leading-snug">{window}</div>
+                      </div>
+                    </div>
+                  )}
+                </>
+              );
             })()}
             {badgeDetail.usage > 0 && (
               <p className="text-[12px] text-textMuted mt-3 self-center">

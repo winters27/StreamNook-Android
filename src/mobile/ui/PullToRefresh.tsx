@@ -7,7 +7,8 @@
 // Indicator: a down arrow fades/scales in with the drag and flips upward once
 // past the release threshold, then a spinner runs while onRefresh resolves.
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowDown, CircleNotch } from 'phosphor-react';
+import { ArrowDown } from 'phosphor-react';
+import PenroseMarch from '../../components/PenroseMarch';
 
 const ARM_THRESHOLD_PX = 72;
 const MAX_PULL_PX = 120;
@@ -105,26 +106,28 @@ export const PullToRefresh: React.FC<{
 
   return (
     <div className="relative flex-1 min-h-0 flex flex-col">
+      {/* Bare indicator: no button chrome, and it rides ABOVE the content it
+          pushes down (negative offset) so it never sits on top of the first
+          card while the list translates. */}
       {indicatorVisible && (
         <div
-          className="absolute left-1/2 -translate-x-1/2 z-10 pointer-events-none"
-          style={{ top: Math.max(6, pull - 34) }}
+          className="absolute left-1/2 -translate-x-1/2 z-10 pointer-events-none flex items-center justify-center"
+          style={{ top: Math.max(-30, pull - 46), height: 34 }}
         >
-          <div className="glass-button-static w-9 h-9 rounded-full flex items-center justify-center">
-            {refreshing ? (
-              <CircleNotch size={18} className="animate-spin text-accent" />
-            ) : (
-              <ArrowDown
-                size={18}
-                className={armed ? 'text-accent' : 'text-textMuted'}
-                style={{
-                  opacity: Math.min(1, pull / (ARM_THRESHOLD_PX * 0.4)),
-                  transform: `scale(${Math.min(1, 0.6 + pull / MAX_PULL_PX)}) rotate(${armed ? 180 : 0}deg)`,
-                  transition: 'transform 0.15s ease-out',
-                }}
-              />
-            )}
-          </div>
+          {refreshing ? (
+            <PenroseMarch size={30} />
+          ) : (
+            <ArrowDown
+              size={20}
+              weight="bold"
+              className={armed ? 'text-accent' : 'text-textMuted'}
+              style={{
+                opacity: Math.min(1, pull / (ARM_THRESHOLD_PX * 0.4)),
+                transform: `scale(${Math.min(1, 0.6 + pull / MAX_PULL_PX)}) rotate(${armed ? 180 : 0}deg)`,
+                transition: 'transform 0.15s ease-out',
+              }}
+            />
+          )}
         </div>
       )}
       <div
