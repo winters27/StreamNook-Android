@@ -86,7 +86,7 @@ export const MobileStreamCard: React.FC<{
         onClick={() => onPress(stream)}
         className="w-full text-left glass-panel media-card p-2 flex gap-2.5 active:opacity-80 transition-opacity"
       >
-        <div className="w-[156px] shrink-0 overflow-hidden rounded self-center">
+        <div className="relative w-[156px] shrink-0 overflow-hidden rounded self-center">
           <img
             loading="lazy"
             src={thumbUrl(stream)}
@@ -94,6 +94,31 @@ export const MobileStreamCard: React.FC<{
             className="w-full aspect-video object-cover"
             draggable={false}
           />
+          {/* Bare live dot instead of the pill: rows are too small for chrome. */}
+          <span className="absolute top-1.5 left-1.5 w-2 h-2 rounded-full bg-live animate-pulse" />
+          {hypeTrain && (
+            <div
+              className={hypeTrain.isGolden ? 'hype-train-badge-glass-golden' : 'hype-train-badge-glass'}
+              style={{
+                position: 'absolute',
+                bottom: 4,
+                left: 4,
+                fontSize: 8,
+                padding: '1px 4px',
+                gap: 2,
+              }}
+            >
+              <svg className="w-2 h-2" viewBox="0 0 15 13" fill="none">
+                <path
+                  fillRule="evenodd"
+                  clipRule="evenodd"
+                  d="M4.10001 0.549988H2.40001V4.79999H0.700012V10.75H1.55001C1.55001 11.6889 2.31113 12.45 3.25001 12.45C4.1889 12.45 4.95001 11.6889 4.95001 10.75H5.80001C5.80001 11.6889 6.56113 12.45 7.50001 12.45C8.4389 12.45 9.20001 11.6889 9.20001 10.75H10.05C10.05 11.6889 10.8111 12.45 11.75 12.45C12.6889 12.45 13.45 11.6889 13.45 10.75H14.3V0.549988H6.65001V2.24999H7.50001V4.79999H4.10001V0.549988ZM12.6 9.04999V6.49999H2.40001V9.04999H12.6ZM9.20001 4.79999H12.6V2.24999H9.20001V4.79999Z"
+                  fill="currentColor"
+                />
+              </svg>
+              <span>{hypeTrain.level}</span>
+            </div>
+          )}
         </div>
         <div className="flex-1 min-w-0 flex flex-col justify-center gap-0.5">
           <h3 className="text-textPrimary font-medium text-[13.5px] leading-snug line-clamp-2">
@@ -118,11 +143,9 @@ export const MobileStreamCard: React.FC<{
             </div>
           )}
           <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="live-dot text-[9px] px-1 py-px leading-none">LIVE</span>
             <span className="text-[11.5px] text-textMuted">
               {stream.viewer_count.toLocaleString()} viewers
             </span>
-            {hypeTrain && <HypeTrainBadge info={hypeTrain} />}
             {!!watchStreak && watchStreak > 0 && <StreakBadge streak={watchStreak} />}
           </div>
         </div>

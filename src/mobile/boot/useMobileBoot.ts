@@ -20,7 +20,15 @@ import {
   type CosmeticUpdatePayload,
   type EmoteSetUpdatePayload,
 } from '../../services/seventvEventApi';
-import { incrementStat, isSupabaseConfigured } from '../../services/supabaseService';
+import {
+  incrementStat,
+  isSupabaseConfigured,
+  refreshEntitlementRegistries,
+  subscribeToAtmospheresRegistry,
+  subscribeToCosmeticsRegistry,
+  subscribeToStreamNookRegistry,
+  trackPresence,
+} from '../../services/supabaseService';
 import { Logger } from '../../utils/logger';
 
 export function useMobileBoot(): void {
@@ -128,6 +136,48 @@ export function useMobileBoot(): void {
       await addListener<void>('refresh-following-list', () => {
         void useAppStore.getState().loadFollowedStreams();
       });
+
+      // Supabase presence + the server-driven registries (membership, cosmetics
+      // catalog + ownership, atmospheres). Without these the cosmetics surfaces
+      // read empty: getOwnedCosmeticSlugs and friends serve these in-memory
+      // registries. Re-pull on return to the app, throttled, using
+      // visibilitychange (mobile has no meaningful window focus).
+      if (isSupabaseConfigured()) {
+        const { currentUser: presenceUser, isAuthenticated: presenceAuthed } =
+          useAppStore.getState();
+        try {
+          const cleanupPresence = await trackPresence(
+            presenceAuthed ? presenceUser?.user_id : undefined,
+            presenceAuthed ? presenceUser?.display_name : undefined,
+            undefined,
+          );
+          if (cleanupPresence) cleanupFunctions.push(cleanupPresence);
+        } catch (e) {
+          Logger.warn('[MobileBoot] presence failed:', e);
+        }
+
+        const cleanupRegistry = subscribeToStreamNookRegistry();
+        const cleanupCosmetics = subscribeToCosmeticsRegistry();
+        const cleanupAtmospheres = subscribeToAtmospheresRegistry();
+        cleanupFunctions.push(() => {
+          cleanupRegistry?.();
+          cleanupCosmetics?.();
+          cleanupAtmospheres?.();
+        });
+
+        let lastResync = 0;
+        const onVisible = () => {
+          if (document.visibilityState !== 'visible') return;
+          const now = Date.now();
+          if (now - lastResync < 10_000) return;
+          lastResync = now;
+          refreshEntitlementRegistries();
+        };
+        document.addEventListener('visibilitychange', onVisible);
+        cleanupFunctions.push(() =>
+          document.removeEventListener('visibilitychange', onVisible),
+        );
+      }
     };
     void initialize();
 
