@@ -30,7 +30,7 @@ dependencies = [
  "minisign-verify",
  "oauth2",
  "once_cell",
- "phf 0.11.3",
+ "phf 0.13.1",
  "phf_codegen 0.13.1",
  "rand 0.10.2",
  "regex",
