@@ -356,7 +356,12 @@ export const WatchScreen: React.FC = () => {
           // rgb(26,12,13), about 5% of red. Nothing about the shadow was ever
           // weak; it was being covered by a panel that only exists while a drop
           // or a pin is showing, which is why it looked intermittent.
-          `w-full relative shrink-0 z-20 border-b border-[color-mix(in_srgb,var(--color-accent)_24%,transparent)] shadow-[0_5px_14px_-2px_color-mix(in_srgb,var(--color-accent)_30%,transparent),0_14px_34px_-8px_color-mix(in_srgb,var(--color-accent)_20%,transparent),0_30px_64px_-18px_color-mix(in_srgb,var(--color-accent)_12%,transparent)] ${
+          // Alphas are low because the cast is no longer fighting anything: at
+          // 30% the edge lifted to rgb(62,70,74) off a rgb(13,12,13) base,
+          // which is a wash rather than a seam. These land nearer rgb(30,32,34)
+          // and fall away over the same distance, so the dispersal reads
+          // without the bloom announcing itself.
+          `w-full relative shrink-0 z-20 border-b border-[color-mix(in_srgb,var(--color-accent)_16%,transparent)] shadow-[0_5px_14px_-2px_color-mix(in_srgb,var(--color-accent)_12%,transparent),0_14px_34px_-8px_color-mix(in_srgb,var(--color-accent)_8%,transparent),0_30px_64px_-18px_color-mix(in_srgb,var(--color-accent)_5%,transparent)] ${
             resizable ? '' : 'aspect-video'
           }`;
 
