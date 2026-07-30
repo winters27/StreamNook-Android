@@ -9,6 +9,13 @@
 // scroll, so movement before the hold fires CANCELS the press. Once armed, the
 // list is locked (touch-action: none) for the rest of the gesture so the browser
 // stops trying to scroll underneath the fan.
+//
+// Stopping the scroll needs `preventDefault()` on a NON-PASSIVE touchmove, not
+// `touch-action: none`. Chromium decides whether a gesture scrolls at touchstart
+// and does not re-read touch-action mid-gesture, so setting it on arm did
+// nothing: the list kept panning, Android fired pointercancel on the original
+// pointer, and the fan tore itself down. Same lesson the pull-to-refresh in this
+// tree already learned.
 import { useCallback, useEffect, useRef } from 'react';
 import { hapticArm } from '../ui/haptics';
 
@@ -36,10 +43,9 @@ export function useLongPressDrag({ resolve, onArm, scrollLockRef }: Options) {
     }
   }, []);
 
-  const unlock = useCallback(() => {
-    const el = scrollLockRef.current;
-    if (el) el.style.touchAction = '';
-  }, [scrollLockRef]);
+  // No touch-action juggling: see the note at the top of this file. The
+  // non-passive touchmove listener below is what actually holds the scroll.
+  const unlock = useCallback(() => {}, []);
 
   /** Call when the fan closes so a new press can arm again. */
   const release = useCallback(() => {
@@ -64,13 +70,11 @@ export function useLongPressDrag({ resolve, onArm, scrollLockRef }: Options) {
         const s = start.current;
         if (!s) return;
         armed.current = true;
-        const el = scrollLockRef.current;
-        if (el) el.style.touchAction = 'none';
         hapticArm();
         onArm(s.id, s.x, s.y);
       }, HOLD_MS);
     },
-    [resolve, onArm, clearTimer, scrollLockRef],
+    [resolve, onArm, clearTimer],
   );
 
   const onPointerMove = useCallback(
@@ -103,6 +107,20 @@ export function useLongPressDrag({ resolve, onArm, scrollLockRef }: Options) {
       start.current = null;
     }
   }, [clearTimer]);
+
+  // The one thing that keeps the list still while the fan is up. Registered
+  // natively because React's synthetic touchmove is passive and cannot
+  // preventDefault, and attached for the component's lifetime rather than on arm
+  // so the listener is already in place when the gesture begins.
+  useEffect(() => {
+    const el = scrollLockRef.current;
+    if (!el) return;
+    const onTouchMove = (e: TouchEvent) => {
+      if (armed.current) e.preventDefault();
+    };
+    el.addEventListener('touchmove', onTouchMove, { passive: false });
+    return () => el.removeEventListener('touchmove', onTouchMove);
+  }, [scrollLockRef]);
 
   useEffect(() => release, [release]);
 

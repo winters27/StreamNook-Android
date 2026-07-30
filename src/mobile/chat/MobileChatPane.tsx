@@ -388,9 +388,6 @@ export const MobileChatPane: React.FC = () => {
   );
 
 
-  const row =
-    'sn-touch flex items-center px-2 text-[15px] text-textPrimary active:opacity-70 disabled:opacity-50';
-
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       <ChatTabStrip />
