@@ -330,7 +330,16 @@ export const WatchScreen: React.FC = () => {
         : // A resizable band gets an explicit height; aspect-video would fight
           // it. The video is object-contain either way, so a band shorter than
           // 16:9 pillarboxes instead of cropping or stretching.
-          `w-full relative shrink-0 ${resizable ? '' : 'aspect-video'}`;
+          //
+          // Stacked, video meets chat at a hard edge. The shadow borrows the
+          // mini player's language, softened for a full-width seam, and needs
+          // z-10 to fall ON chat rather than behind it. The hairline carries
+          // most of the work: a black shadow over a near-black chat column is
+          // nearly invisible on its own, and a 1px light edge is what actually
+          // reads as a separation.
+          `w-full relative shrink-0 z-10 border-b border-white/[0.06] shadow-[0_8px_18px_-8px_rgba(0,0,0,0.75)] ${
+            resizable ? '' : 'aspect-video'
+          }`;
 
   // Chat is a column below when stacked, a side panel when side by side, and
   // hidden (but still MOUNTED) in mini and PiP. Hidden rather than unmounted so
