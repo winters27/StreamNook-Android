@@ -17,29 +17,16 @@
 // arc, heavier ones on a far arc, so Ban takes a deliberate longer reach than
 // Delete. That is deliberately how the destructive actions are protected,
 // instead of a confirmation dialog nobody reads.
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { motion } from 'framer-motion';
-import {
-  ArrowBendUpLeft,
-  Copy,
-  Prohibit,
-  PushPin,
-  Timer,
-  TrashSimple,
-  UserCircle,
-} from 'phosphor-react';
-import {
-  durationTier,
-  formatDuration,
-  timeoutSecsFromDistance,
-} from '../../utils/timeoutRamp';
-import {
-  hapticCommit,
-  hapticDestructive,
-  hapticStep,
-  hapticTick,
-} from '../ui/haptics';
+import { Ban, Clock, Copy, Pin, Reply, Trash2, User } from 'lucide-react';
+import { BucketTile, type Bucket } from '../../components/chat/ModBucketTile';
+import { useAppStore } from '../../stores/AppStore';
+import { useChatUserStore } from '../../stores/chatUserStore';
+import { computePaintStyle } from '../../services/seventvService';
+import { durationTier, timeoutSecsFromDistance } from '../../utils/timeoutRamp';
+import { hapticCommit, hapticDestructive, hapticStep, hapticTick } from '../ui/haptics';
 
 export type FanAction = 'reply' | 'copy' | 'profile' | 'delete' | 'timeout' | 'ban' | 'pin';
 
@@ -53,35 +40,41 @@ export interface FanTarget {
   originY: number;
 }
 
-interface Bucket {
+/** A fan bucket is a shared `Bucket` plus where on the fan it sits. */
+type FanBucket = Bucket & {
   id: FanAction;
-  label: string;
-  Icon: typeof Copy;
   /** 0 = near arc, 1 = far arc. */
   ring: 0 | 1;
-  destructive?: boolean;
-}
+};
 
 // Near arc = what you reach for constantly. Far arc = heavier, longer reach.
-const EVERYONE: Bucket[] = [
-  { id: 'reply', label: 'Reply', Icon: ArrowBendUpLeft, ring: 0 },
-  { id: 'profile', label: 'Profile', Icon: UserCircle, ring: 0 },
-  { id: 'copy', label: 'Copy', Icon: Copy, ring: 1 },
+// `activeTint` is only used by the translucent beside-chat layout; the fan
+// renders solid, which keys off the shared SOLID_TINT map by id.
+const EVERYONE: FanBucket[] = [
+  { id: 'reply', label: 'Reply', icon: Reply, kind: 'neutral', activeTint: '', ring: 0 },
+  { id: 'profile', label: 'Profile', icon: User, kind: 'neutral', activeTint: '', ring: 0 },
+  { id: 'copy', label: 'Copy', icon: Copy, kind: 'neutral', activeTint: '', ring: 1 },
 ];
 
-const MOD_ONLY: Bucket[] = [
-  { id: 'delete', label: 'Delete', Icon: TrashSimple, ring: 0, destructive: true },
-  { id: 'timeout', label: 'Timeout', Icon: Timer, ring: 1, destructive: true },
-  { id: 'ban', label: 'Ban', Icon: Prohibit, ring: 1, destructive: true },
-  { id: 'pin', label: 'Pin', Icon: PushPin, ring: 1 },
+const MOD_ONLY: FanBucket[] = [
+  { id: 'delete', label: 'Delete', icon: Trash2, kind: 'danger', activeTint: '', ring: 0 },
+  { id: 'timeout', label: 'Timeout', icon: Clock, kind: 'danger', activeTint: '', ring: 1 },
+  { id: 'ban', label: 'Ban', icon: Ban, kind: 'danger', activeTint: '', ring: 1 },
+  { id: 'pin', label: 'Pin', icon: Pin, kind: 'neutral', activeTint: '', ring: 1 },
 ];
 
-const TILE = 52;
-const NEAR_R = 96;
-const FAR_R = 168;
+// Matches the shared tile's own `h-16 w-16`.
+const TILE = 64;
+// Sized against a ~360px-wide phone viewport: the far arc's full span has to fit
+// on screen or the clamp piles tiles on top of each other. 150 x 160deg spans
+// ~295px, leaving 4 far tiles ~98px apart centre to centre.
+const NEAR_R = 92;
+const FAR_R = 150;
+const NEAR_SPREAD = 120;
+const FAR_SPREAD = 160;
 // Generous: a thumb is not precise, and the tiles are far enough apart that a
 // wide radius still resolves unambiguously to one of them.
-const ENGAGE_R = 58;
+const ENGAGE_R = 60;
 
 interface Props {
   target: FanTarget | null;
@@ -99,42 +92,55 @@ export const ChatFanOut: React.FC<Props> = ({
   onCommit,
   onCancel,
 }) => {
+  const paintShadowMode = useAppStore((s) => s.settings.cosmetics?.paint_shadows) ?? 'all';
+  const paint = useChatUserStore((s) =>
+    target ? s.users.get(target.userId)?.paint : undefined,
+  );
+  const userColor = useChatUserStore((s) =>
+    target ? s.users.get(target.userId)?.color : undefined,
+  );
+
   const buckets = useMemo(() => {
     const list = [...EVERYONE, ...(isModerator ? MOD_ONLY : [])];
     return canPin ? list : list.filter((b) => b.id !== 'pin');
   }, [isModerator, canPin]);
 
-  // Tile centres, fanned across an upward arc from the press point and clamped
-  // so nothing lands off-screen.
+  // Tile centres, fanned upward from a fixed origin.
+  //
+  // The origin is the VIEWPORT CENTRE horizontally, not the press point. Same
+  // call the desktop bar layout makes (it centres over the chat panel): pressing
+  // near an edge would otherwise clamp half the arc into a pile. Vertically it
+  // sits above the pressed row, and is pushed down if the far arc would run off
+  // the top of the screen.
   const placed = useMemo(() => {
     if (!target) return [];
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    const rings: Record<0 | 1, Bucket[]> = {
+    const originX = vw / 2;
+    // Keep the whole fan on screen: the far arc reaches FAR_R above the origin.
+    const minY = FAR_R + TILE / 2 + 8;
+    const originY = Math.min(vh - 8, Math.max(minY, target.originY));
+
+    const rings: Record<0 | 1, FanBucket[]> = {
       0: buckets.filter((b) => b.ring === 0),
       1: buckets.filter((b) => b.ring === 1),
     };
-    const out: { bucket: Bucket; x: number; y: number }[] = [];
+    const out: { bucket: FanBucket; x: number; y: number }[] = [];
     ([0, 1] as const).forEach((ring) => {
       const items = rings[ring];
       if (items.length === 0) return;
       const radius = ring === 0 ? NEAR_R : FAR_R;
-      // Fan across the upper half, widening as the ring grows.
-      const spread = ring === 0 ? 110 : 150;
+      const spread = ring === 0 ? NEAR_SPREAD : FAR_SPREAD;
       const start = -90 - spread / 2;
       const step = items.length === 1 ? 0 : spread / (items.length - 1);
       items.forEach((bucket, i) => {
         const deg = items.length === 1 ? -90 : start + step * i;
         const rad = (deg * Math.PI) / 180;
-        const x = Math.min(
-          vw - TILE / 2 - 8,
-          Math.max(TILE / 2 + 8, target.originX + Math.cos(rad) * radius),
-        );
-        const y = Math.min(
-          vh - TILE / 2 - 8,
-          Math.max(TILE / 2 + 8, target.originY + Math.sin(rad) * radius),
-        );
-        out.push({ bucket, x, y });
+        out.push({
+          bucket,
+          x: originX + Math.cos(rad) * radius,
+          y: originY + Math.sin(rad) * radius,
+        });
       });
     });
     return out;
@@ -210,7 +216,7 @@ export const ChatFanOut: React.FC<Props> = ({
         return;
       }
       const bucket = [...EVERYONE, ...MOD_ONLY].find((b) => b.id === chosen);
-      if (bucket?.destructive) hapticDestructive();
+      if (bucket?.kind === 'danger') hapticDestructive();
       else hapticCommit();
       onCommit(chosen, chosen === 'timeout' ? (duration ?? 600) : undefined);
     };
@@ -227,6 +233,10 @@ export const ChatFanOut: React.FC<Props> = ({
 
   if (!target) return null;
 
+  const nameStyle = paint
+    ? computePaintStyle(paint, userColor, paintShadowMode)
+    : { color: userColor || 'var(--color-accent)' };
+
   return createPortal(
     <div className="fixed inset-0 z-[9500] touch-none" style={{ pointerEvents: 'none' }}>
       {/* Dim so the fan reads against a busy chat, and so it is obvious the rest
@@ -238,69 +248,58 @@ export const ChatFanOut: React.FC<Props> = ({
         transition={{ duration: 0.1 }}
       />
 
-      {/* The message you grabbed, echoed at the press point so there is never
-          any doubt about who the action lands on. */}
+      {/* The chatter you grabbed, in the same chip the desktop drag layer uses:
+          their 7TV paint on the name, tilted while nothing is selected and
+          snapping straight when an action arms. Sits ABOVE the press point so
+          the finger is not covering it. */}
       <motion.div
-        className="absolute glass-panel px-2.5 py-1.5 max-w-[70vw] rounded-full"
-        style={{ left: target.originX, top: target.originY, translateX: '-50%', translateY: '-50%' }}
-        initial={{ opacity: 0, scale: 0.8 }}
-        animate={{ opacity: 1, scale: 1 }}
-        transition={{ type: 'spring', stiffness: 600, damping: 40 }}
+        className="absolute"
+        style={{
+          left: target.originX,
+          top: target.originY,
+          transform: 'translate(-50%, calc(-100% - 18px))',
+        }}
       >
-        <span className="text-[12px] font-semibold text-textPrimary">{target.username}</span>
+        <motion.div
+          initial={{ scale: 0.6, opacity: 0 }}
+          animate={{ scale: active ? 0.86 : 1, opacity: 1, rotate: active ? 0 : -4 }}
+          transition={{ type: 'spring', stiffness: 500, damping: 26 }}
+          className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-white/15 backdrop-blur-md shadow-[0_12px_32px_rgba(0,0,0,0.6)] whitespace-nowrap"
+          style={{
+            backgroundColor: 'color-mix(in srgb, var(--color-background-tertiary) 90%, transparent)',
+          }}
+        >
+          <span className="text-sm font-bold" style={nameStyle}>
+            {target.username}
+          </span>
+        </motion.div>
       </motion.div>
 
-      {placed.map(({ bucket, x, y }, i) => {
-        const on = active === bucket.id;
-        return (
-          <motion.div
-            key={bucket.id}
-            className="absolute flex flex-col items-center justify-center rounded-full border"
-            style={{
-              left: x,
-              top: y,
-              width: TILE,
-              height: TILE,
-              translateX: '-50%',
-              translateY: '-50%',
-              backgroundColor: on
-                ? bucket.destructive
-                  ? 'color-mix(in srgb, var(--color-error) 30%, var(--color-background))'
-                  : 'color-mix(in srgb, var(--color-accent) 30%, var(--color-background))'
-                : 'color-mix(in srgb, var(--color-background) 92%, transparent)',
-              borderColor: on
-                ? bucket.destructive
-                  ? 'var(--color-error)'
-                  : 'var(--color-accent)'
-                : 'var(--color-border-subtle)',
-            }}
-            initial={{ opacity: 0, scale: 0.5, left: target.originX, top: target.originY }}
-            animate={{ opacity: 1, scale: on ? 1.18 : 1, left: x, top: y }}
-            transition={{
-              type: 'spring',
-              stiffness: 520,
-              damping: 34,
-              // Stagger outward so the fan reads as opening, not as appearing.
-              delay: 0.012 * i,
-            }}
-          >
-            <bucket.Icon
-              size={20}
-              weight={on ? 'fill' : 'regular'}
-              className={
-                on
-                  ? bucket.destructive
-                    ? 'text-error'
-                    : 'text-accent'
-                  : 'text-textSecondary'
-              }
-            />
-            <span className="text-[8.5px] mt-0.5 text-textMuted leading-none">
-              {bucket.id === 'timeout' && secs !== null ? formatDuration(secs) : bucket.label}
-            </span>
-          </motion.div>
-        );
-      })}
+      {placed.map(({ bucket, x, y }, i) => (
+        <motion.div
+          key={bucket.id}
+          className="absolute"
+          style={{ translateX: '-50%', translateY: '-50%' }}
+          initial={{ opacity: 0, left: target.originX, top: target.originY }}
+          animate={{ opacity: 1, left: x, top: y }}
+          transition={{
+            type: 'spring',
+            stiffness: 520,
+            damping: 34,
+            // Stagger outward so the fan reads as opening, not as appearing.
+            delay: 0.012 * i,
+          }}
+        >
+          {/* Solid fills: translucent tiles over busy chat are hard to focus on,
+              which is the same call the desktop above-chat layout makes. */}
+          <BucketTile
+            bucket={bucket}
+            active={active === bucket.id}
+            activeDuration={secs}
+            solid
+          />
+        </motion.div>
+      ))}
     </div>,
     document.body,
   );
