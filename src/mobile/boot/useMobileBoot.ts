@@ -114,14 +114,23 @@ export function useMobileBoot(): void {
         void handleSeventvCosmeticUpdate(event.payload);
       });
 
-      // Channel points auto-claims from the Rust watcher.
-      await addListener<{ points_earned: number }>('channel-points-claimed', (event) => {
-        const claim = event.payload;
-        useAppStore.getState().addToast(`Claimed ${claim.points_earned} channel points!`, 'success');
+      // Channel points from the PubSub watcher and the background claim path.
+      //
+      // The event is `channel-points-earned`, carrying `points`. This listener
+      // used to wait on `channel-points-claimed`, a name nothing in the Rust
+      // source has ever emitted, so it never fired once. That means the lifetime
+      // `channel_points_collected` stat has never incremented on mobile either —
+      // not merely that the toast never appeared.
+      //
+      // No toast now: the composer's points icon pulses with the amount instead,
+      // and this fires every few minutes while watching.
+      await addListener<{ points?: number }>('channel-points-earned', (event) => {
+        const earned = event.payload?.points ?? 0;
+        if (earned <= 0) return;
         if (isSupabaseConfigured()) {
           const { currentUser: user, isAuthenticated: authed } = useAppStore.getState();
           if (authed && user?.user_id) {
-            void incrementStat(user.user_id, 'channel_points_collected', claim.points_earned);
+            void incrementStat(user.user_id, 'channel_points_collected', earned);
           }
         }
       });

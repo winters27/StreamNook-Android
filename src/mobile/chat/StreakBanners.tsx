@@ -14,7 +14,11 @@
 // Both are one-shot: sharing consumes the token, so each strip disappears
 // afterwards rather than lingering as a dead control.
 import React, { useCallback, useEffect, useState } from 'react';
-import { Flame, Star, X } from 'phosphor-react';
+// lucide Flame with stroke-[2.5], not the phosphor one: this is the same glyph
+// the desktop WatchStreakBanner and the mobile StreakBadge on stream cards both
+// use, and a watch streak should look like a watch streak everywhere.
+import { Flame } from 'lucide-react';
+import { Star, X } from 'phosphor-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import { Logger } from '../../utils/logger';
@@ -182,9 +186,14 @@ export const StreakBanners: React.FC<Props> = ({ channel, channelId, message, on
         </div>
       )}
 
+      {/* Amber, exactly as the desktop banner and the card StreakBadge do it:
+          amber-500/5 ground, amber-500/20 border, the flame in its own amber
+          chip with the warning-token glow, and a solid amber share button. */}
       {showStreak && streak && (
-        <div className="sn-popover flex items-center gap-2 px-2.5 py-1.5">
-          <Flame size={13} weight="fill" className="text-warning shrink-0" />
+        <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-amber-500/5 border border-amber-500/20 backdrop-blur-md">
+          <div className="flex items-center justify-center w-6 h-6 rounded bg-amber-500/10 shrink-0 shadow-[0_0_8px_color-mix(in_srgb,var(--color-warning)_20%,transparent)]">
+            <Flame size={13} className="text-amber-400 stroke-[2.5]" />
+          </div>
           <span className="text-[12px] text-textPrimary truncate flex-1 min-w-0">
             {streak.streak_count
               ? `${streak.streak_count} stream watch streak`
@@ -193,13 +202,13 @@ export const StreakBanners: React.FC<Props> = ({ channel, channelId, message, on
           <button
             onClick={() => void shareWatchStreak()}
             disabled={busy}
-            className={`${chip} bg-warning/20 text-warning`}
+            className={`${chip} bg-amber-500 text-black shadow-[0_0_10px_color-mix(in_srgb,var(--color-warning)_20%,transparent)] active:scale-95 transition-transform`}
           >
             Share
           </button>
           <button
             onClick={() => dismiss('watch')}
-            className="shrink-0 p-1 text-textMuted active:text-textPrimary"
+            className="shrink-0 p-1 text-amber-400/60 active:text-amber-400"
             aria-label="Dismiss watch streak"
           >
             <X size={12} weight="bold" />

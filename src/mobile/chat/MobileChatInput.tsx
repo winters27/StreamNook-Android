@@ -90,28 +90,41 @@ export const MobileChatInput: React.FC<Props> = ({
   const points = useChannelPoints(channel);
   const emoteOwnerNames = useEmoteOwnerNames(emotes);
 
-  // Points arriving used to be a toast, and mobile toasts are now filtered down
-  // to failures, so earning went completely silent. This is the replacement: the
-  // icon pulses and the amount floats up off it. Deliberately small — it fires
-  // every few minutes while you watch, so anything louder would become noise.
+  // Points feedback.
+  //
+  // The event is `channel-points-earned` with a `points` field. It is NOT
+  // `channel-points-claimed`, which nothing in the Rust source has ever emitted
+  // — the mobile boot listener was waiting on that name too, which is why
+  // earning has been silent on this platform from the start rather than only
+  // since toasts were filtered to failures.
+  //
+  // Emitted by the PubSub watcher (channel_points_websocket_service) and the
+  // background claim path, both of which run on mobile.
   const [pointsFlash, setPointsFlash] = useState<{ id: number; amount: number } | null>(null);
   const flashSeq = useRef(0);
   useEffect(() => {
     let cancelled = false;
-    const un = listen<{ points_earned: number }>('channel-points-claimed', (e) => {
-      if (cancelled) return;
-      const amount = e.payload?.points_earned ?? 0;
-      if (amount <= 0) return;
-      flashSeq.current += 1;
-      setPointsFlash({ id: flashSeq.current, amount });
-      // Pull the new balance so the menu is right if you open it straight after.
-      points.refresh();
-    });
+    const un = listen<{ points?: number; channel_id?: string }>(
+      'channel-points-earned',
+      (e) => {
+        if (cancelled) return;
+        const amount = e.payload?.points ?? 0;
+        if (amount <= 0) return;
+        // Points accrue on every channel you have collected from, not only the
+        // one on screen, so ignore events for other channels or the number would
+        // appear over the wrong room's balance.
+        if (e.payload?.channel_id && channelId && e.payload.channel_id !== channelId) return;
+        flashSeq.current += 1;
+        setPointsFlash({ id: flashSeq.current, amount });
+        // Pull the new balance so the menu is right if you open it straight after.
+        points.refresh();
+      },
+    );
     return () => {
       cancelled = true;
       void un.then((f) => f()).catch(() => {});
     };
-  }, [points]);
+  }, [points, channelId]);
 
   const canSend = !!text.trim();
 
