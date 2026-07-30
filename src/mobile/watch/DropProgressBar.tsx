@@ -63,15 +63,20 @@ export const DropProgressBar: React.FC<Props> = ({ onActiveChange }) => {
       const inv = await invoke<InventoryResponse>('get_drops_inventory').catch(() => null);
       if (!inv) return;
 
-      // Only campaigns that this stream can actually advance. Watching Rust
-      // does not earn a Fortnite drop, and showing one would imply it does.
-      // Category is the primary test; an ACL campaign that explicitly lists
-      // this channel counts too, since those earn regardless of how the
-      // category string happens to be spelled.
+      // Only campaigns that this stream can actually advance. Watching Rust does
+      // not earn a Fortnite drop, and showing one would imply it does.
+      //
+      // CATEGORY IS THE RULE, not a hint: Twitch credits watch-time against a
+      // campaign only while the channel is streaming that campaign's game, and
+      // that holds for ACL campaigns too. An earlier version treated "this
+      // channel is in the campaign's allow-list" as sufficient on its own, which
+      // showed a Marvel Rivals drop progressing while the channel played
+      // something else entirely. The allow-list is now only consulted when the
+      // category is genuinely unknown.
       const target = gameName.toLowerCase();
       const login = (channelLogin || '').toLowerCase();
       const relevant = inv.items.filter((it) => {
-        if (target && (it.campaign.game_name || '').toLowerCase() === target) return true;
+        if (target) return (it.campaign.game_name || '').toLowerCase() === target;
         if (!login) return false;
         return (it.campaign.allowed_channels || []).some(
           (c) => (c.name || '').toLowerCase() === login,
