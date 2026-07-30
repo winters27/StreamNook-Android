@@ -117,7 +117,7 @@ discord-rich-presence = "1.0.0"
 keyring = "3.6.3"
 xcap = "0.0.14"
 image = { version = "0.25", default-features = false, features = ["png"] }
-webp-animation = "0.9"
+webp-animation = "0.10"
 
 # webview2-com powers services/twitch_auth_service.rs (CookieManager).
 # The windows crate features cover both that and the DXGI Output
