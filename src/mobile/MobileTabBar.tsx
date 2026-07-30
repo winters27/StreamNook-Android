@@ -20,8 +20,10 @@ export const MobileTabBar: React.FC = () => {
 
   return (
     <nav
-      className="fixed z-30 rounded-full"
+      className="fixed z-30 rounded-full mx-auto max-w-[520px]"
       style={{
+        // Capped width. Stretched across a tablet or an unfolded Fold the tabs
+        // end up a hand-span apart, and nothing about a nav bar needs 1200px.
         left: 'calc(var(--sn-safe-l, 0px) + 20px)',
         right: 'calc(var(--sn-safe-r, 0px) + 20px)',
         bottom: 'calc(var(--sn-safe-b, 0px) + 14px)',

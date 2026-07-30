@@ -81,7 +81,9 @@ const SheetSurface: React.FC<Omit<MobileSheetProps, 'open'>> = ({
         onClick={onClose}
       />
       <motion.div
-        className="absolute inset-x-0 bottom-0 glass-modal rounded-b-none flex flex-col"
+        // Capped and centred rather than edge to edge: a sheet stretched across a
+        // tablet or an unfolded Fold puts its controls a hand-span apart.
+        className="absolute inset-x-0 bottom-0 mx-auto w-full max-w-[640px] glass-modal rounded-b-none flex flex-col"
         style={{
           maxHeight: `calc(100dvh * ${maxHeightFraction})`,
           paddingBottom: 'var(--sn-safe-b, 0px)',

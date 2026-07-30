@@ -27,6 +27,7 @@ import { useChatUserStore } from '../../stores/chatUserStore';
 import { computePaintStyle } from '../../services/seventvService';
 import { durationTier, timeoutSecsFromDistance } from '../../utils/timeoutRamp';
 import { hapticCommit, hapticDestructive, hapticStep, hapticTick } from '../ui/haptics';
+import { useWindowShape } from '../ui/useWindowShape';
 
 export type FanAction = 'reply' | 'copy' | 'profile' | 'delete' | 'timeout' | 'ban' | 'pin';
 
@@ -95,6 +96,7 @@ export const ChatFanOut: React.FC<Props> = ({
   onCommit,
   onCancel,
 }) => {
+  const { fold } = useWindowShape();
   const paintShadowMode = useAppStore((s) => s.settings.cosmetics?.paint_shadows) ?? 'all';
   const paint = useChatUserStore((s) =>
     target ? s.users.get(target.userId)?.paint : undefined,
@@ -119,7 +121,15 @@ export const ChatFanOut: React.FC<Props> = ({
     if (!target) return null;
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    const originX = vw / 2;
+    // Centre of the SEGMENT the chat lives in, not of the whole window. On an
+    // unfolded Z Fold the hinge runs vertically down the middle, so the window
+    // centre is the one x-position guaranteed to put tiles on the crease. When a
+    // vertical fold is present the chat pane is the right-hand segment, so the
+    // fan centres there instead.
+    const originX =
+      fold?.vertical && fold.x > 0 && fold.x < vw
+        ? fold.x + fold.width + (vw - (fold.x + fold.width)) / 2
+        : vw / 2;
     // Keep the whole fan on screen: the far arc reaches FAR_R above the origin,
     // and the name chip sits above that again.
     const minY = FAR_R + TILE / 2 + CHIP_CLEARANCE;
@@ -155,7 +165,7 @@ export const ChatFanOut: React.FC<Props> = ({
       chipX: originX,
       chipY: Math.max(28, originY - FAR_R - CHIP_CLEARANCE / 2),
     };
-  }, [target, buckets]);
+  }, [target, buckets, fold]);
 
   const placed = layout?.tiles ?? [];
 

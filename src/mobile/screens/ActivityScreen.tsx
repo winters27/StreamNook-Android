@@ -408,7 +408,7 @@ export const ActivityScreen: React.FC = () => {
                   </button>
                 ))}
               </div>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-7 gap-2">
                 {sortedBadges.map((badge) => {
                   const owned = ownedTitles.has(badge.title);
                   const available = badge.status === 'available';

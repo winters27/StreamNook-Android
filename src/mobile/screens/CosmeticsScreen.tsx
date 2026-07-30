@@ -147,7 +147,7 @@ export const CosmeticsScreen: React.FC = () => {
             No badges owned yet. Earned and event badges land here.
           </div>
         ) : (
-          <div className="grid grid-cols-4 gap-2 mb-4">
+          <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-8 gap-2 mb-4">
             {badges.map((badge) => {
               const asset = resolveCosmeticAsset(badge);
               const isActive = activeBadge === badge.slug;
@@ -181,7 +181,7 @@ export const CosmeticsScreen: React.FC = () => {
         <div className="text-[12px] font-semibold text-textMuted uppercase tracking-wide mb-1.5">
           Atmosphere
         </div>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
           <button
             onClick={() => void equipTheme('tier')}
             className={`glass-panel p-2.5 text-left active:opacity-80 ${

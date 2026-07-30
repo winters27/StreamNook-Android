@@ -12,6 +12,12 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.window.layout.FoldingFeature
+import androidx.window.layout.WindowInfoTracker
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 class MainActivity : TauriActivity() {
@@ -144,9 +150,67 @@ class MainActivity : TauriActivity() {
     )
   }
 
+  /**
+   * Foldable posture -> CSS variables.
+   *
+   * A Z Fold unfolds with the hinge running VERTICALLY down the middle, so the
+   * centre of the viewport is the one place content must not sit. Publishing the
+   * fold's position lets the shell align a two-pane split TO the seam and keep
+   * centred overlays off it.
+   *
+   * WindowManager rather than CSS on purpose: the Viewport Segments API
+   * (`env(viewport-segment-*)`, `@media (horizontal-viewport-segments: 2)`) is
+   * still experimental and origin-trial gated, so it cannot be relied on in a
+   * WebView.
+   */
+  private fun observeFoldPosture(webView: WebView) {
+    val density = resources.displayMetrics.density
+    lifecycleScope.launch {
+      lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+        WindowInfoTracker.getOrCreate(this@MainActivity)
+          .windowLayoutInfo(this@MainActivity)
+          .collect { layoutInfo ->
+            val fold = layoutInfo.displayFeatures
+              .filterIsInstance<FoldingFeature>()
+              .firstOrNull()
+            val js = if (fold == null) {
+              "(function(){var d=document.documentElement,s=d.style;" +
+                "d.dataset.snFold='none';" +
+                "s.removeProperty('--sn-fold-x');s.removeProperty('--sn-fold-w');" +
+                "window.dispatchEvent(new CustomEvent('sn:fold',{detail:null}));})()"
+            } else {
+              val b = fold.bounds
+              fun dp(v: Int): Int = (v / density).toInt()
+              // VERTICAL orientation means the hinge line itself runs top to
+              // bottom, i.e. it splits the screen left/right. That is the Z Fold
+              // book posture and the case a two-pane split should align to.
+              val vertical = fold.orientation == FoldingFeature.Orientation.VERTICAL
+              val posture = if (fold.state == FoldingFeature.State.HALF_OPENED) "half" else "flat"
+              val json = JSONObject()
+                .put("vertical", vertical)
+                .put("posture", posture)
+                .put("x", dp(b.left))
+                .put("width", dp(b.width()))
+                .put("y", dp(b.top))
+                .put("height", dp(b.height()))
+                .toString()
+              "(function(){var d=document.documentElement,s=d.style;" +
+                "d.dataset.snFold='" + (if (vertical) "vertical" else "horizontal") + "';" +
+                "d.dataset.snFoldPosture='" + posture + "';" +
+                "s.setProperty('--sn-fold-x','${dp(b.left)}px');" +
+                "s.setProperty('--sn-fold-w','${dp(b.width())}px');" +
+                "window.dispatchEvent(new CustomEvent('sn:fold',{detail:" + json + "}));})()"
+            }
+            webView.post { webView.evaluateJavascript(js, null) }
+          }
+      }
+    }
+  }
+
   override fun onWebViewCreate(webView: WebView) {
     this.webView = webView
     webView.addJavascriptInterface(InsetsBridge(), "SNInsets")
+    observeFoldPosture(webView)
 
     // Native inset bridge: Android WebView's env(safe-area-inset-*) is
     // unreliable under edge-to-edge (0 for the top without a display cutout,

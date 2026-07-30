@@ -235,7 +235,7 @@ export const BrowseScreen: React.FC = () => {
             {categoryResults ? 'No categories found.' : 'No categories yet, pull to refresh.'}
           </div>
         ) : (
-          <div className="grid grid-cols-3 gap-3 px-4 sn-tabbar-clearance">
+          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3 px-4 sn-tabbar-clearance">
             {shownCategories.map((c) => (
               <button
                 key={c.id}

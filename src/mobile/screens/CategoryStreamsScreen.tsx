@@ -68,7 +68,7 @@ export const CategoryStreamsScreen: React.FC = () => {
             No live streams in this category.
           </div>
         ) : (
-          <div className="flex flex-col gap-3 px-4 sn-tabbar-clearance">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 px-4 sn-tabbar-clearance">
             {streams.map((s) => (
               <MobileStreamCard
                 key={s.id}

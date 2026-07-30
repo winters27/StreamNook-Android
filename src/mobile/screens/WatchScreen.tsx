@@ -17,7 +17,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileNavStore } from '../navStore';
 import { usePinStore } from '../../stores/pinStore';
-import { useOrientation } from '../ui/useOrientation';
+import { useWindowShape } from '../ui/useWindowShape';
 import { MobilePlayer } from '../player/MobilePlayer';
 import { MobileChatPane } from '../chat/MobileChatPane';
 import {
@@ -60,7 +60,7 @@ export const WatchScreen: React.FC = () => {
   const playerMode = useMobileNavStore((s) => s.playerMode);
   const setPlayerMode = useMobileNavStore((s) => s.setPlayerMode);
   const refreshNonce = usePinStore((s) => s.refreshNonce);
-  const orientation = useOrientation();
+  const shape = useWindowShape();
   const [landscapeChat, setLandscapeChat] = useState(false);
   const [pip, setPip] = useState(false);
   const [pinnedFor, setPinnedFor] = useState<{
@@ -89,6 +89,18 @@ export const WatchScreen: React.FC = () => {
   const mini = playerMode === 'mini';
   const watching = !!streamUrl && streamUrl !== 'offline';
   const channelId = currentStream?.user_id;
+
+  // Side by side is decided by AVAILABLE WIDTH, not by orientation. An unfolded
+  // Z Fold is about 840x757 — an aspect ratio near 1.1 — so asking "portrait or
+  // landscape" there gives an answer that means nothing, and the old check handed
+  // a big tablet-shaped screen the phone's stacked layout.
+  const sideBySide = shape.twoPane && !mini && !pip;
+  // On a phone in landscape the point is immersive video, so chat stays opt-in
+  // behind the fullscreen toggle. Give a genuinely large screen both at once.
+  const chatBeside = sideBySide && (shape.sizeClass === 'expanded' || landscapeChat);
+  // Where the seam falls. On a Fold this is the hinge itself, so neither pane is
+  // bisected by the crease; elsewhere a proportional split favouring video.
+  const playerWidth = chatBeside ? shape.splitX : shape.w;
 
   useEffect(() => {
     const onResize = () => setViewport({ w: window.innerWidth, h: window.innerHeight });
@@ -125,10 +137,11 @@ export const WatchScreen: React.FC = () => {
   }, [watching]);
 
   useEffect(() => {
-    const immersive = watching && orientation === 'landscape' && !mini && !pip;
-    setImmersive(immersive);
+    // Hide the system bars only when video actually fills the screen. With chat
+    // beside it on a tablet or an unfolded Fold the bars are wanted.
+    setImmersive(watching && sideBySide && !chatBeside);
     return () => setImmersive(false);
-  }, [watching, orientation, mini, pip]);
+  }, [watching, sideBySide, chatBeside]);
 
   // A newly started stream always opens full (external store sync).
   useEffect(() => {
@@ -248,34 +261,30 @@ export const WatchScreen: React.FC = () => {
   // The rule this render has to keep: the ancestor chain from the root down to
   // <MobilePlayer> is IDENTICAL in all four modes. Modes may change classes,
   // styles and geometry, never structure. Conditional SIBLINGS are fine.
-  const isLandscape = orientation === 'landscape' && !mini && !pip;
-
-  // Geometry of the whole layer. PiP and landscape fill the screen; mini is a
-  // draggable box; portrait is the viewport.
+  // Geometry of the whole layer. PiP and side-by-side fill the screen; mini is a
+  // draggable box; stacked is the viewport.
   const layerGeometry =
-    pip || isLandscape
-      ? { top: 0, left: 0, width: viewport.w, height: viewport.h, borderRadius: 0 }
-      : mini
-        ? { top: miniPos.y, left: miniPos.x, width: MINI_W, height: MINI_H, borderRadius: 12 }
-        : { top: 0, left: 0, width: viewport.w, height: viewport.h, borderRadius: 0 };
+    mini && !pip
+      ? { top: miniPos.y, left: miniPos.x, width: MINI_W, height: MINI_H, borderRadius: 12 }
+      : { top: 0, left: 0, width: viewport.w, height: viewport.h, borderRadius: 0 };
 
-  // The player fills the layer in every mode except portrait, where it is a
-  // 16:9 band above chat.
+  // The player fills the layer except in the stacked layout, where it is a 16:9
+  // band above chat.
   const playerBandClass =
     pip || mini
       ? 'w-full h-full relative'
-      : isLandscape
-        ? 'flex-1 min-w-0 h-full relative'
+      : sideBySide
+        ? 'shrink-0 h-full relative'
         : 'w-full aspect-video relative shrink-0';
 
-  // Chat is a column below in portrait, a side panel in landscape, and hidden
-  // (but still MOUNTED) in mini and PiP. Hidden rather than unmounted so
-  // rotating or popping into PiP does not tear down the chat connection either.
+  // Chat is a column below when stacked, a side panel when side by side, and
+  // hidden (but still MOUNTED) in mini and PiP. Hidden rather than unmounted so
+  // folding, rotating or popping into PiP never tears down the chat connection.
   const chatClass = pip
     ? 'hidden'
-    : isLandscape
-      ? landscapeChat
-        ? 'w-[320px] shrink-0 relative flex flex-col bg-background'
+    : sideBySide
+      ? chatBeside
+        ? 'flex-1 min-w-0 relative flex flex-col bg-background'
         : 'hidden'
       : mini
         ? 'hidden'
@@ -287,7 +296,7 @@ export const WatchScreen: React.FC = () => {
         mini ? 'shadow-[0_12px_32px_-8px_rgba(0,0,0,0.65)]' : ''
       }`}
       style={{
-        backgroundColor: pip || isLandscape ? '#000' : 'var(--color-background)',
+        backgroundColor: pip || sideBySide ? '#000' : 'var(--color-background)',
         touchAction: mini ? 'none' : undefined,
       }}
       initial={false}
@@ -308,26 +317,30 @@ export const WatchScreen: React.FC = () => {
       }
     >
       <div
-        className={`w-full h-full flex ${isLandscape ? 'flex-row' : 'flex-col'}`}
+        className={`w-full h-full flex ${sideBySide ? 'flex-row' : 'flex-col'}`}
         style={{
           // Only portrait-full needs to clear the status bar; landscape draws
           // under it deliberately and mini/PiP have no bar over them.
-          paddingTop: mini || pip || isLandscape ? 0 : 'var(--sn-safe-t, 0px)',
+          paddingTop: mini || pip || sideBySide ? 0 : 'var(--sn-safe-t, 0px)',
         }}
       >
         {/* The player keeps this exact tree position in EVERY mode, so the video
             element and the hls.js instance survive rotation, PiP and minimize. */}
         <div
           className={playerBandClass}
-          onTouchStart={mini || isLandscape ? undefined : onBandTouchStart}
-          onTouchMove={mini || isLandscape ? undefined : onBandTouchMove}
-          onTouchEnd={mini || isLandscape ? undefined : onBandTouchEnd}
+          // Explicit width only when split: this is what puts the seam ON the
+          // hinge, rather than letting flex choose a boundary the crease then
+          // cuts straight through.
+          style={sideBySide ? { width: playerWidth } : undefined}
+          onTouchStart={mini || sideBySide ? undefined : onBandTouchStart}
+          onTouchMove={mini || sideBySide ? undefined : onBandTouchMove}
+          onTouchEnd={mini || sideBySide ? undefined : onBandTouchEnd}
         >
           <MobilePlayer
-            immersive={isLandscape || pip}
+            immersive={sideBySide || pip}
             compact={mini || pip}
             onEnterPip={mini || pip ? undefined : enterPip}
-            onToggleFullscreen={isLandscape ? () => setLandscapeChat((v) => !v) : undefined}
+            onToggleFullscreen={sideBySide ? () => setLandscapeChat((v) => !v) : undefined}
           />
           {mini && (
             <>
