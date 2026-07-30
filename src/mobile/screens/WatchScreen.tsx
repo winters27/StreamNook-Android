@@ -331,13 +331,32 @@ export const WatchScreen: React.FC = () => {
           // it. The video is object-contain either way, so a band shorter than
           // 16:9 pillarboxes instead of cropping or stretching.
           //
-          // Stacked, video meets chat at a hard edge. The shadow borrows the
-          // mini player's language, softened for a full-width seam, and needs
-          // z-10 to fall ON chat rather than behind it. The hairline carries
-          // most of the work: a black shadow over a near-black chat column is
-          // nearly invisible on its own, and a 1px light edge is what actually
-          // reads as a separation.
-          `w-full relative shrink-0 z-10 border-b border-white/[0.06] shadow-[0_8px_18px_-8px_rgba(0,0,0,0.75)] ${
+          // Stacked, video meets chat at a hard edge, and the player should
+          // read as floating above it. Two deliberate choices:
+          //
+          // The rim is ACCENT-tinted, not a white hairline. Every divider in
+          // the shell (chat tabs, settings rows, composer, pinned) already uses
+          // borderSubtle, so a faint white line here just looked like one more
+          // list divider in a place that is not a list. color-mix keeps it
+          // tracking whichever of the themes is active.
+          //
+          // The cast is layered and ACCENT-TINTED rather than black. Measured on
+          // device, the chat column sits at rgb(13,12,13): a black shadow over
+          // that paints nothing at all. It was present in computed style and
+          // completely invisible. On a near-black surface a raised edge has to
+          // be described by light, not by darkening, so this is a dispersed
+          // bloom in the theme's accent, widening and fading across three
+          // layers.
+          //
+          // z-20, not z-10, and that is the whole reason this is visible. The
+          // chat header (drop bar / pinned strip) is `absolute` at the top of
+          // the chat column at z-10 with a 90%-opaque background and a 64px
+          // backdrop blur. Tied on z-index and later in the DOM, it won, and it
+          // painted over the cast: an OPAQUE RED test shadow came back as
+          // rgb(26,12,13), about 5% of red. Nothing about the shadow was ever
+          // weak; it was being covered by a panel that only exists while a drop
+          // or a pin is showing, which is why it looked intermittent.
+          `w-full relative shrink-0 z-20 border-b border-[color-mix(in_srgb,var(--color-accent)_24%,transparent)] shadow-[0_5px_14px_-2px_color-mix(in_srgb,var(--color-accent)_30%,transparent),0_14px_34px_-8px_color-mix(in_srgb,var(--color-accent)_20%,transparent),0_30px_64px_-18px_color-mix(in_srgb,var(--color-accent)_12%,transparent)] ${
             resizable ? '' : 'aspect-video'
           }`;
 
