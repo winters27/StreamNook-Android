@@ -396,11 +396,16 @@ export const MobileChatPane: React.FC = () => {
       <ChatTabStrip />
       <div
         ref={listRef}
-        className="flex-1 min-h-0 relative"
+        // `select-none` is load-bearing, not tidiness: Android WebView answers a
+        // long-press on text by starting its OWN text selection, which wins the
+        // gesture and the fan never arms. Chat text needs no selection anyway —
+        // the fan's Copy bucket is the way to take a message.
+        className="flex-1 min-h-0 relative select-none [-webkit-touch-callout:none]"
         onContextMenu={onListContextMenu}
         onPointerDown={press.onPointerDown}
         onPointerMove={press.onPointerMove}
         onPointerUp={press.onPointerUp}
+        onPointerCancel={press.onPointerCancel}
         onClick={onListClick}
         // While paused, rows are tappable to reply. Signposted by the hint pill
         // below rather than left as a secret gesture.

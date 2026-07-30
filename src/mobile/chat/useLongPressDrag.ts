@@ -95,7 +95,23 @@ export function useLongPressDrag({ resolve, onArm, scrollLockRef }: Options) {
     }
   }, [clearTimer]);
 
+  // A pointercancel means the browser took the gesture over. Abandon the pending
+  // hold rather than arming a fan the user is no longer driving.
+  const onPointerCancel = useCallback(() => {
+    if (!armed.current) {
+      clearTimer();
+      start.current = null;
+    }
+  }, [clearTimer]);
+
   useEffect(() => release, [release]);
 
-  return { onPointerDown, onPointerMove, onPointerUp, release, isArmed: () => armed.current };
+  return {
+    onPointerDown,
+    onPointerMove,
+    onPointerUp,
+    onPointerCancel,
+    release,
+    isArmed: () => armed.current,
+  };
 }
