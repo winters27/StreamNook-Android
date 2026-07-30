@@ -11,8 +11,19 @@ import { SkeletonCards } from '../ui/SkeletonCards';
 import { Logger } from '../../utils/logger';
 import type { TwitchStream } from '../../types';
 
+type Category = NonNullable<ReturnType<typeof useMobileNavStore.getState>['browseCategory']>;
+
 export const CategoryStreamsScreen: React.FC = () => {
   const category = useMobileNavStore((s) => s.browseCategory);
+  if (!category) return null;
+  // Keyed on the category, so opening a different one MOUNTS A FRESH component
+  // with an empty list already loading. The alternative — clearing state in an
+  // effect — paints the previous category's streams under the new title for a
+  // frame first, and costs an extra render every time.
+  return <CategoryStreamsList key={category.id} category={category} />;
+};
+
+const CategoryStreamsList: React.FC<{ category: Category }> = ({ category }) => {
   const openBrowseCategory = useMobileNavStore((s) => s.openBrowseCategory);
   const startStream = useAppStore((s) => s.startStream);
   const dropsGameNames = useDropsGameNames();
@@ -21,7 +32,6 @@ export const CategoryStreamsScreen: React.FC = () => {
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    if (!category) return;
     try {
       const res = await invoke<[TwitchStream[], string | null]>('get_streams_by_game', {
         gameId: category.id,
@@ -38,12 +48,8 @@ export const CategoryStreamsScreen: React.FC = () => {
   }, [category]);
 
   useEffect(() => {
-    setStreams([]);
-    setLoading(true);
     void load();
   }, [load]);
-
-  if (!category) return null;
 
   return (
     <div

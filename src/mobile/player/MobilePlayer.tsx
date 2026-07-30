@@ -1,7 +1,7 @@
 // Touch-first player surface: the video element plus a tap-driven glass control
 // overlay. No Plyr; hls.js runs via useMobileHlsEngine.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowsOut, Eye, Gear, Pause, PictureInPicture, Play, ShareNetwork, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
+import { ArrowsOut, Columns, Eye, Gear, Pause, PictureInPicture, Play, Rows, ShareNetwork, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
 import { shareText } from '../nativeBridge';
 import { buildShareUrl } from '../../utils/shareLink';
 import { useAppStore } from '../../stores/AppStore';
@@ -30,7 +30,18 @@ export const MobilePlayer: React.FC<{
   onEnterPip?: () => void;
   /** Mini/PiP presentation: video only, no overlay chrome. */
   compact?: boolean;
-}> = ({ immersive = false, onToggleFullscreen, onEnterPip, compact = false }) => {
+  /** Current big-screen arrangement, for the toggle's icon and label. */
+  layoutMode?: 'columns' | 'stacked';
+  /** Set only where both arrangements fit, which is what gates the control. */
+  onToggleLayout?: () => void;
+}> = ({
+  immersive = false,
+  onToggleFullscreen,
+  onEnterPip,
+  compact = false,
+  layoutMode,
+  onToggleLayout,
+}) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const { state } = useMobileHlsEngine(videoRef);
   const restartStream = useAppStore((s) => s.restartStream);
@@ -264,6 +275,22 @@ export const MobilePlayer: React.FC<{
             >
               <Gear size={21} />
             </button>
+            {/* Only on a screen where both arrangements genuinely work, so this
+                never appears as a control with one sensible setting. */}
+            {onToggleLayout && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleLayout();
+                }}
+                className="sn-touch flex items-center justify-center text-white"
+                aria-label={
+                  layoutMode === 'columns' ? 'Stack player above chat' : 'Put chat beside player'
+                }
+              >
+                {layoutMode === 'columns' ? <Rows size={21} /> : <Columns size={21} />}
+              </button>
+            )}
             {onToggleFullscreen && (
               <button
                 onClick={(e) => {

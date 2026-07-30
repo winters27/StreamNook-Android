@@ -18,6 +18,7 @@ import { useAppStore } from '../../stores/AppStore';
 import { useMobileNavStore } from '../navStore';
 import { usePinStore } from '../../stores/pinStore';
 import { useWindowShape } from '../ui/useWindowShape';
+import { readWatchLayout, writeWatchLayout, type WatchLayout } from '../watch/watchLayout';
 import { MobilePlayer } from '../player/MobilePlayer';
 import { MobileChatPane } from '../chat/MobileChatPane';
 import {
@@ -62,6 +63,7 @@ export const WatchScreen: React.FC = () => {
   const refreshNonce = usePinStore((s) => s.refreshNonce);
   const shape = useWindowShape();
   const [landscapeChat, setLandscapeChat] = useState(false);
+  const [watchLayout, setWatchLayout] = useState<WatchLayout>(readWatchLayout);
   const [pip, setPip] = useState(false);
   const [pinnedFor, setPinnedFor] = useState<{
     channel: string | null;
@@ -94,10 +96,39 @@ export const WatchScreen: React.FC = () => {
   // Z Fold is about 840x757 — an aspect ratio near 1.1 — so asking "portrait or
   // landscape" there gives an answer that means nothing, and the old check handed
   // a big tablet-shaped screen the phone's stacked layout.
-  const sideBySide = shape.twoPane && !mini && !pip;
-  // On a phone in landscape the point is immersive video, so chat stays opt-in
-  // behind the fullscreen toggle. Give a genuinely large screen both at once.
-  const chatBeside = sideBySide && (shape.sizeClass === 'expanded' || landscapeChat);
+  // A vertical hinge says WHERE to split if we split left/right. It does not say
+  // that we should. The crease on an unfolded Fold sits at the middle, so
+  // honouring it gives the player ~420dp of width: a 236dp-tall video stranded
+  // in a 757dp-tall column, which reads as a small picture on a mostly black
+  // pane. Stacking that same screen gets a 472dp video with chat still 285dp
+  // tall. So choose the arrangement that gives the VIDEO the most height while
+  // leaving chat something usable, instead of assuming a big screen wants
+  // columns.
+  const MIN_CHAT_W = 300;
+  const MIN_CHAT_H = 240;
+  const sideVideoH = (shape.splitX * 9) / 16;
+  const stackVideoH = (shape.w * 9) / 16;
+  const sideFits = shape.w - shape.splitX >= MIN_CHAT_W;
+  const stackFits = shape.h - stackVideoH >= MIN_CHAT_H;
+  // ...but only as a DEFAULT. Both arrangements are legitimate on a near-square
+  // screen: columns trade picture size for full-height chat, stacked trades
+  // pillarbox bars for a big picture. That is the viewer's call, so `auto` is
+  // just the starting point and an explicit choice always wins.
+  const autoColumns = sideFits && (!stackFits || sideVideoH >= stackVideoH);
+  // Offer the switch only where both actually work; below that there is nothing
+  // to choose between.
+  const canChooseLayout = shape.sizeClass === 'expanded' && sideFits && stackFits;
+  // Only `expanded` re-decides. A phone in landscape is after immersive video,
+  // so chat stays opt-in behind the fullscreen toggle there, as before.
+  const twoColumns =
+    shape.sizeClass === 'expanded'
+      ? watchLayout === 'auto'
+        ? autoColumns
+        : watchLayout === 'columns' && sideFits
+      : landscapeChat;
+  const immersiveLandscape = shape.twoPane && shape.sizeClass !== 'expanded';
+  const sideBySide = shape.twoPane && !mini && !pip && (twoColumns || immersiveLandscape);
+  const chatBeside = sideBySide && twoColumns;
   // Where the seam falls. On a Fold this is the hinge itself, so neither pane is
   // bisected by the crease; elsewhere a proportional split favouring video.
   const playerWidth = chatBeside ? shape.splitX : shape.w;
@@ -341,6 +372,18 @@ export const WatchScreen: React.FC = () => {
             compact={mini || pip}
             onEnterPip={mini || pip ? undefined : enterPip}
             onToggleFullscreen={sideBySide ? () => setLandscapeChat((v) => !v) : undefined}
+            layoutMode={twoColumns ? 'columns' : 'stacked'}
+            onToggleLayout={
+              canChooseLayout && !mini && !pip
+                ? () => {
+                    // Writes an explicit choice, so it stops tracking `auto` and
+                    // survives a restart.
+                    const next: WatchLayout = twoColumns ? 'stacked' : 'columns';
+                    setWatchLayout(next);
+                    writeWatchLayout(next);
+                  }
+                : undefined
+            }
           />
           {mini && (
             <>
@@ -361,7 +404,15 @@ export const WatchScreen: React.FC = () => {
           )}
         </div>
 
-        <div className={chatClass}>
+        <div
+          className={chatClass}
+          style={
+            // Side by side, the row deliberately carries no top padding so the
+            // video runs edge to edge under the status bar. Chat is not video:
+            // without its own inset the first message renders behind the clock.
+            sideBySide && chatBeside ? { paddingTop: 'var(--sn-safe-t, 0px)' } : undefined
+          }
+        >
           {/* Chat header carries only live, transient signal now: the hype
               train and the pinned message. The persistent stream info lives in
               the player overlay, so chat keeps its full height. */}

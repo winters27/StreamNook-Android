@@ -8,6 +8,7 @@ import { MobileStreamCard, useDropsGameNames } from '../ui/MobileStreamCard';
 import { readStreamView, writeStreamView, type StreamViewMode } from './FollowingScreen';
 import { PullToRefresh } from '../ui/PullToRefresh';
 import { SkeletonCards } from '../ui/SkeletonCards';
+import { AdaptiveGrid } from '../ui/AdaptiveGrid';
 import { Logger } from '../../utils/logger';
 import { gameBoxArt } from '../../utils/boxArt';
 import type { TwitchCategory, TwitchStream } from '../../types';
@@ -210,10 +211,10 @@ export const BrowseScreen: React.FC = () => {
               <div className="text-[13px] text-textMuted">Pull down to refresh.</div>
             </div>
           ) : (
-            <div
-              className={`flex flex-col px-4 sn-tabbar-clearance ${
-                view === 'list' ? 'gap-2' : 'gap-3'
-              }`}
+            <AdaptiveGrid
+              variant={view === 'list' ? 'row' : 'card'}
+              gap={view === 'list' ? 8 : 12}
+              className="px-4 sn-tabbar-clearance"
             >
               {shownStreams.map((s) => (
                 <MobileStreamCard
@@ -226,7 +227,7 @@ export const BrowseScreen: React.FC = () => {
                   variant={view === 'list' ? 'row' : 'card'}
                 />
               ))}
-            </div>
+            </AdaptiveGrid>
           )
         ) : categoriesLoading || (searching && shownCategories.length === 0) ? (
           <SkeletonCards />

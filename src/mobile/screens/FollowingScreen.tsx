@@ -5,6 +5,7 @@ import { useAppStore } from '../../stores/AppStore';
 import { MobileStreamCard, useDropsGameNames } from '../ui/MobileStreamCard';
 import { PullToRefresh } from '../ui/PullToRefresh';
 import { SkeletonCards } from '../ui/SkeletonCards';
+import { AdaptiveGrid } from '../ui/AdaptiveGrid';
 import type { TwitchStream } from '../../types';
 
 export type StreamViewMode = 'cards' | 'list';
@@ -100,10 +101,10 @@ export const FollowingScreen: React.FC = () => {
             <div className="text-[13px] text-textMuted">Pull down to refresh.</div>
           </div>
         ) : (
-          <div
-            className={`flex flex-col px-4 sn-tabbar-clearance ${
-              view === 'list' ? 'gap-2' : 'gap-3'
-            }`}
+          <AdaptiveGrid
+            variant={view === 'list' ? 'row' : 'card'}
+            gap={view === 'list' ? 8 : 12}
+            className="px-4 sn-tabbar-clearance"
           >
             {followedStreams.map((s) => (
               <MobileStreamCard
@@ -116,7 +117,7 @@ export const FollowingScreen: React.FC = () => {
                 variant={view === 'list' ? 'row' : 'card'}
               />
             ))}
-          </div>
+          </AdaptiveGrid>
         )}
       </PullToRefresh>
     </div>
