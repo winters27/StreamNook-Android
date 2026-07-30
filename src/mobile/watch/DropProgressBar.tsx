@@ -16,9 +16,11 @@ import { useAppStore } from '../../stores/AppStore';
 import { Logger } from '../../utils/logger';
 import type { InventoryResponse, TimeBasedDrop } from '../../types';
 
-// Inventory is a network round trip, and drop minutes tick once a minute at
-// best, so this is deliberately slow.
-const POLL_MS = 120_000;
+// Inventory is a network round trip. While we have nothing to show we are
+// waiting for the campaign to appear at all, so check often; once tracking, back
+// off because accrued minutes only move once a minute.
+const POLL_SEARCHING_MS = 20_000;
+const POLL_TRACKING_MS = 60_000;
 
 interface Shown {
   dropId: string;
@@ -26,6 +28,11 @@ interface Shown {
   dropInstanceId?: string;
   name: string;
   image?: string;
+  /** Campaign this reward belongs to, e.g. "Ignite Stage 1 PlayOffs". */
+  campaign: string | null;
+  /** 1-based tier position and total, e.g. 2 of 5. */
+  tierIndex: number | null;
+  tierCount: number | null;
   current: number;
   required: number;
 }
@@ -116,11 +123,26 @@ export const DropProgressBar: React.FC<Props> = ({ onActiveChange, visible = tru
       }
       candidates.sort((a, b) => a.required - a.current - (b.required - b.current));
       const best = candidates[0];
+
+      // Which tier of its campaign this is. Campaigns ship several rewards at
+      // increasing watch times, and "2 of 5" tells you far more about how far
+      // through you are than the single bar does.
+      const owner = relevant.find((it) =>
+        (it.campaign.time_based_drops || []).some((d) => d.id === best.d.id),
+      );
+      const tiers = [...(owner?.campaign.time_based_drops || [])]
+        .filter((d) => d.required_minutes_watched > 0)
+        .sort((a, b) => a.required_minutes_watched - b.required_minutes_watched);
+      const tierIndex = tiers.findIndex((d) => d.id === best.d.id);
+
       setShown({
         dropId: best.d.id,
         dropInstanceId: best.d.progress?.drop_instance_id,
         name: best.d.benefit_edges?.[0]?.name || best.d.name || 'Drop',
         image: best.d.benefit_edges?.[0]?.image_url,
+        campaign: owner?.campaign.name ?? null,
+        tierIndex: tierIndex >= 0 ? tierIndex + 1 : null,
+        tierCount: tiers.length || null,
         current: best.current,
         required: best.required,
       });
@@ -129,11 +151,20 @@ export const DropProgressBar: React.FC<Props> = ({ onActiveChange, visible = tru
     }
   }, [gameName, channelLogin]);
 
+  // Adaptive interval, and this is the fix for "it never appears until I leave
+  // and come back". A campaign only enters the inventory ONCE YOU HAVE PROGRESS,
+  // so at the moment you start watching there is genuinely nothing to find. On a
+  // flat two-minute poll that meant up to three minutes of blank before the bar
+  // showed, while rejoining remounted the component and refreshed instantly —
+  // which is exactly the behaviour that looked like a bug.
+  //
+  // So: hunt quickly while there is nothing to show, then back off once we are
+  // tracking something, since accrued minutes only tick once a minute anyway.
   useEffect(() => {
     void refresh();
-    const t = setInterval(() => void refresh(), POLL_MS);
+    const t = setInterval(() => void refresh(), shown ? POLL_TRACKING_MS : POLL_SEARCHING_MS);
     return () => clearInterval(t);
-  }, [refresh]);
+  }, [refresh, shown]);
 
   useEffect(() => {
     // Report inactive while hidden too, so the header does not reserve space for
@@ -167,22 +198,43 @@ export const DropProgressBar: React.FC<Props> = ({ onActiveChange, visible = tru
   };
 
   return (
-    <div className="pointer-events-auto flex items-center gap-2 mt-1">
+    <div className="pointer-events-auto flex items-center gap-2.5 mt-1">
       {shown.image ? (
         <img
           src={shown.image}
           alt=""
-          className="w-6 h-6 rounded object-cover shrink-0"
+          className="w-9 h-9 rounded-md object-cover shrink-0 ring-1 ring-white/10"
           draggable={false}
         />
       ) : (
-        <Gift size={16} className="text-accent shrink-0" />
+        <div className="w-9 h-9 rounded-md bg-surface flex items-center justify-center shrink-0">
+          <Gift size={16} className="text-accent" />
+        </div>
       )}
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="text-[11.5px] text-textSecondary truncate">{shown.name}</span>
-          <span className="ml-auto text-[11px] text-textMuted shrink-0 tabular-nums">
-            {complete ? 'Ready' : `${remaining}m left`}
+        {/* Line 1: what you are earning, and how long is left. */}
+        <div className="flex items-baseline gap-2">
+          <span className="text-[12px] font-semibold text-textPrimary truncate">{shown.name}</span>
+          <span
+            className={`ml-auto text-[11px] shrink-0 tabular-nums ${
+              complete ? 'text-success font-semibold' : 'text-textMuted'
+            }`}
+          >
+            {complete ? 'Ready to claim' : `${remaining}m left`}
+          </span>
+        </div>
+        {/* Line 2: which campaign, which tier, and the exact minutes. The bar
+            alone says roughly-how-far; this says where you actually are. */}
+        <div className="flex items-baseline gap-1.5 text-[10.5px] text-textMuted">
+          {shown.campaign && <span className="truncate min-w-0">{shown.campaign}</span>}
+          {shown.tierIndex && shown.tierCount && shown.tierCount > 1 && (
+            <span className="shrink-0">
+              {shown.campaign ? '· ' : ''}
+              {shown.tierIndex} of {shown.tierCount}
+            </span>
+          )}
+          <span className="ml-auto shrink-0 tabular-nums">
+            {shown.current}/{shown.required}m
           </span>
         </div>
         <div className="h-1 rounded-full bg-surface overflow-hidden mt-1">
