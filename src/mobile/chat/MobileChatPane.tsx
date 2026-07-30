@@ -21,7 +21,7 @@ import { parseMessage } from '../../services/twitchChat';
 import type { BackendChatMessage } from '../../services/twitchChat';
 import { Logger } from '../../utils/logger';
 import { MobileChatInput } from './MobileChatInput';
-import { UserSheet, type SheetUser } from './UserSheet';
+import { UserProfileSheet, type SheetUser } from '../profile/UserProfileSheet';
 import { ChatTabStrip } from './ChatTabStrip';
 import { AddChatSheet } from './AddChatSheet';
 import { useChatTabsStore } from './chatTabsStore';
@@ -477,7 +477,14 @@ export const MobileChatPane: React.FC = () => {
             : undefined
         }
       />
-      <UserSheet user={sheetUser} onClose={() => setSheetUser(null)} />
+      {/* Channel context matters: Twitch badges like sub tiers and moderator are
+          scoped to the room, so without it the profile shows only global ones. */}
+      <UserProfileSheet
+        user={sheetUser}
+        channelId={broadcasterId}
+        channelName={activeChannel}
+        onClose={() => setSheetUser(null)}
+      />
       <AddChatSheet open={addChatOpen} onClose={() => setAddChatOpen(false)} />
       {/* Long-press fan-out. Owns every per-message action now, for everyone:
           moderators simply get more buckets. */}
