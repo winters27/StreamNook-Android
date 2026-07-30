@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- Gradient drawable, not the flat @color this used to point at. -->
+  <background android:drawable="@drawable/ic_launcher_background"/>
   <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
-  <background android:drawable="@color/ic_launcher_background"/>
+  <!-- Themed-icon support (Android 13+): the launcher tints this silhouette to
+       the user's wallpaper palette instead of dropping our art in a grey blob. -->
+  <monochrome android:drawable="@mipmap/ic_launcher_foreground"/>
 </adaptive-icon>

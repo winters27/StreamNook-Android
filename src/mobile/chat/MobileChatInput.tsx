@@ -12,7 +12,9 @@
 // Channel comes in as a prop rather than being read off `currentStream`: with
 // several chat tabs open the composer must target the tab you are looking at,
 // which is not necessarily the stream playing.
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { listen } from '@tauri-apps/api/event';
 import { DotsThreeVertical, Lock, X } from 'phosphor-react';
 import { useAppStore } from '../../stores/AppStore';
 import { incrementStat } from '../../services/supabaseService';
@@ -86,6 +88,29 @@ export const MobileChatInput: React.FC<Props> = ({
   const { currentSmiley, isSmileyTransitioning, cycleEmoteSmiley } = useSwappingSmiley();
   const points = useChannelPoints(channel);
   const emoteOwnerNames = useEmoteOwnerNames(emotes);
+
+  // Points arriving used to be a toast, and mobile toasts are now filtered down
+  // to failures, so earning went completely silent. This is the replacement: the
+  // icon pulses and the amount floats up off it. Deliberately small — it fires
+  // every few minutes while you watch, so anything louder would become noise.
+  const [pointsFlash, setPointsFlash] = useState<{ id: number; amount: number } | null>(null);
+  const flashSeq = useRef(0);
+  useEffect(() => {
+    let cancelled = false;
+    const un = listen<{ points_earned: number }>('channel-points-claimed', (e) => {
+      if (cancelled) return;
+      const amount = e.payload?.points_earned ?? 0;
+      if (amount <= 0) return;
+      flashSeq.current += 1;
+      setPointsFlash({ id: flashSeq.current, amount });
+      // Pull the new balance so the menu is right if you open it straight after.
+      points.refresh();
+    });
+    return () => {
+      cancelled = true;
+      void un.then((f) => f()).catch(() => {});
+    };
+  }, [points]);
 
   const canSend = !!text.trim();
 
@@ -225,23 +250,51 @@ export const MobileChatInput: React.FC<Props> = ({
                 setEmotesOpen(false);
                 setPointsOpen((v) => !v);
               }}
-              className={`shrink-0 w-9 h-9 flex items-center justify-center active:opacity-70 ${
+              className={`relative shrink-0 w-9 h-9 flex items-center justify-center active:opacity-70 ${
                 pointsOpen ? 'text-accent' : 'text-textSecondary'
               }`}
               aria-label={pointsOpen ? 'Close channel points' : points.name || 'Channel points'}
             >
-              {pointsOpen ? (
-                <X size={19} weight="bold" />
-              ) : points.iconUrl ? (
-                <img
-                  src={points.iconUrl}
-                  alt=""
-                  className="w-[19px] h-[19px] object-contain"
-                  draggable={false}
-                />
-              ) : (
-                <ChannelPointsIcon size={19} />
-              )}
+              {/* The amount, floating up and away. Keyed on a counter so two
+                  claims close together each get their own animation instead of
+                  the second being swallowed as "same element". */}
+              <AnimatePresence>
+                {pointsFlash && (
+                  <motion.span
+                    key={pointsFlash.id}
+                    className="absolute left-1/2 -translate-x-1/2 pointer-events-none text-[11px] font-bold text-accent whitespace-nowrap"
+                    initial={{ opacity: 0, y: 2, scale: 0.8 }}
+                    animate={{ opacity: 1, y: -18, scale: 1 }}
+                    exit={{ opacity: 0, y: -26 }}
+                    transition={{ duration: 0.9, ease: [0.2, 0.8, 0.2, 1] }}
+                    onAnimationComplete={() => setPointsFlash(null)}
+                  >
+                    +{pointsFlash.amount}
+                  </motion.span>
+                )}
+              </AnimatePresence>
+              <motion.span
+                className="flex items-center justify-center"
+                animate={
+                  pointsFlash
+                    ? { scale: [1, 1.35, 1], filter: ['brightness(1)', 'brightness(1.6)', 'brightness(1)'] }
+                    : { scale: 1 }
+                }
+                transition={{ duration: 0.7, ease: [0.2, 0.8, 0.2, 1] }}
+              >
+                {pointsOpen ? (
+                  <X size={19} weight="bold" />
+                ) : points.iconUrl ? (
+                  <img
+                    src={points.iconUrl}
+                    alt=""
+                    className="w-[19px] h-[19px] object-contain"
+                    draggable={false}
+                  />
+                ) : (
+                  <ChannelPointsIcon size={19} />
+                )}
+              </motion.span>
             </button>
           )}
         </div>

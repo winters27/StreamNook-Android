@@ -25,7 +25,14 @@ interface MobileNavState {
    *  (the tab shell stays live behind it). System PiP is separate: that hands
    *  the whole activity to the OS window. */
   playerMode: 'full' | 'mini';
+  /** Campaign the Activity screen should scroll to and flash, set when you
+   *  tap the live drop progress while watching. Cleared once consumed. */
+  focusDropCampaignId: string | null;
   setTab: (tab: MobileTab) => void;
+  /** Tap-through from the watch surface: shrink the player so playback (and
+   *  the drop you are earning) keeps running, then land on that campaign. */
+  openDropCampaign: (campaignId: string) => void;
+  clearDropFocus: () => void;
   pushSheet: (id: string) => void;
   popSheet: (id?: string) => void;
   openSettings: (tab: string) => void;
@@ -46,8 +53,17 @@ export const useMobileNavStore = create<MobileNavState>((set, get) => ({
   browseCategory: null,
   cosmeticsOpen: false,
   playerMode: 'full',
+  focusDropCampaignId: null,
 
   setTab: (tab) => set({ activeTab: tab }),
+
+  openDropCampaign: (campaignId) =>
+    set({
+      playerMode: 'mini',
+      activeTab: 'activity',
+      focusDropCampaignId: campaignId,
+    }),
+  clearDropFocus: () => set({ focusDropCampaignId: null }),
 
   pushSheet: (id) =>
     set((s) => (s.sheetStack.includes(id) ? s : { sheetStack: [...s.sheetStack, id] })),

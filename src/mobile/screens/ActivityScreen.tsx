@@ -2,10 +2,11 @@
 // desktop Drops Center; connecting uses the device-code flow directly (the
 // desktop's authorize popup is desktop-gated), showing the code here and
 // opening the browser, mirroring the main Twitch login pattern on mobile.
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowSquareOut, CalendarBlank, CheckCircle, Gift, Warning } from 'phosphor-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
+import { useMobileNavStore } from '../navStore';
 import { PullToRefresh } from '../ui/PullToRefresh';
 import { MobileSheet } from '../ui/MobileSheet';
 import { getAllUserBadgesWithEarned } from '../../services/badgeService';
@@ -120,6 +121,14 @@ export const ActivityScreen: React.FC = () => {
   const addToast = useAppStore((s) => s.addToast);
   const currentUser = useAppStore((s) => s.currentUser);
   const [tab, setTab] = useState<ActivityTab>('drops');
+
+  // Arriving from a tap on the live drop progress: land on Drops, scroll that
+  // campaign into view and flash it, so the jump obviously ends somewhere rather
+  // than dumping you at the top of a list to hunt.
+  const focusDropCampaignId = useMobileNavStore((s) => s.focusDropCampaignId);
+  const clearDropFocus = useMobileNavStore((s) => s.clearDropFocus);
+  const campaignRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const [flashedCampaign, setFlashedCampaign] = useState<string | null>(null);
   const [globalBadges, setGlobalBadges] = useState<GlobalBadge[]>([]);
   const [ownedTitles, setOwnedTitles] = useState<Set<string>>(new Set());
   const [badgesLoading, setBadgesLoading] = useState(false);
@@ -150,6 +159,21 @@ export const ActivityScreen: React.FC = () => {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Consume a pending focus once the campaign has actually rendered. Runs off
+  // `inventory` too because the tap usually lands before the list has loaded,
+  // and scrolling to an element that does not exist yet does nothing.
+  useEffect(() => {
+    if (!focusDropCampaignId) return;
+    if (tab !== 'drops') setTab('drops');
+    const el = campaignRefs.current[focusDropCampaignId];
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setFlashedCampaign(focusDropCampaignId);
+    clearDropFocus();
+    const t = setTimeout(() => setFlashedCampaign(null), 1800);
+    return () => clearTimeout(t);
+  }, [focusDropCampaignId, inventory, tab, clearDropFocus]);
 
   // The GLOBAL Twitch badge collection (every badge currently available),
   // with the ones you already own marked. Same sources the desktop badge wall
@@ -520,7 +544,15 @@ export const ActivityScreen: React.FC = () => {
               ) : (
                 <div className="flex flex-col gap-2">
                   {inProgress.map((item) => (
-                    <div key={item.campaign.id} className="glass-panel p-2.5 flex gap-2.5">
+                    <div
+                      key={item.campaign.id}
+                      ref={(el) => {
+                        campaignRefs.current[item.campaign.id] = el;
+                      }}
+                      className={`glass-panel p-2.5 flex gap-2.5 transition-shadow duration-500 ${
+                        flashedCampaign === item.campaign.id ? 'ring-2 ring-accent' : ''
+                      }`}
+                    >
                       {/* Campaign / category art, like the desktop drop cards. */}
                       {item.campaign.image_url && (
                         <img

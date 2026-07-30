@@ -13,6 +13,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Gift } from 'phosphor-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
+import { useMobileNavStore } from '../navStore';
 import { Logger } from '../../utils/logger';
 import type { InventoryResponse, TimeBasedDrop } from '../../types';
 
@@ -30,6 +31,8 @@ interface Shown {
   image?: string;
   /** Campaign this reward belongs to, e.g. "Ignite Stage 1 PlayOffs". */
   campaign: string | null;
+  /** Used to jump straight to this campaign in Activity when the bar is tapped. */
+  campaignId: string | null;
   /** 1-based tier position and total, e.g. 2 of 5. */
   tierIndex: number | null;
   tierCount: number | null;
@@ -51,6 +54,7 @@ export const DropProgressBar: React.FC<Props> = ({ onActiveChange, visible = tru
   const currentStream = useAppStore((s) => s.currentStream);
   const originCategory = useAppStore((s) => s.streamOriginCategory);
   const addToast = useAppStore((s) => s.addToast);
+  const openDropCampaign = useMobileNavStore((s) => s.openDropCampaign);
   const [shown, setShown] = useState<Shown | null>(null);
   const [claiming, setClaiming] = useState(false);
 
@@ -141,6 +145,7 @@ export const DropProgressBar: React.FC<Props> = ({ onActiveChange, visible = tru
         name: best.d.benefit_edges?.[0]?.name || best.d.name || 'Drop',
         image: best.d.benefit_edges?.[0]?.image_url,
         campaign: owner?.campaign.name ?? null,
+        campaignId: owner?.campaign.id ?? null,
         tierIndex: tierIndex >= 0 ? tierIndex + 1 : null,
         tierCount: tiers.length || null,
         current: best.current,
@@ -198,7 +203,15 @@ export const DropProgressBar: React.FC<Props> = ({ onActiveChange, visible = tru
   };
 
   return (
-    <div className="pointer-events-auto flex items-center gap-2.5 mt-1">
+    // Tapping the bar shrinks the player to the mini window rather than closing
+    // it — the whole point is that watching (and therefore earning) continues
+    // while you go look at the campaign.
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => shown.campaignId && openDropCampaign(shown.campaignId)}
+      className="pointer-events-auto flex items-center gap-2.5 mt-1 active:opacity-70"
+    >
       {shown.image ? (
         <img
           src={shown.image}
@@ -233,9 +246,9 @@ export const DropProgressBar: React.FC<Props> = ({ onActiveChange, visible = tru
               {shown.tierIndex} of {shown.tierCount}
             </span>
           )}
-          <span className="ml-auto shrink-0 tabular-nums">
-            {shown.current}/{shown.required}m
-          </span>
+          {/* No minute count here. "36m left" on the line above already says
+              where you are, and the bar shows the ratio, so printing 24/60m as
+              well was the same fact three times. */}
         </div>
         <div className="h-1 rounded-full bg-surface overflow-hidden mt-1">
           <div
