@@ -72,6 +72,9 @@ const NEAR_R = 92;
 const FAR_R = 150;
 const NEAR_SPREAD = 120;
 const FAR_SPREAD = 160;
+// Vertical room reserved above the far arc for the name chip, so it never lands
+// on a tile and the fan is pushed down rather than clipped near the top.
+const CHIP_CLEARANCE = 60;
 // Generous: a thumb is not precise, and the tiles are far enough apart that a
 // wide radius still resolves unambiguously to one of them.
 const ENGAGE_R = 60;
@@ -112,13 +115,14 @@ export const ChatFanOut: React.FC<Props> = ({
   // near an edge would otherwise clamp half the arc into a pile. Vertically it
   // sits above the pressed row, and is pushed down if the far arc would run off
   // the top of the screen.
-  const placed = useMemo(() => {
-    if (!target) return [];
+  const layout = useMemo(() => {
+    if (!target) return null;
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     const originX = vw / 2;
-    // Keep the whole fan on screen: the far arc reaches FAR_R above the origin.
-    const minY = FAR_R + TILE / 2 + 8;
+    // Keep the whole fan on screen: the far arc reaches FAR_R above the origin,
+    // and the name chip sits above that again.
+    const minY = FAR_R + TILE / 2 + CHIP_CLEARANCE;
     const originY = Math.min(vh - 8, Math.max(minY, target.originY));
 
     const rings: Record<0 | 1, FanBucket[]> = {
@@ -143,8 +147,17 @@ export const ChatFanOut: React.FC<Props> = ({
         });
       });
     });
-    return out;
+    // The chip goes above the far arc, centred with the fan. Anchoring it to the
+    // press point instead put it straight on top of the near-arc tiles whenever
+    // the press landed near the middle of the screen.
+    return {
+      tiles: out,
+      chipX: originX,
+      chipY: Math.max(28, originY - FAR_R - CHIP_CLEARANCE / 2),
+    };
   }, [target, buckets]);
+
+  const placed = layout?.tiles ?? [];
 
   const [active, setActive] = useState<FanAction | null>(null);
   const [secs, setSecs] = useState<number | null>(null);
@@ -255,9 +268,9 @@ export const ChatFanOut: React.FC<Props> = ({
       <motion.div
         className="absolute"
         style={{
-          left: target.originX,
-          top: target.originY,
-          transform: 'translate(-50%, calc(-100% - 18px))',
+          left: layout?.chipX ?? target.originX,
+          top: layout?.chipY ?? target.originY,
+          transform: 'translate(-50%, -50%)',
         }}
       >
         <motion.div
