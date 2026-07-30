@@ -220,6 +220,9 @@ export interface ChatDesignSettings {
   // Pinned messages start collapsed to the compact bar when entering a channel;
   // expanding is a per-channel choice that lasts until you switch. Default true.
   pinned_start_collapsed?: boolean;
+  // Live polls open collapsed to their header instead of expanded. Independent
+  // of `show_polls`, which hides the card entirely. Default false (polls open).
+  polls_start_collapsed?: boolean;
   // --- Username prefix styling (normal messages only; action/"/me" stay plain) ---
   // Glyph rendered between the username and the message body.
   username_separator?: 'none' | 'colon' | 'dot' | 'arrow' | 'pipe' | 'dash';

@@ -1,7 +1,7 @@
 // The menu behind the composer's trailing button when there is nothing to send.
 // Send and this share one slot, so the composer never carries a dead button.
 import React from 'react';
-import { ArrowsClockwise, ChatsCircle, ShieldCheck, X } from 'phosphor-react';
+import { ArrowsClockwise, ChatsCircle, Lock, ShieldCheck, X } from 'phosphor-react';
 import { MobileSheet } from '../ui/MobileSheet';
 
 interface Props {
@@ -11,6 +11,8 @@ interface Props {
   activeChannel: string | null;
   activeLabel: string | null;
   isModerator: boolean;
+  /** Active room restrictions, shown as context. Empty when unrestricted. */
+  gatingLabels: string[];
   modToolsOn: boolean;
   onToggleModTools: () => void;
   onAddChat: () => void;
@@ -25,6 +27,7 @@ export const ComposerMenuSheet: React.FC<Props> = ({
   activeChannel,
   activeLabel,
   isModerator,
+  gatingLabels,
   modToolsOn,
   onToggleModTools,
   onAddChat,
@@ -37,6 +40,18 @@ export const ComposerMenuSheet: React.FC<Props> = ({
   return (
     <MobileSheet open={open} onClose={onClose} title={activeLabel ?? 'Chat'} maxHeightFraction={0.5}>
       <div className="flex flex-col">
+        {/* Room state lives here rather than above the composer. Followers-only
+            while you can still talk is context worth having, not a warning worth
+            a permanent line over chat. */}
+        {gatingLabels.length > 0 && (
+          <div className="flex items-start gap-3 px-2 pb-2 mb-1 border-b border-borderSubtle">
+            <Lock size={17} className="text-textSecondary shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <div className="text-[13.5px] text-textSecondary">This chat is in</div>
+              <div className="text-[14px] text-textPrimary">{gatingLabels.join(' · ')}</div>
+            </div>
+          </div>
+        )}
         <button
           onClick={() => {
             onAddChat();

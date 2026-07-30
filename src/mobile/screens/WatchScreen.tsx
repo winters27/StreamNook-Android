@@ -12,7 +12,7 @@
 // the OS window (draggable/resizable by the system, floats over every app).
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { PushPin, X } from 'phosphor-react';
+import { X } from 'phosphor-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileNavStore } from '../navStore';
@@ -26,8 +26,8 @@ import {
   useChatTabsVisible,
   useViewingStreamChat,
 } from '../chat/ChatTabStrip';
-import { MobileSheet } from '../ui/MobileSheet';
 import { DropProgressBar } from '../watch/DropProgressBar';
+import { PinnedBanner } from '../watch/PinnedBanner';
 import HypeTrainBanner from '../../components/HypeTrainBanner';
 import PollOverlay from '../../components/PollOverlay';
 import PredictionOverlay from '../../components/PredictionOverlay';
@@ -400,23 +400,11 @@ export const WatchScreen: React.FC = () => {
                 onActiveChange={setDropActive}
                 visible={viewingStreamChat}
               />
-              {pinned.length > 0 && (
-                <button
-                  onClick={() => setPinsOpen(true)}
-                  className="pointer-events-auto flex items-center gap-1.5 text-left"
-                >
-                  <PushPin size={12} weight="fill" className="text-accent shrink-0" />
-                  <span className="text-[12px] text-textSecondary truncate">
-                    <span
-                      className="font-semibold"
-                      style={{ color: pinned[0].sender_color || undefined }}
-                    >
-                      {pinned[0].sender_name}
-                    </span>
-                    : {pinned[0].message_text}
-                  </span>
-                </button>
-              )}
+              <PinnedBanner
+                pins={pinned}
+                expanded={pinsOpen}
+                onToggle={() => setPinsOpen((v) => !v)}
+              />
             </div>
 
           {/* Poll + prediction cards, exactly the desktop components: they
@@ -441,19 +429,6 @@ export const WatchScreen: React.FC = () => {
         </div>
       </div>
 
-      {/* Pinned messages, expanded. */}
-      <MobileSheet open={pinsOpen} onClose={() => setPinsOpen(false)} title="Pinned">
-        <div className="flex flex-col gap-3">
-          {pinned.map((pin) => (
-            <div key={pin.id} className="text-[14px] leading-relaxed">
-              <span className="font-semibold" style={{ color: pin.sender_color || undefined }}>
-                {pin.sender_name}
-              </span>
-              <span className="text-textPrimary">: {pin.message_text}</span>
-            </div>
-          ))}
-        </div>
-      </MobileSheet>
     </motion.div>
   );
 };

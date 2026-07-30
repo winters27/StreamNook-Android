@@ -290,6 +290,7 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
     link_preview_trusted_domains: stored?.link_preview_trusted_domains ?? [],
     pinned_collapsed_style: stored?.pinned_collapsed_style ?? 'bar',
     pinned_start_collapsed: stored?.pinned_start_collapsed ?? true,
+    polls_start_collapsed: stored?.polls_start_collapsed ?? false,
   };
 
   const setDesign = (patch: Partial<typeof cd>) => {
@@ -668,6 +669,19 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
             <Toggle
               enabled={cd.pinned_start_collapsed ?? true}
               onChange={() => setDesign({ pinned_start_collapsed: !(cd.pinned_start_collapsed ?? true) })}
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Polls Start Collapsed"
+          description="Open live polls as their header bar instead of expanded, so a poll never takes over the top of chat. Tap the header to expand it. Collapsing a poll now sticks: it no longer reopens itself every time somebody votes."
+          control={
+            <Toggle
+              enabled={cd.polls_start_collapsed ?? false}
+              onChange={() =>
+                setDesign({ polls_start_collapsed: !(cd.polls_start_collapsed ?? false) })
+              }
             />
           }
         />

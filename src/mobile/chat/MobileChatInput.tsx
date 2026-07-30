@@ -139,17 +139,13 @@ export const MobileChatInput: React.FC<Props> = ({
         transition: 'padding-bottom 0.15s ease-out',
       }}
     >
-      {/* Room restrictions. The labels are factual (straight off ROOMSTATE) so
-          they always show; the amber tint only appears when your own badges
-          prove you cannot actually send. */}
-      {gating.labels.length > 0 && (
-        <div
-          className={`flex items-center gap-1.5 px-3 pt-1.5 text-[11.5px] ${
-            gating.blocked ? 'text-warning' : 'text-textMuted'
-          }`}
-        >
+      {/* Only surfaced here when it actually stops you sending. A room being in
+          followers-only while you CAN still talk is context, not an alert, so it
+          lives in the chat menu instead of taking a line above the composer. */}
+      {gating.blocked && (
+        <div className="flex items-center gap-1.5 px-3 pt-1.5 text-[11.5px] text-warning">
           <Lock size={11} weight="bold" className="shrink-0" />
-          <span className="truncate">{gating.reason ?? gating.labels.join(' · ')}</span>
+          <span className="truncate">{gating.reason}</span>
         </div>
       )}
       {replyTo && (
@@ -210,9 +206,15 @@ export const MobileChatInput: React.FC<Props> = ({
               }
             }}
             placeholder={gating.blocked ? (gating.reason ?? 'Chat restricted') : 'Send a message'}
-            disabled={gating.blocked === 'subs'}
+            // Typing is switched off, not just discouraged, when the badges prove
+            // the send would be rejected. The amber placeholder says why.
+            disabled={!!gating.blocked}
             rows={1}
-            className="flex-1 min-w-0 resize-none bg-transparent py-2 text-[15px] leading-[1.4] text-textPrimary placeholder:text-textMuted outline-none max-h-[96px]"
+            className={`flex-1 min-w-0 resize-none bg-transparent py-2 text-[15px] leading-[1.4] text-textPrimary outline-none max-h-[96px] ${
+              gating.blocked
+                ? 'placeholder:text-warning placeholder:font-medium'
+                : 'placeholder:text-textMuted'
+            }`}
             enterKeyHint="send"
           />
           {/* Icon only. The balance belongs in the menu that opens, where there
@@ -312,6 +314,7 @@ export const MobileChatInput: React.FC<Props> = ({
         activeChannel={channel}
         activeLabel={channelLabel}
         isModerator={isModerator}
+        gatingLabels={gating.labels}
         modToolsOn={modToolsOn}
         onToggleModTools={onToggleModTools}
         onAddChat={onAddChat}
