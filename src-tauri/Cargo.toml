@@ -115,7 +115,7 @@ tauri-plugin-notification = "2"
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 discord-rich-presence = "1.0.0"
 keyring = "3.6.3"
-xcap = "0.0.14"
+xcap = "0.9.6"
 image = { version = "0.25", default-features = false, features = ["png"] }
 webp-animation = "0.10"
 
