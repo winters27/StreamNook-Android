@@ -18,7 +18,14 @@ import { useAppStore } from '../../stores/AppStore';
 import { useMobileNavStore } from '../navStore';
 import { usePinStore } from '../../stores/pinStore';
 import { useWindowShape } from '../ui/useWindowShape';
-import { readWatchLayout, writeWatchLayout, type WatchLayout } from '../watch/watchLayout';
+import {
+  readWatchLayout,
+  readWatchSplit,
+  writeWatchLayout,
+  writeWatchSplit,
+  type WatchLayout,
+} from '../watch/watchLayout';
+import { SplitHandle } from '../watch/SplitHandle';
 import { MobilePlayer } from '../player/MobilePlayer';
 import { MobileChatPane } from '../chat/MobileChatPane';
 import {
@@ -64,6 +71,7 @@ export const WatchScreen: React.FC = () => {
   const shape = useWindowShape();
   const [landscapeChat, setLandscapeChat] = useState(false);
   const [watchLayout, setWatchLayout] = useState<WatchLayout>(readWatchLayout);
+  const [chatSplit, setChatSplit] = useState<number | null>(readWatchSplit);
   const [pip, setPip] = useState(false);
   const [pinnedFor, setPinnedFor] = useState<{
     channel: string | null;
@@ -129,9 +137,22 @@ export const WatchScreen: React.FC = () => {
   const immersiveLandscape = shape.twoPane && shape.sizeClass !== 'expanded';
   const sideBySide = shape.twoPane && !mini && !pip && (twoColumns || immersiveLandscape);
   const chatBeside = sideBySide && twoColumns;
+  // Resizable only where there is genuinely a trade to make. On a phone the
+  // 16:9 band is simply right, and there is no surplus to hand to chat.
+  const resizable = shape.sizeClass === 'expanded' && !mini && !pip;
+  // The axis the divider travels along, and the natural split it starts from:
+  // a 16:9 player with chat taking whatever is left.
+  const axisLen = chatBeside ? shape.w : shape.h;
+  const naturalPlayer = chatBeside ? shape.splitX : (shape.w * 9) / 16;
+  const MIN_CHAT = chatBeside ? 260 : 150;
+  const MIN_PLAYER = chatBeside ? 240 : 120;
+  const desiredPlayer = chatSplit != null ? axisLen * (1 - chatSplit) : naturalPlayer;
+  const playerMain = resizable
+    ? Math.max(MIN_PLAYER, Math.min(axisLen - MIN_CHAT, desiredPlayer))
+    : naturalPlayer;
   // Where the seam falls. On a Fold this is the hinge itself, so neither pane is
-  // bisected by the crease; elsewhere a proportional split favouring video.
-  const playerWidth = chatBeside ? shape.splitX : shape.w;
+  // bisected by the crease; elsewhere the split the viewer chose.
+  const playerWidth = chatBeside ? playerMain : shape.w;
 
   useEffect(() => {
     const onResize = () => setViewport({ w: window.innerWidth, h: window.innerHeight });
@@ -306,7 +327,10 @@ export const WatchScreen: React.FC = () => {
       ? 'w-full h-full relative'
       : sideBySide
         ? 'shrink-0 h-full relative'
-        : 'w-full aspect-video relative shrink-0';
+        : // A resizable band gets an explicit height; aspect-video would fight
+          // it. The video is object-contain either way, so a band shorter than
+          // 16:9 pillarboxes instead of cropping or stretching.
+          `w-full relative shrink-0 ${resizable ? '' : 'aspect-video'}`;
 
   // Chat is a column below when stacked, a side panel when side by side, and
   // hidden (but still MOUNTED) in mini and PiP. Hidden rather than unmounted so
@@ -362,7 +386,13 @@ export const WatchScreen: React.FC = () => {
           // Explicit width only when split: this is what puts the seam ON the
           // hinge, rather than letting flex choose a boundary the crease then
           // cuts straight through.
-          style={sideBySide ? { width: playerWidth } : undefined}
+          style={
+            sideBySide
+              ? { width: playerWidth }
+              : resizable
+                ? { height: playerMain }
+                : undefined
+          }
           onTouchStart={mini || sideBySide ? undefined : onBandTouchStart}
           onTouchMove={mini || sideBySide ? undefined : onBandTouchMove}
           onTouchEnd={mini || sideBySide ? undefined : onBandTouchEnd}
@@ -403,6 +433,28 @@ export const WatchScreen: React.FC = () => {
             </>
           )}
         </div>
+
+        {/* Between the panes, so its parent rect is the container the drag
+            measures against. Hidden in mini/PiP and on phones. */}
+        {resizable && (sideBySide ? chatBeside : true) && (
+          <SplitHandle
+            axis={chatBeside ? 'x' : 'y'}
+            length={axisLen}
+            minChat={MIN_CHAT}
+            minPlayer={MIN_PLAYER}
+            // Only meaningful across a vertical hinge, and only when the panes
+            // are side by side; a horizontal divider cannot land on it.
+            snapAt={chatBeside && shape.fold?.vertical ? shape.splitX : null}
+            onDrag={(frac) => {
+              setChatSplit(frac);
+              writeWatchSplit(frac);
+            }}
+            onReset={() => {
+              setChatSplit(null);
+              writeWatchSplit(null);
+            }}
+          />
+        )}
 
         <div
           className={chatClass}
