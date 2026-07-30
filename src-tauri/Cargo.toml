@@ -52,7 +52,7 @@ futures-util = { version = "0.3.31", features = ["sink"] }
 rand = "0.10.2"
 url = "2.5.7"
 sha2 = "0.11.0"
-sha1 = "0.10.6"  # SAPISIDHASH for the YouTube webview-session auth
+sha1 = "0.11.0"  # SAPISIDHASH for the YouTube webview-session auth
 base64 = "0.23.0"
 # Song recognition: FFT + binary signature encoding for the vendored Shazam
 # fingerprinter (services/song_id, MIT, from shazamio-core).
