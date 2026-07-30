@@ -112,7 +112,8 @@ fn b64url(bytes: &[u8]) -> String {
 }
 
 fn rand_b64(len: usize) -> String {
-    use rand::RngCore;
+    // rand 0.10 dropped the root RngCore re-export; fill_bytes now lives on Rng.
+    use rand::Rng;
     let mut buf = vec![0u8; len];
     rand::rng().fill_bytes(&mut buf);
     b64url(&buf)

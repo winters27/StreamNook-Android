@@ -4,7 +4,8 @@ use crate::services::ll_origin::{
 use anyhow::Result;
 use log::{error, info};
 use once_cell::sync::Lazy;
-use rand::Rng;
+// rand 0.10 moved random_range onto the RngExt extension trait.
+use rand::RngExt;
 use reqwest::Client;
 use std::net::SocketAddr;
 use std::sync::Arc;
