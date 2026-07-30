@@ -356,12 +356,15 @@ export const WatchScreen: React.FC = () => {
           // rgb(26,12,13), about 5% of red. Nothing about the shadow was ever
           // weak; it was being covered by a panel that only exists while a drop
           // or a pin is showing, which is why it looked intermittent.
-          // Alphas are low because the cast is no longer fighting anything: at
-          // 30% the edge lifted to rgb(62,70,74) off a rgb(13,12,13) base,
-          // which is a wash rather than a seam. These land nearer rgb(30,32,34)
-          // and fall away over the same distance, so the dispersal reads
-          // without the bloom announcing itself.
-          `w-full relative shrink-0 z-20 border-b border-[color-mix(in_srgb,var(--color-accent)_16%,transparent)] shadow-[0_5px_14px_-2px_color-mix(in_srgb,var(--color-accent)_12%,transparent),0_14px_34px_-8px_color-mix(in_srgb,var(--color-accent)_8%,transparent),0_30px_64px_-18px_color-mix(in_srgb,var(--color-accent)_5%,transparent)] ${
+          // A SEPARATOR, not a wash. The wide 64px third layer was reaching far
+          // enough down the chat column to tint everything under the player,
+          // which is what made it read as a glow no matter how low the alpha
+          // went. Two tight layers instead, dying out within ~24px, so the
+          // effect is confined to the edge it is describing.
+          //
+          // z-10, below the chat header's z-20: the pinned card and drop bar
+          // float ON the cast rather than being washed by it.
+          `w-full relative shrink-0 z-10 border-b border-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] shadow-[0_3px_8px_-2px_color-mix(in_srgb,var(--color-accent)_10%,transparent),0_8px_18px_-8px_color-mix(in_srgb,var(--color-accent)_6%,transparent)] ${
             resizable ? '' : 'aspect-video'
           }`;
 
@@ -509,11 +512,19 @@ export const WatchScreen: React.FC = () => {
             <div
               className={
                 (viewingStreamChat && (currentHypeTrain || dropActive)) || pinned.length > 0
-                  ? 'absolute left-0 right-0 px-3.5 py-1.5 border-b border-borderSubtle backdrop-blur-ultra z-10 pointer-events-none shadow-lg overflow-hidden flex flex-col-reverse'
+                  ? // Pure layout now: no background, no border, no blur, no
+                    // shadow. Each child already carries its own container
+                    // (PinnedBanner is an sn-popover, the hype train draws its
+                    // own filled bar), so wrapping them in a full-width panel
+                    // put a box inside a box and killed any sense of the pinned
+                    // message floating over chat.
+                    //
+                    // z-20 keeps these cards ABOVE the player's cast, so the
+                    // glow passes behind them instead of washing across them.
+                    'absolute left-0 right-0 px-2.5 pt-1.5 pb-2 z-20 pointer-events-none flex flex-col-reverse gap-1'
                   : 'hidden'
               }
               style={{
-                backgroundColor: 'color-mix(in srgb, var(--color-background) 90%, transparent)',
                 // Sits BELOW the chat tab strip when several rooms are open.
                 // This header is absolutely positioned over the top of the chat
                 // column, so at top:0 it covered the tabs completely.

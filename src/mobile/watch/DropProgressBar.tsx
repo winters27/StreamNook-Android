@@ -210,7 +210,11 @@ export const DropProgressBar: React.FC<Props> = ({ onActiveChange, visible = tru
       role="button"
       tabIndex={0}
       onClick={() => shown.campaignId && openDropCampaign(shown.campaignId)}
-      className="pointer-events-auto flex items-center gap-2.5 mt-1 active:opacity-70"
+      // Carries its own container, like PinnedBanner does. The chat header that
+      // used to supply a shared background is pure layout now, so anything
+      // sitting in it has to be a self-contained floating card or it reads as
+      // loose text over chat.
+      className="sn-popover pointer-events-auto flex items-center gap-2.5 px-2.5 py-1.5 active:opacity-70"
     >
       {shown.image ? (
         <img
