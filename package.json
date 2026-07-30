@@ -43,7 +43,7 @@
     "zustand": "^5.0.9"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.2",
+    "@eslint/js": "^10.0.1",
     "@resvg/resvg-js": "^2.6.2",
     "@tauri-apps/cli": "^2.10.1",
     "@types/node": "^24.10.1",
