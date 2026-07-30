@@ -34,9 +34,13 @@ interface Props {
   /** Lets the chat header know whether it has anything to show. The header is
    *  otherwise gated on hype train / pinned message and would never mount this. */
   onActiveChange?: (active: boolean) => void;
+  /** False while a different chat tab is on screen. Progress belongs to the
+   *  stream, not to whatever room you are reading, so it hides — but stays
+   *  mounted so the poll keeps running and is current when you switch back. */
+  visible?: boolean;
 }
 
-export const DropProgressBar: React.FC<Props> = ({ onActiveChange }) => {
+export const DropProgressBar: React.FC<Props> = ({ onActiveChange, visible = true }) => {
   const currentStream = useAppStore((s) => s.currentStream);
   const originCategory = useAppStore((s) => s.streamOriginCategory);
   const addToast = useAppStore((s) => s.addToast);
@@ -132,11 +136,13 @@ export const DropProgressBar: React.FC<Props> = ({ onActiveChange }) => {
   }, [refresh]);
 
   useEffect(() => {
-    onActiveChange?.(!!shown);
+    // Report inactive while hidden too, so the header does not reserve space for
+    // a bar that is not being drawn.
+    onActiveChange?.(visible && !!shown);
     return () => onActiveChange?.(false);
-  }, [shown, onActiveChange]);
+  }, [shown, visible, onActiveChange]);
 
-  if (!shown) return null;
+  if (!shown || !visible) return null;
 
   const pct = Math.min(100, (shown.current / shown.required) * 100);
   const complete = shown.current >= shown.required;

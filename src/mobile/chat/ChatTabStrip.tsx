@@ -14,6 +14,22 @@ export function useChatTabsVisible(): boolean {
   return useChatTabsStore((s) => s.tabs.length >= 2);
 }
 
+/**
+ * True when the chat on screen belongs to the stream that is playing.
+ *
+ * Anything sourced from `currentStream` — hype train, drop progress, polls,
+ * predictions — is about the STREAM, while the chat below it is about the active
+ * TAB. Those are the same thing only while this returns true; otherwise showing
+ * them over another room's chat attributes them to the wrong channel.
+ */
+export function useViewingStreamChat(): boolean {
+  return useChatTabsStore((s) => {
+    if (!s.activeChannel) return false;
+    const active = s.tabs.find((t) => t.channel === s.activeChannel);
+    return !!active?.pinnedToStream;
+  });
+}
+
 export const ChatTabStrip: React.FC = () => {
   const tabs = useChatTabsStore((s) => s.tabs);
   const activeChannel = useChatTabsStore((s) => s.activeChannel);

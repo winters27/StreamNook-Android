@@ -81,10 +81,28 @@ export const MobileChatPane: React.FC = () => {
   const gating = useMemo(() => deriveChatGating(roomState, userBadges), [roomState, userBadges]);
   /** Every Helix mod action keys off the channel's numeric id. */
   const broadcasterId = activeTab?.channelId ?? null;
-  const [modToolsOn, setModToolsOn] = useState(false);
-  // Losing mod powers (switching to a room you do not moderate) must not leave
-  // the destructive actions armed.
+  // Moderator tools are ON wherever you have the badge. A mod opening their own
+  // channel expects their tools, and making them hunt for a toggle every time is
+  // the wrong default. The destructive actions are protected by the fan's
+  // geometry instead: Ban sits on the far arc, so it takes a deliberate longer
+  // reach than Delete.
+  //
+  // Stored as the set of channels where you turned them OFF, so the default
+  // survives switching rooms without an effect resetting state. Losing the badge
+  // disarms regardless, since `isModerator` gates it.
+  const [modToolsOffFor, setModToolsOffFor] = useState<ReadonlySet<string>>(new Set());
+  const modToolsOn = !!activeChannel && !modToolsOffFor.has(activeChannel);
   const modToolsArmed = isModerator && modToolsOn;
+
+  const toggleModTools = useCallback(() => {
+    if (!activeChannel) return;
+    setModToolsOffFor((prev) => {
+      const next = new Set(prev);
+      if (next.has(activeChannel)) next.delete(activeChannel);
+      else next.add(activeChannel);
+      return next;
+    });
+  }, [activeChannel]);
 
   // Paused state and the reply draft are keyed BY CHANNEL rather than reset when
   // you switch tabs. Same outcome, but nothing has to write state from an effect
@@ -450,7 +468,7 @@ export const MobileChatPane: React.FC = () => {
         onCancelReply={() => setReplyDraft(null)}
         isModerator={isModerator}
         modToolsOn={modToolsOn}
-        onToggleModTools={() => setModToolsOn((v) => !v)}
+        onToggleModTools={toggleModTools}
         onAddChat={() => setAddChatOpen(true)}
         onReload={() => activeChannel && reload(activeChannel)}
         onCloseChat={

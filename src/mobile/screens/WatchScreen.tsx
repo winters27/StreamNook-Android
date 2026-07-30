@@ -20,7 +20,11 @@ import { usePinStore } from '../../stores/pinStore';
 import { useOrientation } from '../ui/useOrientation';
 import { MobilePlayer } from '../player/MobilePlayer';
 import { MobileChatPane } from '../chat/MobileChatPane';
-import { CHAT_TAB_STRIP_H, useChatTabsVisible } from '../chat/ChatTabStrip';
+import {
+  CHAT_TAB_STRIP_H,
+  useChatTabsVisible,
+  useViewingStreamChat,
+} from '../chat/ChatTabStrip';
 import { MobileSheet } from '../ui/MobileSheet';
 import { DropProgressBar } from '../watch/DropProgressBar';
 import HypeTrainBanner from '../../components/HypeTrainBanner';
@@ -62,6 +66,7 @@ export const WatchScreen: React.FC = () => {
   const [pinsOpen, setPinsOpen] = useState(false);
   const [dropActive, setDropActive] = useState(false);
   const chatTabsVisible = useChatTabsVisible();
+  const viewingStreamChat = useViewingStreamChat();
   const [viewport, setViewport] = useState(() => ({
     w: window.innerWidth,
     h: window.innerHeight,
@@ -345,7 +350,7 @@ export const WatchScreen: React.FC = () => {
               without painting an empty strip. */}
             <div
               className={
-                currentHypeTrain || pinned.length > 0 || dropActive
+                (viewingStreamChat && (currentHypeTrain || dropActive)) || pinned.length > 0
                   ? 'absolute left-0 right-0 px-3.5 py-1.5 border-b border-borderSubtle backdrop-blur-ultra z-10 pointer-events-none shadow-lg overflow-hidden flex flex-col-reverse'
                   : 'hidden'
               }
@@ -357,16 +362,22 @@ export const WatchScreen: React.FC = () => {
                 top: chatTabsVisible ? CHAT_TAB_STRIP_H : 0,
               }}
             >
-              {currentHypeTrain && (
+              {/* Hype train and drop progress belong to the STREAM, not to
+                  whichever chat tab you are reading. Showing them over another
+                  room's chat credits them to the wrong channel. */}
+              {viewingStreamChat && currentHypeTrain && (
                 <HypeTrainBanner
                   train={currentHypeTrain}
                   onExpire={() => useAppStore.getState().setCurrentHypeTrain(null)}
                 />
               )}
-              {/* Live drop progress for this stream. flex-col-reverse means
-                  DOM order here renders ABOVE the pinned strip and below the
-                  info row. */}
-              <DropProgressBar onActiveChange={setDropActive} />
+              {/* flex-col-reverse means DOM order here renders ABOVE the pinned
+                  strip and below the info row. Kept mounted even on another tab
+                  so its poll keeps running; it just does not render there. */}
+              <DropProgressBar
+                onActiveChange={setDropActive}
+                visible={viewingStreamChat}
+              />
               {pinned.length > 0 && (
                 <button
                   onClick={() => setPinsOpen(true)}
@@ -387,8 +398,9 @@ export const WatchScreen: React.FC = () => {
             </div>
 
           {/* Poll + prediction cards, exactly the desktop components: they
-              self-fetch off the channel and anchor under the header. */}
-          {currentStream && (
+              self-fetch off the channel and anchor under the header. Stream
+              scoped, so same rule as the hype train above. */}
+          {currentStream && viewingStreamChat && (
             <>
               <PredictionOverlay
                 channelId={currentStream.user_id}
