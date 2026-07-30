@@ -22,6 +22,20 @@ export function useChatTabsVisible(): boolean {
  * TAB. Those are the same thing only while this returns true; otherwise showing
  * them over another room's chat attributes them to the wrong channel.
  */
+/**
+ * The numeric channel id of the chat currently on screen.
+ *
+ * Anything that is a property of the CHAT rather than of the stream — pinned
+ * messages being the main one — has to key off this, not off
+ * `currentStream.user_id`, or it shows one room's data under another's messages.
+ */
+export function useActiveChatChannelId(): string | null {
+  return useChatTabsStore((s) => {
+    if (!s.activeChannel) return null;
+    return s.tabs.find((t) => t.channel === s.activeChannel)?.channelId ?? null;
+  });
+}
+
 export function useViewingStreamChat(): boolean {
   return useChatTabsStore((s) => {
     if (!s.activeChannel) return false;

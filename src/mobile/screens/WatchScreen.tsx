@@ -22,6 +22,7 @@ import { MobilePlayer } from '../player/MobilePlayer';
 import { MobileChatPane } from '../chat/MobileChatPane';
 import {
   CHAT_TAB_STRIP_H,
+  useActiveChatChannelId,
   useChatTabsVisible,
   useViewingStreamChat,
 } from '../chat/ChatTabStrip';
@@ -62,11 +63,17 @@ export const WatchScreen: React.FC = () => {
   const orientation = useOrientation();
   const [landscapeChat, setLandscapeChat] = useState(false);
   const [pip, setPip] = useState(false);
-  const [pinned, setPinned] = useState<PinnedMessage[]>([]);
+  const [pinnedFor, setPinnedFor] = useState<{
+    channel: string | null;
+    items: PinnedMessage[];
+  }>({ channel: null, items: [] });
   const [pinsOpen, setPinsOpen] = useState(false);
   const [dropActive, setDropActive] = useState(false);
   const chatTabsVisible = useChatTabsVisible();
   const viewingStreamChat = useViewingStreamChat();
+  const chatChannelId = useActiveChatChannelId();
+  // Only surface pins that belong to the room currently on screen.
+  const pinned = pinnedFor.channel === chatChannelId ? pinnedFor.items : [];
   const [viewport, setViewport] = useState(() => ({
     w: window.innerWidth,
     h: window.innerHeight,
@@ -129,26 +136,28 @@ export const WatchScreen: React.FC = () => {
   }, [channelId, setPlayerMode]);
 
   // Pinned messages: 30s poll + instant refresh on pin/unpin actions.
+  //
+  // Keyed to the CHAT on screen, not to the stream. A pinned message is a
+  // property of the room you are reading, so with several tabs open, fetching
+  // against `currentStream` left one channel's pin sitting above another
+  // channel's messages and appearing to jump between them as you switched.
+  //
+  // The result is stamped with the channel it describes and compared on read, so
+  // a slow response cannot land under the wrong room and nothing has to clear
+  // state from inside the effect.
   useEffect(() => {
-    if (!channelId || !watching) {
-      // Clearing on channel change is part of syncing server state into local
-      // state, which is what this effect exists for.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setPinned([]);
-      return;
-    }
+    if (!chatChannelId || !watching) return;
     let cancelled = false;
     const fetchPins = async () => {
       try {
         const messages = await invoke<PinnedMessage[]>('get_pinned_chat_messages', {
-          channelId,
+          channelId: chatChannelId,
         });
-        if (!cancelled) {
-          setPinned(messages || []);
-          usePinStore.getState().setPinnedIds(
-            (messages || []).map((m) => m.message_id).filter(Boolean),
-          );
-        }
+        if (cancelled) return;
+        setPinnedFor({ channel: chatChannelId, items: messages || [] });
+        usePinStore
+          .getState()
+          .setPinnedIds((messages || []).map((m) => m.message_id).filter(Boolean));
       } catch (err) {
         Logger.warn('[Watch] pinned fetch failed:', err);
       }
@@ -159,7 +168,7 @@ export const WatchScreen: React.FC = () => {
       cancelled = true;
       clearInterval(t);
     };
-  }, [channelId, watching, refreshNonce]);
+  }, [chatChannelId, watching, refreshNonce]);
 
   // Drag the full-size player band downward to shrink into the mini player.
   const onBandTouchStart = useCallback((e: React.TouchEvent) => {
