@@ -129,6 +129,10 @@ export const ActivityScreen: React.FC = () => {
   const clearDropFocus = useMobileNavStore((s) => s.clearDropFocus);
   const campaignRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [flashedCampaign, setFlashedCampaign] = useState<string | null>(null);
+  // Tapping a campaign opens every reward in it, the way the desktop Drops
+  // Center does. The card alone only says "2/5", which tells you nothing about
+  // WHAT the remaining three are.
+  const [campaignDetail, setCampaignDetail] = useState<InventoryItem | null>(null);
   const [globalBadges, setGlobalBadges] = useState<GlobalBadge[]>([]);
   const [ownedTitles, setOwnedTitles] = useState<Set<string>>(new Set());
   const [badgesLoading, setBadgesLoading] = useState(false);
@@ -549,7 +553,10 @@ export const ActivityScreen: React.FC = () => {
                       ref={(el) => {
                         campaignRefs.current[item.campaign.id] = el;
                       }}
-                      className={`glass-panel p-2.5 flex gap-2.5 transition-shadow duration-500 ${
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setCampaignDetail(item)}
+                      className={`glass-panel p-2.5 flex gap-2.5 transition-shadow duration-500 active:opacity-80 ${
                         flashedCampaign === item.campaign.id ? 'ring-2 ring-accent' : ''
                       }`}
                     >
@@ -701,6 +708,86 @@ export const ActivityScreen: React.FC = () => {
                 More info
               </button>
             )}
+          </div>
+        )}
+      </MobileSheet>
+
+      {/* Every reward in one campaign, in the order you earn them. */}
+      <MobileSheet
+        open={!!campaignDetail}
+        onClose={() => setCampaignDetail(null)}
+        title={campaignDetail?.campaign.name}
+        maxHeightFraction={0.8}
+      >
+        {campaignDetail && (
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-2 text-[12.5px] text-textMuted">
+              {campaignDetail.campaign.game_name && (
+                <span className="truncate">{campaignDetail.campaign.game_name}</span>
+              )}
+              <span className="ml-auto shrink-0">
+                {campaignDetail.claimed_drops}/{campaignDetail.total_drops} claimed
+              </span>
+            </div>
+
+            {[...(campaignDetail.campaign.time_based_drops || [])]
+              .sort((a, b) => a.required_minutes_watched - b.required_minutes_watched)
+              .map((drop) => {
+                const need = drop.required_minutes_watched;
+                const have = Math.min(drop.progress?.current_minutes_watched ?? 0, need);
+                const claimed = !!drop.progress?.is_claimed;
+                const done = claimed || (need > 0 && have >= need);
+                const pct = need > 0 ? Math.min(100, (have / need) * 100) : 0;
+                const benefit = drop.benefit_edges?.[0];
+                return (
+                  <div key={drop.id} className="flex items-center gap-2.5 py-1">
+                    {benefit?.image_url ? (
+                      <img
+                        src={benefit.image_url}
+                        alt=""
+                        draggable={false}
+                        className={`w-10 h-10 rounded-md object-cover shrink-0 ring-1 ring-white/10 ${
+                          claimed ? '' : 'opacity-90'
+                        }`}
+                      />
+                    ) : (
+                      <div className="w-10 h-10 rounded-md bg-surface flex items-center justify-center shrink-0">
+                        <Gift size={16} className="text-textMuted" />
+                      </div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-[13px] text-textPrimary truncate">
+                          {benefit?.name || drop.name}
+                        </span>
+                        <span
+                          className={`ml-auto text-[11px] shrink-0 tabular-nums ${
+                            claimed
+                              ? 'text-success'
+                              : done
+                                ? 'text-success font-semibold'
+                                : 'text-textMuted'
+                          }`}
+                        >
+                          {claimed ? 'Claimed' : done ? 'Ready' : `${need - have}m left`}
+                        </span>
+                      </div>
+                      {/* A 0-minute drop is event or action based, not something
+                          watch time earns, so it gets no bar to imply otherwise. */}
+                      {need > 0 && (
+                        <div className="h-1 rounded-full bg-surface overflow-hidden mt-1.5">
+                          <div
+                            className={`h-full rounded-full ${
+                              done ? 'bg-success' : 'bg-accent'
+                            }`}
+                            style={{ width: `${claimed ? 100 : pct}%` }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
           </div>
         )}
       </MobileSheet>

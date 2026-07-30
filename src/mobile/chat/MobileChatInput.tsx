@@ -27,6 +27,7 @@ import { ChannelPointsIcon } from '../../components/ChannelPointsIcon';
 import { useChannelPoints } from './useChannelPoints';
 import { useEmoteOwnerNames } from './useEmoteOwnerNames';
 import { ComposerMenuSheet } from './ComposerMenuSheet';
+import { StreakBanners } from './StreakBanners';
 import type { ChatGating } from './chatGating';
 
 // Shorter than the desktop's 520px so the panel still clears the soft keyboard,
@@ -164,6 +165,14 @@ export const MobileChatInput: React.FC<Props> = ({
         transition: 'padding-bottom 0.15s ease-out',
       }}
     >
+      {/* Shareable streaks, same place desktop puts them: directly above the
+          composer, because sharing sends whatever you have typed along with it. */}
+      <StreakBanners
+        channel={channel}
+        channelId={channelId}
+        message={text}
+        onShared={() => setText('')}
+      />
       {/* Only surfaced here when it actually stops you sending. A room being in
           followers-only while you CAN still talk is context, not an alert, so it
           lives in the chat menu instead of taking a line above the composer. */}
