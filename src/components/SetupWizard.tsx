@@ -44,6 +44,36 @@ const STEP_EASE: [number, number, number, number] = [0.16, 1, 0.3, 1];
 const STEP_DURATION = 0.4;
 const STEP_COUNT = 9;
 
+// Steps that configure or use something a phone does not have.
+//
+//  4 - whisper history import. It runs the whisper SCRAPER, and
+//      scrape_whispers / receive_whisper_export are #[cfg(desktop)] (they drive
+//      a hidden webview), so on Android the step could only ever fail.
+//  6 - sidebar mode. The Sidebar is gated off mobile entirely, so the step asks
+//      about a surface that never renders.
+//
+// NOT skipped: step 1 (components) is a no-op on both platforms now that the
+// client is self-contained and auto-advances, and step 7 (notifications)
+// branches on IS_MOBILE to request the real Android permission rather than
+// offering Dynamic Island vs toast.
+//
+// MODULE SCOPE ON PURPOSE. These were declared inside the component, below
+// handleDropsLogin, which meant a caller earlier in the body could not use them
+// without relying on closure timing - and the one place that needed it hardcoded
+// `setCurrentStep(4)` instead, routing around the skip entirely and landing
+// Android on the whisper step. Any new step transition must go through these.
+const MOBILE_SKIPPED_STEPS = new Set([4, 6]);
+const stepAfter = (s: number): number => {
+    let n = s + 1;
+    if (IS_MOBILE) while (MOBILE_SKIPPED_STEPS.has(n)) n += 1;
+    return n;
+};
+const stepBefore = (s: number): number => {
+    let n = s - 1;
+    if (IS_MOBILE) while (MOBILE_SKIPPED_STEPS.has(n)) n -= 1;
+    return n;
+};
+
 // Notification delivery surfaces offered on the notification-style step. "Both"
 // is just the two booleans on together; the wizard maps each choice onto the
 // use_dynamic_island / use_toast pair the rest of the app already reads.
@@ -254,7 +284,12 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                     }
                 }
 
-                setTimeout(() => setCurrentStep(4), 500);
+                // stepAfter, NOT a literal 4. Drops is step 3, and hardcoding
+                // its successor routes around MOBILE_SKIPPED_STEPS entirely -
+                // which landed Android straight on the whisper-import step even
+                // though it is skipped, because the skip only ever applied to
+                // normal navigation.
+                setTimeout(() => setCurrentStep(stepAfter(3)), 500);
             } catch (pollError) {
                 Logger.error('Failed to complete drops login:', pollError);
                 setError(`Login failed: ${pollError}`);
@@ -482,17 +517,6 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
     // always returns true and the step auto-advances. Step 7 (notifications) is
     // not skipped either; it branches on IS_MOBILE to ask for the real Android
     // notification permission instead of offering Dynamic Island vs toast.
-    const MOBILE_SKIPPED_STEPS = new Set([4, 6]);
-    const stepAfter = (s: number) => {
-        let n = s + 1;
-        if (IS_MOBILE) while (MOBILE_SKIPPED_STEPS.has(n)) n += 1;
-        return n;
-    };
-    const stepBefore = (s: number) => {
-        let n = s - 1;
-        if (IS_MOBILE) while (MOBILE_SKIPPED_STEPS.has(n)) n -= 1;
-        return n;
-    };
     // Dots must reflect the steps this platform actually shows, otherwise mobile
     // renders an indicator for a page it can never land on.
     const visibleSteps = Array.from({ length: STEP_COUNT }, (_, i) => i).filter(

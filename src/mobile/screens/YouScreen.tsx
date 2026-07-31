@@ -1,10 +1,11 @@
 // The You tab: account header with sign out beside it, then settings sections
 // inline (no intermediate menu).
-import React, { useState } from 'react';
-import { PaintBrush, SignOut } from 'phosphor-react';
+import React, { useEffect, useState } from 'react';
+import { ArrowCircleDown, PaintBrush, SignOut } from 'phosphor-react';
 import { ChevronRight } from 'lucide-react';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileNavStore } from '../navStore';
+import { checkForAndroidUpdate, openAndroidUpdate, type AndroidUpdate } from '../updateCheck';
 import { SETTINGS_ROWS } from './SettingsScreen';
 
 export const YouScreen: React.FC = () => {
@@ -13,6 +14,21 @@ export const YouScreen: React.FC = () => {
   const openSettings = useMobileNavStore((s) => s.openSettings);
   const setCosmeticsOpen = useMobileNavStore((s) => s.setCosmeticsOpen);
   const [confirmSignOut, setConfirmSignOut] = useState(false);
+
+  // Checked once when this tab mounts rather than at boot: a sideloaded app has
+  // no store to notify anyone, but an update prompt is also not worth delaying
+  // startup or interrupting a stream for. You is where app-level things live.
+  const [update, setUpdate] = useState<AndroidUpdate | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const found = await checkForAndroidUpdate();
+      if (!cancelled) setUpdate(found);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <div className="sn-mobile-screen sn-tabbar-clearance">
@@ -66,6 +82,31 @@ export const YouScreen: React.FC = () => {
           )}
         </button>
       </div>
+
+      {/* Only rendered when there is genuinely a newer build. Sideloaded apps
+          get no store notification, so without this nobody ever learns an
+          update exists. Tapping opens the public download page and Android's
+          package installer takes it from there. */}
+      {update && (
+        <div className="px-3 mb-2">
+          <button
+            onClick={() => void openAndroidUpdate()}
+            className="w-full flex items-center gap-3 px-3 py-3 rounded-lg bg-accent/10 active:bg-accent/20 text-left"
+          >
+            <ArrowCircleDown size={20} weight="fill" className="text-accent shrink-0" />
+            <span className="flex-1 min-w-0">
+              <span className="block text-[15px] font-semibold text-textPrimary">
+                Update to {update.latest}
+              </span>
+              <span className="block text-[12.5px] text-textMuted truncate">
+                You are on {update.current}
+                {update.size ? ` · ${(update.size / 1048576).toFixed(0)} MB` : ''}
+              </span>
+            </span>
+            <ChevronRight size={16} className="text-accent shrink-0" />
+          </button>
+        </div>
+      )}
 
       <div className="px-3 mb-2">
         <button
