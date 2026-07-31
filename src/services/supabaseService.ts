@@ -2,6 +2,8 @@ import { createClient, RealtimeChannel, SupabaseClient } from '@supabase/supabas
 import type { TwitchUser } from '../types';
 
 import { Logger } from '../utils/logger';
+// Shared service reached by both shells, so a platform branch here is legitimate.
+import { IS_MOBILE } from '../utils/platform';
 import type { Atmosphere } from './atmospheres';
 import type { ActiveEquipment, CosmeticSlot } from './cosmetics/types';
 // Supabase client singleton
@@ -38,6 +40,10 @@ interface PresenceState {
     user_id?: string;
     display_name?: string;
     app_version?: string;
+    /** 'android' or 'desktop'. Rides alongside app_version so any surface that
+     *  already reads presence can tell the mobile beta apart from the desktop
+     *  client without a schema change - presence payloads are just JSON. */
+    platform?: string;
 }
 
 /**
@@ -51,7 +57,7 @@ export interface OnlinePresenceSnapshot {
     /** Total unique participants = authed users + anon sessions. */
     totalUnique: number;
     /** Map of authed user_id -> richest known presence payload. */
-    byUserId: Map<string, { display_name?: string; app_version?: string; online_at: string }>;
+    byUserId: Map<string, { display_name?: string; app_version?: string; platform?: string; online_at: string }>;
 }
 
 const emptySnapshot = (): OnlinePresenceSnapshot => ({
@@ -65,7 +71,7 @@ const computeSnapshot = (): OnlinePresenceSnapshot => {
     if (!presenceChannel) return emptySnapshot();
     const state = presenceChannel.presenceState<PresenceState>();
     const authedUserIds = new Set<string>();
-    const byUserId = new Map<string, { display_name?: string; app_version?: string; online_at: string }>();
+    const byUserId = new Map<string, { display_name?: string; app_version?: string; platform?: string; online_at: string }>();
     let anonKeyCount = 0;
 
     for (const key of Object.keys(state)) {
@@ -82,6 +88,7 @@ const computeSnapshot = (): OnlinePresenceSnapshot => {
                 byUserId.set(fresh.user_id, {
                     display_name: fresh.display_name,
                     app_version: fresh.app_version,
+                    platform: fresh.platform,
                     online_at: fresh.online_at,
                 });
             } else {
@@ -91,6 +98,7 @@ const computeSnapshot = (): OnlinePresenceSnapshot => {
                     byUserId.set(fresh.user_id, {
                         display_name: fresh.display_name,
                         app_version: fresh.app_version,
+                        platform: fresh.platform,
                         online_at: fresh.online_at,
                     });
                 }
@@ -141,6 +149,9 @@ const buildPayload = (userId?: string, displayName?: string, appVersion?: string
     ...(userId && { user_id: userId }),
     ...(displayName && { display_name: displayName }),
     ...(appVersion && { app_version: appVersion }),
+    // Derived here rather than threaded through every caller: it is a property
+    // of the running client, not of the call site.
+    platform: IS_MOBILE ? 'android' : 'desktop',
 });
 
 const attachPresenceListeners = (channel: RealtimeChannel) => {

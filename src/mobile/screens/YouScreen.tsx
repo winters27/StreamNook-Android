@@ -1,5 +1,5 @@
-// The You tab: account header, settings sections inline (no intermediate
-// menu), sign out at the very bottom.
+// The You tab: account header with sign out beside it, then settings sections
+// inline (no intermediate menu).
 import React, { useState } from 'react';
 import { PaintBrush, SignOut } from 'phosphor-react';
 import { ChevronRight } from 'lucide-react';
@@ -27,7 +27,7 @@ export const YouScreen: React.FC = () => {
         ) : (
           <div className="w-14 h-14 rounded-full bg-surface" />
         )}
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="text-lg font-bold text-textPrimary truncate">
             {currentUser?.display_name || currentUser?.username || 'Signed in'}
           </div>
@@ -35,6 +35,36 @@ export const YouScreen: React.FC = () => {
             <div className="text-[13px] text-textMuted truncate">@{currentUser.login}</div>
           )}
         </div>
+
+        {/* Sign out belongs WITH the account, not at the end of a scroll list.
+            It used to sit under the settings rows, which put it behind the
+            floating tab bar at rest and made it something you had to go looking
+            for. Here it reads as an action on the account it acts on, and the
+            list below is purely settings.
+
+            Two-tap confirm is kept - signing out drops the token, the cookie
+            jar and the emote cache - and the armed state expands to say so,
+            because an icon alone cannot tell you it is waiting for a second
+            tap. */}
+        <button
+          onClick={() => {
+            if (!confirmSignOut) {
+              setConfirmSignOut(true);
+              setTimeout(() => setConfirmSignOut(false), 3000);
+              return;
+            }
+            void signOutActiveAccount();
+          }}
+          className={`sn-touch shrink-0 flex items-center gap-1.5 rounded-full text-error active:opacity-70 transition-all ${
+            confirmSignOut ? 'px-3 bg-error/10' : 'px-2'
+          }`}
+          aria-label={confirmSignOut ? 'Tap again to sign out' : 'Sign out'}
+        >
+          <SignOut size={20} className="shrink-0" />
+          {confirmSignOut && (
+            <span className="text-[13px] font-semibold whitespace-nowrap">Tap again</span>
+          )}
+        </button>
       </div>
 
       <div className="px-3 mb-2">
@@ -71,23 +101,6 @@ export const YouScreen: React.FC = () => {
             <ChevronRight size={16} className="text-textMuted shrink-0" />
           </button>
         ))}
-
-        <button
-          onClick={() => {
-            if (!confirmSignOut) {
-              setConfirmSignOut(true);
-              setTimeout(() => setConfirmSignOut(false), 3000);
-              return;
-            }
-            void signOutActiveAccount();
-          }}
-          className="w-full flex items-center gap-3 px-3 py-3.5 mt-4 rounded-lg active:bg-surface-active text-left"
-        >
-          <SignOut size={20} className="text-error shrink-0" />
-          <span className="flex-1 text-[15px] font-medium text-error">
-            {confirmSignOut ? 'Tap again to sign out' : 'Sign out'}
-          </span>
-        </button>
       </div>
     </div>
   );

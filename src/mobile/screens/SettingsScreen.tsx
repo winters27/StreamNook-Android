@@ -4,6 +4,7 @@
 import React, { Suspense, lazy } from 'react';
 import { ArrowLeft, Bell, Database, HelpCircle, MessageSquare, Palette, PlayCircle, Sparkles } from 'lucide-react';
 import { useMobileNavStore } from '../navStore';
+import { DrillInScreen } from '../ui/DrillInScreen';
 
 const PANELS: Record<string, React.LazyExoticComponent<React.ComponentType>> = {
   Player: lazy(() => import('../../components/settings/PlayerSettings')),
@@ -43,11 +44,18 @@ export const SettingsScreen: React.FC = () => {
   const settingsView = useMobileNavStore((s) => s.settingsView);
   const closeSettings = useMobileNavStore((s) => s.closeSettings);
 
-  if (!settingsView) return null;
+  // Retained so the panel still renders while the layer slides OUT.
+  // `settingsView` is already null by then, so reading it directly would blank
+  // the header and body for the whole exit. Adjust-state-during-render, the same
+  // idiom MobileApp uses for the tab slide direction.
+  const [lastView, setLastView] = React.useState(settingsView);
+  if (settingsView && settingsView !== lastView) setLastView(settingsView);
 
-  const Panel = PANELS[settingsView];
+  const Panel = lastView ? PANELS[lastView] : null;
   return (
-    <div
+    <DrillInScreen
+      open={!!settingsView}
+      layerKey="settings"
       className="absolute inset-0 z-50 bg-background flex flex-col"
       style={{ paddingTop: 'var(--sn-safe-t, 0px)' }}
     >
@@ -59,7 +67,7 @@ export const SettingsScreen: React.FC = () => {
         >
           <ArrowLeft size={22} />
         </button>
-        <h1 className="text-lg font-bold text-textPrimary">{settingsView}</h1>
+        <h1 className="text-lg font-bold text-textPrimary">{lastView}</h1>
       </div>
       <div
         className="flex-1 min-h-0 overflow-y-auto px-4 py-3"
@@ -73,6 +81,6 @@ export const SettingsScreen: React.FC = () => {
           <div className="py-10 text-center text-sm text-textMuted">Unknown section.</div>
         )}
       </div>
-    </div>
+    </DrillInScreen>
   );
 };

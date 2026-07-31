@@ -43,8 +43,13 @@
   min-width: 44px;
 }
 
-/* Bottom clearance for scroll content that runs behind the floating pill
-   tab bar (bar height + its 14px float + breathing room). */
+/* Bottom clearance for scroll content that runs behind the floating pill tab
+   bar. The bar sits at `safe-b + 14px` and is `--sn-tabbar-h` tall, so it ends
+   at `safe-b + 70px`; everything past that is breathing room.
+   Was +34px, which left only 20px of daylight — enough on a long list, but the
+   You screen ends in the Sign out row and is barely taller than the viewport,
+   so at rest the row sat right against the bar and looked tucked underneath it.
+   +64px gives a clear gap and makes it obvious the row is a row, not chrome. */
 .sn-tabbar-clearance {
-  padding-bottom: calc(var(--sn-tabbar-h, 56px) + var(--sn-safe-b, 0px) + 34px);
+  padding-bottom: calc(var(--sn-tabbar-h, 56px) + var(--sn-safe-b, 0px) + 64px);
 }

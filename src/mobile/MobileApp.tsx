@@ -2,7 +2,7 @@
 // services, same theme system, phone-shaped chrome (bottom tabs, sheets,
 // safe-area frame). Boot orchestration is deliberately replicated, not shared;
 // see boot/useMobileBoot.ts for the contract with App.tsx.
-import React, { useEffect } from 'react';
+import React, { lazy, Suspense, useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import './mobile.css';
 import { useAppStore } from '../stores/AppStore';
@@ -14,6 +14,13 @@ import { installBackHandler, useMobileNavStore } from './navStore';
 import { installLifecycle } from './lifecycle';
 import { MobileTabBar } from './MobileTabBar';
 import { MobileOnboarding } from './MobileOnboarding';
+// The real wizard, not a phone-shaped rewrite of it. SetupWizard is already
+// mobile-adapted from the in-place-shell days: swipe navigation (framer `drag`),
+// mobile padding and safe areas, a mobile back control, the pagination dots as a
+// swipeable carousel, and MOBILE_SKIPPED_STEPS to drop steps that configure
+// surfaces a phone does not have. Lazy so its ~1100 lines stay out of the main
+// chunk for everyone past first run.
+const SetupWizard = lazy(() => import('../components/SetupWizard'));
 import { FollowingScreen } from './screens/FollowingScreen';
 import { BrowseScreen } from './screens/BrowseScreen';
 import { YouScreen } from './screens/YouScreen';
@@ -35,7 +42,24 @@ const MobileApp: React.FC = () => {
 
   const isBooting = useAppStore((s) => s.isBooting);
   const isAuthenticated = useAppStore((s) => s.isAuthenticated);
+  const setupComplete = useAppStore((s) => s.settings.setup_complete);
+  const [wizardDismissed, setWizardDismissed] = useState(false);
   const activeTab = useMobileNavStore((s) => s.activeTab);
+
+  // Same backstop the desktop gate uses, and it matters MORE here: the wizard's
+  // own comment records that `setup_complete` has been seen reverting to false
+  // between launches ON ANDROID specifically, which reopens the wizard forever
+  // and makes the app unusable. The wizard writes this key itself on finish, so
+  // reading it is all that is needed. Key must match SETUP_COMPLETE_MARKER in
+  // App.tsx.
+  const setupMarked = (() => {
+    try {
+      return localStorage.getItem('streamnook-setup-complete') === 'true';
+    } catch {
+      return false;
+    }
+  })();
+  const needsSetup = !setupComplete && !setupMarked && !wizardDismissed;
 
   // Slide direction for the tab transition: toward the newly selected tab.
   // Adjust-state-during-render idiom (no refs in render, no extra effect pass).
@@ -59,7 +83,28 @@ const MobileApp: React.FC = () => {
         <div className="flex-1 min-h-0 flex items-center justify-center">
           <LoadingWidget fullScreen={false} message="Loading StreamNook" />
         </div>
+      ) : needsSetup ? (
+        /* FIRST RUN WINS OVER AUTH, and the order here is the whole point: the
+           wizard performs the Twitch sign-in as one of its own steps (it calls
+           loginToTwitch directly). Gating it behind `isAuthenticated` — which is
+           what this did at first — means a signed-out first-run user can never
+           reach it, and lands on the bare sign-in screen instead. Desktop gates
+           purely on setup_complete for exactly this reason.
+           `wizardDismissed` is the escape hatch so closing without finishing
+           does not trap you here. */
+        <Suspense
+          fallback={
+            <div className="flex-1 min-h-0 flex items-center justify-center">
+              <LoadingWidget fullScreen={false} />
+            </div>
+          }
+        >
+          <SetupWizard isOpen onClose={() => setWizardDismissed(true)} />
+        </Suspense>
       ) : !isAuthenticated ? (
+        /* Signed out AFTER setup: a sign-out, a token expiry, a forced re-auth.
+           Setup is already done, so re-running the wizard would be wrong; this
+           is just the way back in. */
         <MobileOnboarding />
       ) : (
         <>

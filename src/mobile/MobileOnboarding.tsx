@@ -8,6 +8,14 @@ export const MobileOnboarding: React.FC = () => {
   const loginToTwitch = useAppStore((s) => s.loginToTwitch);
   const isLoading = useAppStore((s) => s.isLoading);
 
+  // Stays centred, full width, including on a foldable. An earlier version
+  // confined this to one pane to keep the sign-in button off the crease; that
+  // was wrong. Unfolding a device is a request for MORE screen, and throwing
+  // half of it away to dodge a line that foldable owners already accept is a bad
+  // trade. Aligning a split that already exists to the hinge is still worth
+  // doing (see AdaptiveGrid and WatchScreen's splitX) because it costs nothing;
+  // relocating or shrinking content to avoid the hinge costs the whole point of
+  // the device.
   return (
     <div
       className="flex-1 min-h-0 flex flex-col items-center justify-center px-8"

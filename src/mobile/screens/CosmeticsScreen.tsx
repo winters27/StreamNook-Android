@@ -6,6 +6,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { ArrowLeft, Check, Lock } from 'phosphor-react';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileNavStore } from '../navStore';
+import { DrillInScreen } from '../ui/DrillInScreen';
 import {
   getAccolades,
   getActiveCosmeticSlug,
@@ -75,7 +76,9 @@ export const CosmeticsScreen: React.FC = () => {
     if (open) void refresh();
   }, [open, refresh]);
 
-  if (!open) return null;
+  // No early return: AnimatePresence inside DrillInScreen needs the subtree to
+  // stay mounted for the length of the exit, and a component that returns null
+  // when closed can never animate away.
 
   const badges = getAllCosmetics().filter(
     (c) => (c.kind ?? 'badge') === 'badge' && ownedSlugs.has(c.slug),
@@ -121,7 +124,9 @@ export const CosmeticsScreen: React.FC = () => {
   };
 
   return (
-    <div
+    <DrillInScreen
+      open={open}
+      layerKey="cosmetics"
       className="absolute inset-0 z-50 bg-background flex flex-col"
       style={{ paddingTop: 'var(--sn-safe-t, 0px)' }}
     >
@@ -220,6 +225,6 @@ export const CosmeticsScreen: React.FC = () => {
           })}
         </div>
       </div>
-    </div>
+    </DrillInScreen>
   );
 };

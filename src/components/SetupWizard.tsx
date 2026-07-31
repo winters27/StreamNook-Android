@@ -192,11 +192,22 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
     }, [currentStep, status.componentsInstalled, isExtracting, status.extractionError, extractComponents]);
 
     const openDropsVerificationWindow = useCallback(async (verificationUri: string) => {
-        // Opened from Rust bound to the active account's web profile, so it
-        // reuses the main login's twitch.tv session (authorize only, no re-login)
-        // and the Rust side clears any stale window on the fixed label first.
+        // Desktop opens a Rust-side webview bound to the active account's web
+        // profile, so it reuses the main login's twitch.tv session (authorize
+        // only, no re-login) and Rust clears any stale window on the fixed label
+        // first.
+        //
+        // That whole login-overlay subsystem is `#[cfg(desktop)]`, so on Android
+        // `open_drops_login_window` simply does not exist: the invoke rejected,
+        // the catch below logged it, and the step appeared to do nothing at all
+        // - no browser, no error. Mobile authorizes in the same in-app login
+        // WebView the main Twitch sign-in uses.
         try {
-            await invoke('open_drops_login_window', { url: verificationUri });
+            if (IS_MOBILE) {
+                await invoke('open_mobile_login', { url: verificationUri });
+            } else {
+                await invoke('open_drops_login_window', { url: verificationUri });
+            }
         } catch (e) {
             Logger.error('Failed to open drops login window:', e);
         }
@@ -209,6 +220,17 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
             const deviceInfo = await invoke('start_drops_device_flow') as DropsDeviceCodeInfo;
             setDropsDeviceCode(deviceInfo);
 
+            // The mobile login WebView COVERS the app, so the code has to be on
+            // the clipboard before it opens or there is no way to read it off
+            // the card underneath.
+            if (IS_MOBILE) {
+                try {
+                    await navigator.clipboard.writeText(deviceInfo.user_code);
+                } catch {
+                    // The code card is still on screen behind the overlay.
+                }
+            }
+
             await openDropsVerificationWindow(deviceInfo.verification_uri);
 
             try {
@@ -218,20 +240,18 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                     expiresIn: deviceInfo.expires_in,
                 });
 
-                try {
-                    await invoke('close_login_overlay', { label: 'drops-login' });
-                } catch {
-                    // Overlay already dismissed by the backend on token receipt.
-                }
-
                 setStatus(prev => ({ ...prev, dropsAuthenticated: true }));
                 setDropsDeviceCode(null);
                 addToast('Drops login successful!', 'success');
 
-                try {
-                    await invoke('focus_window');
-                } catch (focusError) {
-                    Logger.error('Failed to focus window:', focusError);
+                // Desktop-only: there is no separate window to raise on a phone,
+                // and `focus_window` is part of the same cfg(desktop) subsystem.
+                if (!IS_MOBILE) {
+                    try {
+                        await invoke('focus_window');
+                    } catch (focusError) {
+                        Logger.error('Failed to focus window:', focusError);
+                    }
                 }
 
                 setTimeout(() => setCurrentStep(4), 500);
@@ -244,6 +264,17 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
             Logger.error('Failed to start drops login:', e);
             setError(`Failed to start login: ${e}`);
         } finally {
+            // Close in `finally`, not only on success. The old code dismissed the
+            // overlay on the happy path alone, so a failed or expired poll left
+            // it sitting over the app with no way back - survivable as a desktop
+            // window you can close, not survivable as a full-screen mobile
+            // overlay.
+            try {
+                if (IS_MOBILE) await invoke('close_mobile_login');
+                else await invoke('close_login_overlay', { label: 'drops-login' });
+            } catch {
+                // Already dismissed by the backend on token receipt.
+            }
             setIsAuthenticating(false);
         }
     }, [addToast, openDropsVerificationWindow]);
@@ -437,10 +468,21 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
         }
     })();
 
-    // Steps that configure something a phone does not have. Step 6 picks a sidebar
-    // mode (expanded/compact/hidden/off) but the Sidebar is gated off entirely on
-    // mobile, so the step would be asking about a surface that never renders.
-    const MOBILE_SKIPPED_STEPS = new Set([6]);
+    // Steps that configure or use something a phone does not have.
+    //
+    //  4 - whisper history import. It runs the whisper SCRAPER, and
+    //      `scrape_whispers` / `receive_whisper_export` are `#[cfg(desktop)]`
+    //      (they drive a hidden webview). The step therefore could not do
+    //      anything on Android except fail, which is exactly what it did.
+    //  6 - sidebar mode (expanded/compact/hidden/off). The Sidebar is gated off
+    //      entirely on mobile, so this asks about a surface that never renders.
+    //
+    // Deliberately NOT skipped: step 1 (components) is a no-op on both platforms
+    // now that the client is self-contained - `check_components_installed`
+    // always returns true and the step auto-advances. Step 7 (notifications) is
+    // not skipped either; it branches on IS_MOBILE to ask for the real Android
+    // notification permission instead of offering Dynamic Island vs toast.
+    const MOBILE_SKIPPED_STEPS = new Set([4, 6]);
     const stepAfter = (s: number) => {
         let n = s + 1;
         if (IS_MOBILE) while (MOBILE_SKIPPED_STEPS.has(n)) n += 1;

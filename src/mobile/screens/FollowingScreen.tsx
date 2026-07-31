@@ -2,6 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { ListBullets, SquaresFour } from 'phosphor-react';
 import { useAppStore } from '../../stores/AppStore';
+import { markFollowingFresh } from '../followRefresh';
 import { MobileStreamCard, useDropsGameNames } from '../ui/MobileStreamCard';
 import { PullToRefresh } from '../ui/PullToRefresh';
 import { SkeletonCards } from '../ui/SkeletonCards';
@@ -43,6 +44,7 @@ export const FollowingScreen: React.FC = () => {
     const boot = async () => {
       if (useAppStore.getState().followedStreams.length === 0) {
         await loadFollowedStreams().catch(() => {});
+        markFollowingFresh();
         setFirstLoad(false);
       }
       // Hype train badges ride a separate status poll, same as desktop Home.
@@ -50,12 +52,18 @@ export const FollowingScreen: React.FC = () => {
       if (ids.length) void refreshHypeTrainStatuses(ids);
     };
     void boot();
-    // Load once on mount; pull-to-refresh and the boot listener keep it fresh.
+    // Loads once on mount. Staying fresh after that is the resume handler's job
+    // (lifecycle.ts -> refreshFollowingIfStale), because this effect is guarded
+    // on the list being EMPTY and the Android activity survives backgrounding,
+    // so nothing here re-runs when the user comes back to a days-old list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const refresh = async () => {
     await loadFollowedStreams();
+    // Shares the throttle with the resume path, so pulling to refresh and then
+    // switching away and back does not fetch the same thing twice.
+    markFollowingFresh();
     const ids = useAppStore.getState().followedStreams.map((s) => s.user_id);
     if (ids.length) await refreshHypeTrainStatuses(ids);
   };
