@@ -15,7 +15,10 @@ const PANELS: Record<string, React.LazyExoticComponent<React.ComponentType>> = {
   Notifications: lazy(() => import('./MobileNotificationsSettings')),
   Cache: lazy(() => import('../../components/settings/CacheSettings')),
   Support: lazy(() => import('../../components/settings/SupportSettings')),
-  "What's New": lazy(() => import('../../components/settings/WhatsNewSettings')),
+  // Mobile gets its own What's New: the desktop panel lists GitHub releases
+  // from the 8.x DESKTOP line, so it described changes that never shipped to
+  // the phone. This reads the Android update manifest instead.
+  "What's New": lazy(() => import('./MobileWhatsNew')),
 };
 
 // The section rows the You tab renders inline. Kept beside PANELS so a new

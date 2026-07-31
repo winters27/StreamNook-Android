@@ -2593,7 +2593,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Track user in Supabase for analytics (only on initial login, not periodic checks)
       if (!wasAuthenticated) {
         try {
-          const appVersion = await invoke<string>('get_current_app_version');
+          // getVersion(), NOT the get_current_app_version command: that returns
+          // env!("CARGO_PKG_VERSION"), which is the DESKTOP number even inside
+          // an Android build, because the tauri.android.conf.json version
+          // override feeds Gradle and never reaches Cargo. Android had been
+          // reporting 8.3.9 to Supabase.
+          const { getVersion } = await import('@tauri-apps/api/app');
+          const appVersion = await getVersion();
           upsertUser(user, appVersion).catch((e) => {
             Logger.warn('[Auth] Failed to upsert user to Supabase:', e);
           });
