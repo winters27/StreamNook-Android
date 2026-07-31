@@ -2,7 +2,7 @@
 // overlay. No Plyr; hls.js runs via useMobileHlsEngine.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowsOut, Columns, Eye, Gear, Pause, PictureInPicture, Play, Rows, ShareNetwork, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
-import { shareText } from '../nativeBridge';
+import { setPipMuted, shareText } from '../nativeBridge';
 import { buildShareUrl } from '../../utils/shareLink';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileHlsEngine } from './useMobileHlsEngine';
@@ -26,8 +26,9 @@ export const MobilePlayer: React.FC<{
   /** Landscape immersive mode: overlay carries no bottom rounding, adds insets. */
   immersive?: boolean;
   onToggleFullscreen?: () => void;
-  /** Hands playback to the OS picture-in-picture window. */
-  onEnterPip?: () => void;
+  /** Shrink into the floating player. In-app that is the mini box; leaving the
+   *  app hands the same thing to the OS as system picture-in-picture. */
+  onMinimize?: () => void;
   /** Mini/PiP presentation: video only, no overlay chrome. */
   compact?: boolean;
   /** Current big-screen arrangement, for the toggle's icon and label. */
@@ -37,7 +38,7 @@ export const MobilePlayer: React.FC<{
 }> = ({
   immersive = false,
   onToggleFullscreen,
-  onEnterPip,
+  onMinimize,
   compact = false,
   layoutMode,
   onToggleLayout,
@@ -73,6 +74,22 @@ export const MobilePlayer: React.FC<{
     };
   }, [scheduleHide]);
 
+  // Mute from the system PiP window. Web content cannot draw usable controls
+  // there, so the toggle is a native RemoteAction; MainActivity broadcasts back
+  // into the WebView, and we push the resulting state out again so the OS can
+  // flip its icon between mute and unmute.
+  useEffect(() => {
+    const onPipMute = () => {
+      const video = videoRef.current;
+      if (!video) return;
+      video.muted = !video.muted;
+      setMuted(video.muted);
+      setPipMuted(video.muted);
+    };
+    window.addEventListener('sn:pip-mute', onPipMute);
+    return () => window.removeEventListener('sn:pip-mute', onPipMute);
+  }, []);
+
   const onSurfaceTap = () => {
     setControlsVisible((v) => {
       const next = !v;
@@ -101,6 +118,8 @@ export const MobilePlayer: React.FC<{
     if (!video) return;
     video.muted = !video.muted;
     setMuted(video.muted);
+    // Keep the PiP action's icon in step with the in-app control.
+    setPipMuted(video.muted);
     scheduleHide();
   };
 
@@ -253,14 +272,14 @@ export const MobilePlayer: React.FC<{
                 <ShareNetwork size={21} />
               </button>
             )}
-            {onEnterPip && (
+            {onMinimize && (
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  onEnterPip();
+                  onMinimize();
                 }}
                 className="sn-touch flex items-center justify-center text-white"
-                aria-label="Picture in picture"
+                aria-label="Minimize player"
               >
                 <PictureInPicture size={21} />
               </button>

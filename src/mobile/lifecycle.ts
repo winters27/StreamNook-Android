@@ -16,11 +16,21 @@
 // that away. The sockets are pure background chatter with no user-visible
 // value while hidden; the audio is not.
 import { refreshEntitlementRegistries } from '../services/supabaseService';
+import { refreshFollowingIfStale } from './followRefresh';
+import { isInPip } from './nativeBridge';
 import { Logger } from '../utils/logger';
 
 let installed = false;
 
+// Ask the activity directly. The dataset mirror is written by an async
+// evaluateJavascript from onPictureInPictureModeChanged, and `visibilitychange`
+// fires independently as the activity pauses, so the flag frequently has not
+// landed yet when this is read: the gate lost the race and tore the badge
+// socket down while the viewer was watching in PiP. A direct field read cannot.
+// The mirror stays as the fallback for anything without the bridge.
 function inPictureInPicture(): boolean {
+  const native = isInPip();
+  if (native !== null) return native;
   return document.documentElement.dataset.snPip === 'true';
 }
 
@@ -49,6 +59,10 @@ async function onVisible(): Promise<void> {
   } catch {
     /* not configured */
   }
+  // Who is live moves while the app is away, and the activity survives
+  // backgrounding, so nothing else would ever invalidate the list. Throttled
+  // internally; see followRefresh.ts.
+  void refreshFollowingIfStale();
 }
 
 /** Idempotent; returns a teardown. */

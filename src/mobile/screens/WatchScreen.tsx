@@ -3,13 +3,18 @@
 // Portrait full: 16:9 player band + the desktop-identity chat header (blurred
 // overlay with stream info, pinned strip, HypeTrainBanner) + chat, with the
 // poll and prediction cards mounted over the chat like desktop.
-// Mini: drag the player down (or press back) and the whole layer ANIMATES into
-// a small floating window you can drag anywhere; it snaps to the nearest edge
-// and the tab shell stays live behind it, so browsing continues with the
-// stream playing. Tap to expand, X to close.
 // Landscape: immersive full-bleed player (system bars hidden) + chat toggle.
-// System PiP: the PiP control or leaving the app hands the whole activity to
-// the OS window (draggable/resizable by the system, floats over every app).
+//
+// SHRINKING IS ONE CONCEPT WITH TWO BACKINGS. The viewer sees one thing, a
+// small floating player, reached by dragging the band down, by the minimize
+// control, or by pressing back:
+//   - inside the app it is the mini box, so the tab shell stays live behind it
+//     and browsing continues with the stream playing (tap to expand, X to
+//     close);
+//   - leave the app and the OS takes over with system PiP, which floats over
+//     every app but necessarily takes StreamNook's own UI off screen, since a
+//     single activity IS the PiP window.
+// Nothing in the UI calls system PiP directly. It is what leaving the app does.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { X } from 'phosphor-react';
@@ -40,7 +45,14 @@ import HypeTrainBanner from '../../components/HypeTrainBanner';
 import PollOverlay from '../../components/PollOverlay';
 import PredictionOverlay from '../../components/PredictionOverlay';
 import LoadingWidget from '../../components/LoadingWidget';
-import { enterPip, setImmersive, setKeepScreenOn, setPipEligible } from '../nativeBridge';
+import {
+  consumePipClosed,
+  isInPip,
+  setImmersive,
+  setKeepScreenOn,
+  setPipEligible,
+  setPipSourceRect,
+} from '../nativeBridge';
 import { Logger } from '../../utils/logger';
 
 interface PinnedMessage {
@@ -51,13 +63,22 @@ interface PinnedMessage {
   sender_color: string;
 }
 
-const MINIMIZE_DRAG_PX = 70;
 const MINI_W = 200;
 const MINI_H = Math.round((MINI_W * 9) / 16);
 const EDGE_GAP = 12;
 // Clearance so the resting mini player never sits under the floating pill bar.
 const BOTTOM_GAP = 104;
 const TAP_SLOP_PX = 8;
+// Travel before the shrink is fully previewed. A fraction of the screen, not a
+// fixed pixel count, so the gesture feels the same on a compact phone and an
+// unfolded Fold.
+const shrinkTravel = (h: number) => Math.max(120, Math.min(280, h * 0.28));
+const COMMIT_FRACTION = 0.45;
+// A downward flick commits regardless of distance. CSS pixels per millisecond.
+const FLING_VY = 0.6;
+const SPRING = { type: 'spring', stiffness: 420, damping: 36, mass: 0.7 } as const;
+
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
 export const WatchScreen: React.FC = () => {
   const isLoading = useAppStore((s) => s.isLoading);
@@ -92,9 +113,28 @@ export const WatchScreen: React.FC = () => {
     x: window.innerWidth - MINI_W - EDGE_GAP,
     y: window.innerHeight - MINI_H - BOTTOM_GAP,
   }));
+  // How far through the shrink preview the finger currently is: 0 is full, 1 is
+  // the mini box. This is what makes a HALF drag a real, reversible state
+  // instead of the no-op it used to be.
+  const [shrink, setShrink] = useState(0);
   const [dragging, setDragging] = useState(false);
-  const dragStart = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
-  const movedRef = useRef(false);
+  const suppressClick = useRef(false);
+  const bandRef = useRef<HTMLDivElement | null>(null);
+  // One gesture record for both drags. `kind` is fixed at pointerdown, and
+  // `progress` rides along so pointerup reads it without a stale closure.
+  const gesture = useRef<{
+    id: number;
+    kind: 'shrink' | 'move';
+    x: number;
+    y: number;
+    px: number;
+    py: number;
+    lastY: number;
+    lastT: number;
+    vy: number;
+    progress: number;
+    moved: boolean;
+  } | null>(null);
 
   const mini = playerMode === 'mini';
   const watching = !!streamUrl && streamUrl !== 'offline';
@@ -165,17 +205,38 @@ export const WatchScreen: React.FC = () => {
   // visibilitychange=hidden for both, but in PiP the video is still on screen
   // and must keep playing.
   useEffect(() => {
-    const onPip = (e: Event) => {
-      const active = !!(e as CustomEvent<boolean>).detail;
+    const apply = (active: boolean) => {
       setPip(active);
       document.documentElement.dataset.snPip = active ? 'true' : 'false';
     };
+    const onPip = (e: Event) => apply(!!(e as CustomEvent<boolean>).detail);
+
+    // Closing the PiP window does NOT finish the activity, so every bit of
+    // state here survives into the next time the app is opened. Two things have
+    // to happen on the way back in, and both are read SYNCHRONOUSLY rather than
+    // trusting an event that was dispatched while the activity was stopping:
+    //   1. Reconcile the flag, or a `pip` left at true renders the stripped
+    //      black player full screen in an app that is not pipped at all.
+    //   2. Tear the stream down if the window was dismissed rather than
+    //      expanded, since otherwise it is still loaded and playing.
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      const native = isInPip();
+      if (native !== null) apply(native);
+      if (consumePipClosed()) void exitStream();
+    };
+    const onPipClosed = () => void exitStream();
+
     window.addEventListener('sn:pip', onPip);
+    window.addEventListener('sn:pip-closed', onPipClosed);
+    document.addEventListener('visibilitychange', onVisible);
     return () => {
       window.removeEventListener('sn:pip', onPip);
+      window.removeEventListener('sn:pip-closed', onPipClosed);
+      document.removeEventListener('visibilitychange', onVisible);
       delete document.documentElement.dataset.snPip;
     };
-  }, []);
+  }, [exitStream]);
 
   // Native playback affordances: stay awake + PiP eligibility while playing,
   // immersive bars only for full landscape playback.
@@ -194,6 +255,32 @@ export const WatchScreen: React.FC = () => {
     setImmersive(watching && sideBySide && !chatBeside);
     return () => setImmersive(false);
   }, [watching, sideBySide, chatBeside]);
+
+  // Tell the OS which rectangle to animate PiP from. Without this it crops and
+  // scales the WHOLE activity, so the frames before React repaints show
+  // whatever full-screen panel was open rather than the video.
+  //
+  // Measured twice: once now, once after the layer's spring settles, because
+  // the geometry animates and the first read is the pre-animation rect.
+  useEffect(() => {
+    if (!watching) return;
+    const report = () => {
+      const el = bandRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) return;
+      const d = window.devicePixelRatio || 1;
+      setPipSourceRect(
+        Math.round(r.left * d),
+        Math.round(r.top * d),
+        Math.round(r.right * d),
+        Math.round(r.bottom * d),
+      );
+    };
+    report();
+    const t = setTimeout(report, 420);
+    return () => clearTimeout(t);
+  }, [watching, mini, pip, sideBySide, viewport.w, viewport.h, playerMain]);
 
   // A newly started stream always opens full (external store sync).
   useEffect(() => {
@@ -235,63 +322,124 @@ export const WatchScreen: React.FC = () => {
     };
   }, [chatChannelId, watching, refreshNonce]);
 
-  // Drag the full-size player band downward to shrink into the mini player.
-  const onBandTouchStart = useCallback((e: React.TouchEvent) => {
-    dragStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, px: 0, py: 0 };
-  }, []);
-  const onBandTouchMove = useCallback(
-    (e: React.TouchEvent) => {
-      const start = dragStart.current;
-      if (!start) return;
-      const dy = e.touches[0].clientY - start.y;
-      const dx = Math.abs(e.touches[0].clientX - start.x);
-      if (dy > MINIMIZE_DRAG_PX && dy > dx * 1.5) {
-        dragStart.current = null;
-        setPlayerMode('mini');
+  // ONE gesture on the band, serving both drags, bound UNCONDITIONALLY.
+  //
+  // This used to be two handler sets swapped by `mini` mid-gesture, and every
+  // symptom of the "half drag glitches" bug came out of that swap: the in-flight
+  // touch never got a matching pointerdown, so the mini handlers early-returned,
+  // `dragging` could strand at true and kill every later animation, and a
+  // synthesized click landed on a stale `moved` flag and bounced straight back
+  // to full. There was also no touchcancel binding, so a gesture the OS stole
+  // (edge swipe, shade pull) left the start point live and the NEXT touch was
+  // measured against it.
+  //
+  // `kind` is decided once at pointerdown and never re-read, so a mode change
+  // mid-gesture cannot reroute a drag that is already in flight.
+  const onBandPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      if (pip || sideBySide) return;
+      gesture.current = {
+        id: e.pointerId,
+        kind: mini ? 'move' : 'shrink',
+        x: e.clientX,
+        y: e.clientY,
+        px: miniPos.x,
+        py: miniPos.y,
+        lastY: e.clientY,
+        lastT: e.timeStamp,
+        vy: 0,
+        progress: 0,
+        moved: false,
+      };
+      // Only ever armed by the gesture whose click it is meant to swallow. A
+      // cancelled drag produces no click, so without this the flag would sit
+      // armed and eat the next real tap.
+      suppressClick.current = false;
+    },
+    [pip, sideBySide, mini, miniPos.x, miniPos.y],
+  );
+
+  const onBandPointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      const g = gesture.current;
+      if (!g || g.id !== e.pointerId) return;
+      const dx = e.clientX - g.x;
+      const dy = e.clientY - g.y;
+      if (!g.moved && (Math.abs(dx) > TAP_SLOP_PX || Math.abs(dy) > TAP_SLOP_PX)) {
+        g.moved = true;
+        // Captured on first MOVE, not on pointerdown. Capturing straight away
+        // would retarget pointerup to the band and rob the overlay's own
+        // buttons (mute, share, minimize, quality) of their click.
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+        // Track the finger 1:1 from here on. Batched with the geometry update
+        // below, so the very first moved frame already skips the spring.
+        setDragging(true);
       }
-    },
-    [setPlayerMode],
-  );
-  const onBandTouchEnd = useCallback(() => {
-    dragStart.current = null;
-  }, []);
+      // Everything below moves the layer, so nothing happens until the gesture
+      // has committed to being a drag rather than a tap.
+      if (!g.moved) return;
+      const dt = e.timeStamp - g.lastT;
+      if (dt > 0) g.vy = (e.clientY - g.lastY) / dt;
+      g.lastY = e.clientY;
+      g.lastT = e.timeStamp;
 
-  // Free-drag the mini player anywhere; release snaps it to the nearest side.
-  const onMiniPointerDown = useCallback(
-    (e: React.PointerEvent) => {
-      dragStart.current = { x: e.clientX, y: e.clientY, px: miniPos.x, py: miniPos.y };
-      movedRef.current = false;
-      setDragging(true);
-      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    },
-    [miniPos.x, miniPos.y],
-  );
-
-  const onMiniPointerMove = useCallback(
-    (e: React.PointerEvent) => {
-      const start = dragStart.current;
-      if (!start) return;
-      const dx = e.clientX - start.x;
-      const dy = e.clientY - start.y;
-      if (Math.abs(dx) > TAP_SLOP_PX || Math.abs(dy) > TAP_SLOP_PX) movedRef.current = true;
-      setMiniPos({
-        x: Math.max(EDGE_GAP, Math.min(viewport.w - MINI_W - EDGE_GAP, start.px + dx)),
-        y: Math.max(EDGE_GAP, Math.min(viewport.h - MINI_H - EDGE_GAP, start.py + dy)),
-      });
+      if (g.kind === 'move') {
+        setMiniPos({
+          x: Math.max(EDGE_GAP, Math.min(viewport.w - MINI_W - EDGE_GAP, g.px + dx)),
+          y: Math.max(EDGE_GAP, Math.min(viewport.h - MINI_H - EDGE_GAP, g.py + dy)),
+        });
+        return;
+      }
+      // Downward and mostly vertical. Tracks back to 0 if the finger returns, so
+      // an abandoned drag rewinds under the finger instead of doing nothing.
+      const vertical = dy > 0 && dy > Math.abs(dx) * 1.2;
+      g.progress = vertical ? Math.min(1, dy / shrinkTravel(viewport.h)) : 0;
+      setShrink(g.progress);
     },
     [viewport.w, viewport.h],
   );
 
-  const onMiniPointerUp = useCallback(() => {
-    if (!dragStart.current) return;
-    dragStart.current = null;
+  const onBandPointerUp = useCallback(
+    (e: React.PointerEvent) => {
+      const g = gesture.current;
+      if (!g || g.id !== e.pointerId) return;
+      gesture.current = null;
+      suppressClick.current = g.moved;
+      setDragging(false);
+
+      if (g.kind === 'move') {
+        // Tap on the mini box expands. Decided here rather than in an onClick so
+        // it never depends on Chromium synthesizing a compatibility click.
+        if (!g.moved) {
+          setPlayerMode('full');
+          return;
+        }
+        // Snap to whichever side the player ended up closest to.
+        setMiniPos((pos) => ({
+          x: pos.x + MINI_W / 2 < viewport.w / 2 ? EDGE_GAP : viewport.w - MINI_W - EDGE_GAP,
+          y: Math.min(pos.y, viewport.h - MINI_H - BOTTOM_GAP),
+        }));
+        return;
+      }
+      // Commit on distance OR a downward flick, always on RELEASE.
+      setShrink(0);
+      if (g.progress >= COMMIT_FRACTION || g.vy >= FLING_VY) setPlayerMode('mini');
+    },
+    [viewport.w, viewport.h, setPlayerMode],
+  );
+
+  // The OS took the gesture (edge swipe, notification shade, an incoming call).
+  // Unwind without deciding anything: a cancel is not a tap and not a commit.
+  // The old code bound nothing here at all, which is what left a dead start
+  // point live for the NEXT touch to be measured against.
+  const onBandPointerCancel = useCallback((e: React.PointerEvent) => {
+    const g = gesture.current;
+    if (!g || g.id !== e.pointerId) return;
+    gesture.current = null;
+    suppressClick.current = false;
     setDragging(false);
-    // Snap to whichever side the player ended up closest to.
-    setMiniPos((pos) => ({
-      x: pos.x + MINI_W / 2 < viewport.w / 2 ? EDGE_GAP : viewport.w - MINI_W - EDGE_GAP,
-      y: Math.min(pos.y, viewport.h - MINI_H - BOTTOM_GAP),
-    }));
-  }, [viewport.w, viewport.h]);
+    setShrink(0);
+  }, []);
 
   if (!streamUrl && !isLoading) return null;
 
@@ -314,11 +462,40 @@ export const WatchScreen: React.FC = () => {
   // <MobilePlayer> is IDENTICAL in all four modes. Modes may change classes,
   // styles and geometry, never structure. Conditional SIBLINGS are fine.
   // Geometry of the whole layer. PiP and side-by-side fill the screen; mini is a
-  // draggable box; stacked is the viewport.
-  const layerGeometry =
-    mini && !pip
-      ? { top: miniPos.y, left: miniPos.x, width: MINI_W, height: MINI_H, borderRadius: 12 }
-      : { top: 0, left: 0, width: viewport.w, height: viewport.h, borderRadius: 0 };
+  // draggable box; stacked is the viewport. Mid-drag it is the INTERPOLATION
+  // between full and mini, which is the whole point: the player follows the
+  // finger, so a partial drag is a state you can see and back out of.
+  //
+  // The band is `aspect-video w-full`, so at 200px wide it resolves to 112.5px,
+  // which is MINI_H. The shrink therefore reads correctly the whole way down
+  // with no class juggling, and `overflow-hidden` clips chat as it goes.
+  const fullRect = { top: 0, left: 0, width: viewport.w, height: viewport.h, borderRadius: 0 };
+  const miniRect = {
+    top: miniPos.y,
+    left: miniPos.x,
+    width: MINI_W,
+    height: MINI_H,
+    borderRadius: 12,
+  };
+  // PiP is sized in PERCENTAGES, not pixels, and that is load-bearing. The OS
+  // resizes the activity into a small window, so a layer pinned to
+  // `viewport.w/h` is still laid out at full phone size until the `resize`
+  // event lands and React re-renders - which shows a cropped corner of the app
+  // inside the PiP window instead of the player. Percentages resolve against
+  // the window itself and track the resize with no round trip.
+  const layerGeometry = pip
+    ? { top: 0, left: 0, width: '100%', height: '100%', borderRadius: 0 }
+    : mini
+      ? miniRect
+      : sideBySide || shrink === 0
+        ? fullRect
+        : {
+            top: lerp(fullRect.top, miniRect.top, shrink),
+            left: lerp(fullRect.left, miniRect.left, shrink),
+            width: lerp(fullRect.width, miniRect.width, shrink),
+            height: lerp(fullRect.height, miniRect.height, shrink),
+            borderRadius: lerp(0, miniRect.borderRadius, shrink),
+          };
 
   // The player fills the layer except in the stacked layout, where it is a 16:9
   // band above chat.
@@ -383,29 +560,21 @@ export const WatchScreen: React.FC = () => {
 
   return (
     <motion.div
-      className={`fixed overflow-hidden ${pip ? 'z-50' : 'z-40'} ${
-        mini ? 'shadow-[0_12px_32px_-8px_rgba(0,0,0,0.65)]' : ''
+      // In system PiP the OS hands the WHOLE ACTIVITY to its window, so whatever
+      // full-screen panel happened to be open paints inside it. SettingsScreen
+      // and CosmeticsScreen are `z-50` and mount AFTER this layer in MobileApp,
+      // so tied on z-index they won the paint order and the PiP window showed
+      // settings instead of the video. This value must stay above every overlay
+      // screen (z-50) and above MobileSheet's body-level portal (z-[9000]).
+      className={`fixed overflow-hidden ${pip ? 'z-[9500]' : 'z-40'} ${
+        mini || shrink > 0 ? 'shadow-[0_12px_32px_-8px_rgba(0,0,0,0.65)]' : ''
       }`}
       style={{
         backgroundColor: pip || sideBySide ? '#000' : 'var(--color-background)',
-        touchAction: mini ? 'none' : undefined,
       }}
       initial={false}
       animate={layerGeometry}
-      transition={
-        dragging ? { duration: 0 } : { type: 'spring', stiffness: 420, damping: 36, mass: 0.7 }
-      }
-      onPointerDown={mini ? onMiniPointerDown : undefined}
-      onPointerMove={mini ? onMiniPointerMove : undefined}
-      onPointerUp={mini ? onMiniPointerUp : undefined}
-      onPointerCancel={mini ? onMiniPointerUp : undefined}
-      onClick={
-        mini
-          ? () => {
-              if (!movedRef.current) setPlayerMode('full');
-            }
-          : undefined
-      }
+      transition={dragging ? { duration: 0 } : SPRING}
     >
       <div
         className={`w-full h-full flex ${sideBySide ? 'flex-row' : 'flex-col'}`}
@@ -418,25 +587,46 @@ export const WatchScreen: React.FC = () => {
         {/* The player keeps this exact tree position in EVERY mode, so the video
             element and the hls.js instance survive rotation, PiP and minimize. */}
         <div
+          ref={bandRef}
           className={playerBandClass}
           // Explicit width only when split: this is what puts the seam ON the
           // hinge, rather than letting flex choose a boundary the crease then
           // cuts straight through.
-          style={
-            sideBySide
+          //
+          // touch-action is STATIC, not toggled by mode. Chromium fixes a
+          // gesture's disposition at touchstart and never re-reads the property
+          // mid-gesture (see the note in chat/useLongPressDrag.ts), so the old
+          // `mini ? 'none' : undefined` only ever applied AFTER the drag that
+          // needed it. Nothing under the band scrolls, so `none` is safe here.
+          style={{
+            // Mid-shrink the explicit resizable height is dropped, so the band
+            // falls back to `aspect-video` and scales with the layer instead of
+            // clipping against a fixed height. Only reachable on an expanded
+            // screen in the stacked arrangement; phones never set it.
+            ...(sideBySide
               ? { width: playerWidth }
-              : resizable
+              : resizable && shrink === 0
                 ? { height: playerMain }
-                : undefined
-          }
-          onTouchStart={mini || sideBySide ? undefined : onBandTouchStart}
-          onTouchMove={mini || sideBySide ? undefined : onBandTouchMove}
-          onTouchEnd={mini || sideBySide ? undefined : onBandTouchEnd}
+                : null),
+            touchAction: sideBySide ? undefined : 'none',
+          }}
+          onPointerDown={onBandPointerDown}
+          onPointerMove={onBandPointerMove}
+          onPointerUp={onBandPointerUp}
+          onPointerCancel={onBandPointerCancel}
+          // Swallow the click that trails a drag, so releasing a gesture never
+          // also toggles the player controls or expands the mini box.
+          onClickCapture={(e) => {
+            if (suppressClick.current) {
+              suppressClick.current = false;
+              e.stopPropagation();
+            }
+          }}
         >
           <MobilePlayer
             immersive={sideBySide || pip}
             compact={mini || pip}
-            onEnterPip={mini || pip ? undefined : enterPip}
+            onMinimize={mini || pip ? undefined : () => setPlayerMode('mini')}
             onToggleFullscreen={sideBySide ? () => setLandscapeChat((v) => !v) : undefined}
             layoutMode={twoColumns ? 'columns' : 'stacked'}
             onToggleLayout={
@@ -451,7 +641,12 @@ export const WatchScreen: React.FC = () => {
                 : undefined
             }
           />
-          {mini && (
+          {/* IN-APP mini only. In system PiP the OS draws its own close and
+              expand buttons over the window, so rendering ours too gave two
+              exit buttons; and taps inside a PiP window go to the OS chrome,
+              never to this content, so the swallower has nothing to catch. PiP
+              carries no web chrome at all - mute is a native RemoteAction. */}
+          {mini && !pip && (
             <>
               {/* Swallow player taps so the whole box reads as one control. */}
               <div className="absolute inset-0 z-10" />
