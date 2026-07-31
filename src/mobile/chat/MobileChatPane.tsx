@@ -27,6 +27,7 @@ import { AddChatSheet } from './AddChatSheet';
 import { useChatTabsStore } from './chatTabsStore';
 import { banUser, deleteMessage, isModeratorFrom, pinMessage, unbanUser } from './modActions';
 import { deriveChatGating } from './chatGating';
+import { useFollowStatus } from './useFollowStatus';
 import { ChatFanOut, type FanAction, type FanTarget } from './ChatFanOut';
 import { useLongPressDrag } from './useLongPressDrag';
 import { usePinStore } from '../../stores/pinStore';
@@ -78,9 +79,15 @@ export const MobileChatPane: React.FC = () => {
   const emotes = useChannelEmotes(activeChannel, activeTab?.channelId ?? null, 'twitch');
 
   const isModerator = isModeratorFrom(userBadges);
-  const gating = useMemo(() => deriveChatGating(roomState, userBadges), [roomState, userBadges]);
   /** Every Helix mod action keys off the channel's numeric id. */
   const broadcasterId = activeTab?.channelId ?? null;
+  // Only asked when follower mode is actually on, so an unrestricted room costs
+  // nothing. -1 is off; 0 and above are some flavour of followers-only.
+  const isFollowing = useFollowStatus(broadcasterId, (roomState?.followersOnly ?? -1) >= 0);
+  const gating = useMemo(
+    () => deriveChatGating(roomState, userBadges, isFollowing),
+    [roomState, userBadges, isFollowing],
+  );
   // Moderator tools are ON wherever you have the badge. A mod opening their own
   // channel expects their tools, and making them hunt for a toggle every time is
   // the wrong default. The destructive actions are protected by the fan's

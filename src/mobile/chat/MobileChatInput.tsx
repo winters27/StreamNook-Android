@@ -15,7 +15,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { listen } from '@tauri-apps/api/event';
-import { DotsThreeVertical, Lock, X } from 'phosphor-react';
+import { DotsThreeVertical, X } from 'phosphor-react';
 import { useAppStore } from '../../stores/AppStore';
 import { incrementStat } from '../../services/supabaseService';
 import { refreshChannelEmotes, sendChannelMessage } from '../../stores/chatConnectionStore';
@@ -186,15 +186,12 @@ export const MobileChatInput: React.FC<Props> = ({
         message={text}
         onShared={() => setText('')}
       />
-      {/* Only surfaced here when it actually stops you sending. A room being in
-          followers-only while you CAN still talk is context, not an alert, so it
-          lives in the chat menu instead of taking a line above the composer. */}
-      {gating.blocked && (
-        <div className="flex items-center gap-1.5 px-3 pt-1.5 text-[11.5px] text-warning">
-          <Lock size={11} weight="bold" className="shrink-0" />
-          <span className="truncate">{gating.reason}</span>
-        </div>
-      )}
+      {/* No warning line here, deliberately. It rendered `gating.reason`, which
+          is the exact string the disabled field's placeholder already shows, in
+          the same warning colour -- the same sentence twice, stacked. The
+          placeholder alone says why the field is dead, and it says it in the
+          field you were about to type in. The chat menu carries the room's full
+          state, and now the Follow action alongside it. */}
       {replyTo && (
         <div className="flex items-center gap-1.5 px-3 pt-1.5 text-[12.5px] text-textSecondary">
           <span className="truncate">
@@ -388,6 +385,7 @@ export const MobileChatInput: React.FC<Props> = ({
         onClose={() => setMenuOpen(false)}
         activeChannel={channel}
         activeLabel={channelLabel}
+        channelId={channelId}
         isModerator={isModerator}
         gatingLabels={gating.labels}
         modToolsOn={modToolsOn}

@@ -4,6 +4,7 @@ import { ListBullets, MagnifyingGlass, SquaresFour, X } from 'phosphor-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileNavStore } from '../navStore';
+import { useHypeTrains } from '../useHypeTrains';
 import { MobileStreamCard, useDropsGameNames } from '../ui/MobileStreamCard';
 import { readStreamView, writeStreamView, type StreamViewMode } from './FollowingScreen';
 import { PullToRefresh } from '../ui/PullToRefresh';
@@ -129,6 +130,9 @@ export const BrowseScreen: React.FC = () => {
   };
 
   const shownStreams = streamResults ?? recommendedStreams;
+  // Browse already drew the badge but never fetched the statuses, so a train
+  // only ever showed for channels that happened to also be in your following.
+  useHypeTrains(shownStreams);
   const shownCategories = categoryResults ?? categories;
 
   return (

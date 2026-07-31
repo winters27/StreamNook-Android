@@ -1,8 +1,9 @@
 // The menu behind the composer's trailing button when there is nothing to send.
 // Send and this share one slot, so the composer never carries a dead button.
 import React from 'react';
-import { ArrowsClockwise, ChatsCircle, Lock, ShieldCheck, X } from 'phosphor-react';
+import { ArrowsClockwise, ChatsCircle, Heart, HeartBreak, Lock, ShieldCheck, X } from 'phosphor-react';
 import { MobileSheet } from '../ui/MobileSheet';
+import { useChannelSocial } from '../../hooks/useChannelSocial';
 
 interface Props {
   open: boolean;
@@ -10,6 +11,8 @@ interface Props {
   /** Null when no chat is open. */
   activeChannel: string | null;
   activeLabel: string | null;
+  /** Broadcaster id, for follow/unfollow. Null when no chat is open. */
+  channelId: string | null;
   isModerator: boolean;
   /** Active room restrictions, shown as context. Empty when unrestricted. */
   gatingLabels: string[];
@@ -26,6 +29,7 @@ export const ComposerMenuSheet: React.FC<Props> = ({
   onClose,
   activeChannel,
   activeLabel,
+  channelId,
   isModerator,
   gatingLabels,
   modToolsOn,
@@ -36,6 +40,25 @@ export const ComposerMenuSheet: React.FC<Props> = ({
 }) => {
   const row =
     'sn-touch flex items-center gap-3 px-2 text-[15px] text-textPrimary active:opacity-70 disabled:opacity-45';
+
+  // The desktop client's follow logic, ported rather than reimplemented: this
+  // hook lives in hooks/ precisely so several surfaces can share it, and it
+  // already backs the desktop player overlay and MultiNook tiles.
+  //
+  // `enabled: open` matters. The sheet is always mounted, and the hook also
+  // checks subscription status on mount, so running it unconditionally would
+  // fire those lookups for every chat all the time. That flag exists for exactly
+  // this (MultiNook runs it only for the focused tile).
+  //
+  // The hook's SUBSCRIBE half is deliberately unused here: `handleSubscribeClick`
+  // opens a webview window and is `#[cfg(desktop)]`, so there is no subscribe
+  // control on mobile.
+  const { isFollowing, followLoading, handleFollowClick } = useChannelSocial({
+    userId: channelId,
+    userLogin: activeChannel,
+    userName: activeLabel,
+    enabled: open && !!channelId,
+  });
 
   return (
     <MobileSheet open={open} onClose={onClose} title={activeLabel ?? 'Chat'} maxHeightFraction={0.5}>
@@ -52,6 +75,30 @@ export const ComposerMenuSheet: React.FC<Props> = ({
             </div>
           </div>
         )}
+        {/* Follow / unfollow. Green heart to follow, red broken heart to
+            unfollow, matching the desktop overlay's Heart / HeartBreak pair.
+            Held back until the status is known (`isFollowing` is null while
+            checking) rather than guessing a label and flipping it a moment
+            later. The sheet stays open on tap: the row reflects the new state
+            in place, which is the confirmation. */}
+        {channelId && isFollowing !== null && (
+          <button
+            onClick={() => void handleFollowClick()}
+            disabled={followLoading}
+            className={`${row} ${isFollowing ? '!text-error' : '!text-success'}`}
+          >
+            {isFollowing ? (
+              <HeartBreak size={19} weight="fill" className="shrink-0" />
+            ) : (
+              <Heart size={19} weight="fill" className="shrink-0" />
+            )}
+            <span className="flex-1 text-left">
+              {isFollowing ? 'Unfollow' : 'Follow'}
+              {activeLabel ? ` ${activeLabel}` : ''}
+            </span>
+          </button>
+        )}
+
         <button
           onClick={() => {
             onAddChat();
