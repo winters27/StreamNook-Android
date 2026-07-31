@@ -27,10 +27,21 @@ val hasReleaseKeystore = keystoreProperties.getProperty("storeFile") != null
 
 android {
     compileSdk = 36
-    namespace = "com.streamnook.dev"
+    // `app.streamnook`, NOT the desktop's `com.streamnook.dev`, and the split is
+    // deliberate. Both derive from the Tauri identifier, but Android's is
+    // overridden in `src-tauri/tauri.android.conf.json` (platform config files
+    // merge over the base per JSON Merge Patch, RFC 7396). The desktop
+    // identifier has to stay put: it keys the Windows installer/upgrade
+    // identity, the updater, and the WebView2 profile dir that
+    // `account_store.rs` reads cookies out of, for a shipped v8.3.9 app.
+    //
+    // Renamed while Android was still unreleased, because after release the
+    // applicationId IS the app's identity: changing it offers no update path and
+    // forces every user to uninstall and lose their login.
+    namespace = "app.streamnook"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
-        applicationId = "com.streamnook.dev"
+        applicationId = "app.streamnook"
         minSdk = 26
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()

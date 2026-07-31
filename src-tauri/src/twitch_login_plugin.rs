@@ -1,7 +1,7 @@
 // Android in-app Twitch login. Tauri 2 cannot open a second WebView on Android
 // (the child-webview API is desktop-only), so login is presented by a native
 // Kotlin WebView overlay registered as an Android plugin. The Kotlin class
-// `com.streamnook.dev.TwitchLoginPlugin` exposes openLogin/closeLogin/getCookies.
+// `app.streamnook.TwitchLoginPlugin` exposes openLogin/closeLogin/getCookies.
 //
 // Plugin commands (`plugin:twitch-login|...`) always require an ACL grant, which
 // app-local plugins don't get for free. So instead of invoking the Kotlin plugin
@@ -28,7 +28,7 @@ struct CookiesResp {
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     tauri::plugin::Builder::new("twitch-login")
         .setup(|app, api| {
-            let handle = api.register_android_plugin("com.streamnook.dev", "TwitchLoginPlugin")?;
+            let handle = api.register_android_plugin("app.streamnook", "TwitchLoginPlugin")?;
             app.manage(TwitchLoginState(handle));
             Ok(())
         })

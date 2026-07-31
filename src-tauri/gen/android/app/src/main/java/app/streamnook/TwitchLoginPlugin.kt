@@ -1,4 +1,4 @@
-package com.streamnook.dev
+package app.streamnook
 
 import android.annotation.SuppressLint
 import android.app.Activity
@@ -127,6 +127,54 @@ class TwitchLoginPlugin(private val activity: Activity) : Plugin(activity) {
                 ): Boolean {
                     return false // keep every navigation inside this WebView
                 }
+
+                /**
+                 * Dismiss as soon as authorization is DONE, instead of waiting
+                 * for the token to arrive.
+                 *
+                 * The device-code flow polls id.twitch.tv on Twitch's advertised
+                 * `interval` (typically 5s) and sleeps BEFORE each attempt, so
+                 * after you approve, nothing collects the token until the next
+                 * tick. Until then this overlay is still up showing twitch.tv -
+                 * which is the "thrown into the Twitch website for a few
+                 * seconds" that everyone notices. It is the poll gap, not a
+                 * rendering delay, so no amount of UI tweaking fixes it.
+                 *
+                 * Where approval lands is not guessed - Twitch states it. The
+                 * authorize URL carries the destination as a `redirect_uri`
+                 * query param, so it is captured on the way through and matched
+                 * on arrival. Observed flow:
+                 *
+                 *   www.twitch.tv/activate?device-code=XXXX
+                 *   auth.twitch.tv/authorize?...&redirect_uri=<dest>&...
+                 *   <dest>                                  <- approved, done
+                 *
+                 * Today `<dest>` is www.twitch.tv/settings/connections. An
+                 * earlier version of this guessed the home page instead, which
+                 * simply never matched and did nothing. Reading it off the
+                 * authorize URL means a Twitch-side change fixes itself.
+                 *
+                 * Deliberately ADDITIVE. The normal close on
+                 * `twitch-login-complete` still runs and `dismiss()` is
+                 * idempotent, so the worst case is closing slightly early -
+                 * which is the behaviour being asked for anyway.
+                 */
+                override fun onPageStarted(
+                    view: WebView,
+                    url: String?,
+                    favicon: android.graphics.Bitmap?,
+                ) {
+                    super.onPageStarted(view, url, favicon)
+                    val u = url ?: return
+                    // Logged so the real post-approval URL stays visible in
+                    // logcat if Twitch ever moves where it lands.
+                    android.util.Log.i("SNLogin", "nav: $u")
+                    rememberRedirectTarget(u)
+                    if (isApprovalLanding(u)) {
+                        android.util.Log.i("SNLogin", "authorized; dismissing overlay early")
+                        activity.runOnUiThread { dismiss() }
+                    }
+                }
             }
 
             // Minimal top bar: a close affordance + "Sign in to Twitch" label. Thin,
@@ -193,6 +241,50 @@ class TwitchLoginPlugin(private val activity: Activity) : Plugin(activity) {
             dismiss()
             invoke.resolve()
         }
+    }
+
+    /** host+path of where approving will land, read off the authorize URL. */
+    private var approvalLanding: String? = null
+
+    /** Normalised host+path, so query strings and trailing slashes do not matter. */
+    private fun hostPath(url: String): String? {
+        return try {
+            val u = android.net.Uri.parse(url)
+            val host = u.host?.lowercase()
+            if (host == null) null else host + u.path.orEmpty().trimEnd('/')
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * On the way through `auth.twitch.tv/authorize`, note the `redirect_uri` it
+     * carries. That is where approving will send us, straight from Twitch,
+     * rather than a hardcoded guess that silently rots.
+     */
+    private fun rememberRedirectTarget(url: String) {
+        try {
+            val u = android.net.Uri.parse(url)
+            if (u.host?.lowercase() != "auth.twitch.tv") return
+            val redirect = u.getQueryParameter("redirect_uri") ?: return
+            approvalLanding = hostPath(redirect)
+            android.util.Log.i("SNLogin", "approval will land on: $approvalLanding")
+        } catch (_: Exception) {
+            /* leave the fallback in place */
+        }
+    }
+
+    /**
+     * True once we reach the page approving redirects to.
+     *
+     * Falls back to the observed destination when the authorize step was not
+     * seen (already-signed-in sessions can skip straight through), so this still
+     * works without having captured the redirect first.
+     */
+    private fun isApprovalLanding(url: String): Boolean {
+        val here = hostPath(url) ?: return false
+        approvalLanding?.let { return here == it }
+        return here == "www.twitch.tv/settings/connections"
     }
 
     private fun dismiss() {

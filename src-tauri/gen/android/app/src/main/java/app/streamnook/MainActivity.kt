@@ -1,13 +1,22 @@
-package com.streamnook.dev
+package app.streamnook
 
+import android.app.PendingIntent
 import android.app.PictureInPictureParams
+import android.app.RemoteAction
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.graphics.Rect
+import android.graphics.drawable.Icon
+import android.os.Build
 import android.os.Bundle
 import android.util.Rational
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -28,9 +37,74 @@ class MainActivity : TauriActivity() {
   // have not been applied to the fresh document yet).
   @Volatile private var insetsJson: String = "{}"
 
-  // Whether a stream is playing, so onUserLeaveHint knows to enter system
+  // Whether a stream is playing, so leaving the app enters system
   // picture-in-picture. Pushed from JS.
   @Volatile private var pipEligible: Boolean = false
+
+  // Mirrors the <video> mute state, so the PiP window's action shows the right
+  // icon and label. Pushed from JS on every mute change, from either control.
+  @Volatile private var pipMuted: Boolean = false
+
+  // The video's rect in window coordinates. Without it the OS crops and scales
+  // the WHOLE activity into the PiP window, so the frames before the web layer
+  // repaints show whatever full-screen panel happened to be open.
+  @Volatile private var pipSourceRect: Rect? = null
+
+  // Set when the PiP window was DISMISSED rather than expanded. Read and cleared
+  // by the web shell on its way back to the foreground.
+  @Volatile private var pipClosedPending: Boolean = false
+
+  // Fired by the PiP window's mute action. Private to the app; the receiver is
+  // registered in code and explicitly NOT exported.
+  private val muteReceiver = object : BroadcastReceiver() {
+    override fun onReceive(context: Context?, intent: Intent?) {
+      webView?.evaluateJavascript(
+        "window.dispatchEvent(new CustomEvent('sn:pip-mute'))",
+        null,
+      )
+    }
+  }
+
+  /** The single source of PictureInPictureParams, used by every entry point and
+   *  by every in-place update. */
+  private fun buildPipParams(): PictureInPictureParams {
+    val b = PictureInPictureParams.Builder().setAspectRatio(Rational(16, 9))
+    pipSourceRect?.let { b.setSourceRectHint(it) }
+
+    // Web content cannot draw usable controls inside a PiP window: taps there go
+    // to the OS chrome. Close and expand are OS-provided; mute has to be ours.
+    val iconRes = if (pipMuted) R.drawable.ic_pip_unmute else R.drawable.ic_pip_mute
+    val label = if (pipMuted) "Unmute" else "Mute"
+    val pending = PendingIntent.getBroadcast(
+      this,
+      0,
+      Intent(ACTION_PIP_MUTE).setPackage(packageName),
+      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+    b.setActions(
+      listOf(RemoteAction(Icon.createWithResource(this, iconRes), label, label, pending)),
+    )
+
+    // Android 12+ enters PiP itself on the way out, which is the only reliable
+    // path for a gesture-nav home swipe: onUserLeaveHint is not guaranteed to be
+    // delivered there. onUserLeaveHint below stays as the pre-31 fallback.
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+      b.setAutoEnterEnabled(pipEligible)
+    }
+    return b.build()
+  }
+
+  /** Push the current params without entering PiP. No-ops harmlessly if the
+   *  activity is in a state that will not accept them. */
+  private fun refreshPipParams() {
+    runOnUiThread {
+      try {
+        setPictureInPictureParams(buildPipParams())
+      } catch (_: Exception) {
+        /* PiP unavailable on this device/config */
+      }
+    }
+  }
 
   inner class InsetsBridge {
     @JavascriptInterface
@@ -54,10 +128,55 @@ class MainActivity : TauriActivity() {
       runOnUiThread { webView?.keepScreenOn = on }
     }
 
-    /** Mark whether leaving the app should enter system picture-in-picture. */
+    /** Mark whether leaving the app should enter system picture-in-picture.
+     *  Pushes params too, since that is what carries autoEnterEnabled. */
     @JavascriptInterface
     fun setPipEligible(eligible: Boolean) {
       pipEligible = eligible
+      refreshPipParams()
+    }
+
+    /**
+     * Whether we are in the PiP window, readable SYNCHRONOUSLY.
+     *
+     * The `sn:pip` event and the `dataset.snPip` mirror both ride an async
+     * evaluateJavascript, which races the WebView's own visibilitychange. The
+     * lifecycle handler has to tell real backgrounding from PiP and must not
+     * depend on winning that race, so it reads the activity directly.
+     */
+    @JavascriptInterface
+    fun isInPip(): Boolean = isInPictureInPictureMode
+
+    /** True once if the PiP window was closed rather than expanded. Reading it
+     *  clears it, so the stream is only torn down for the dismissal it belongs
+     *  to and not again on every later resume. */
+    @JavascriptInterface
+    fun consumePipClosed(): Boolean {
+      val was = pipClosedPending
+      pipClosedPending = false
+      return was
+    }
+
+    /** The video's rect in DEVICE pixels, relative to the WebView. */
+    @JavascriptInterface
+    fun setPipSourceRect(l: Int, t: Int, r: Int, b: Int) {
+      runOnUiThread {
+        val off = IntArray(2)
+        webView?.getLocationInWindow(off)
+        pipSourceRect = Rect(l + off[0], t + off[1], r + off[0], b + off[1])
+        try {
+          setPictureInPictureParams(buildPipParams())
+        } catch (_: Exception) {
+          /* PiP unavailable on this device/config */
+        }
+      }
+    }
+
+    /** Flip the PiP mute action's icon to match the player. */
+    @JavascriptInterface
+    fun setPipMuted(muted: Boolean) {
+      pipMuted = muted
+      refreshPipParams()
     }
 
     /** Hand text (a stream link) to the system share sheet. */
@@ -77,19 +196,19 @@ class MainActivity : TauriActivity() {
       }
     }
 
-    /** Enter TRUE system picture-in-picture on demand (drag-down, PiP button).
-     *  The activity shrinks into the OS PiP window: draggable, resizable,
-     *  floats over everything, tap to expand back. */
+    /** Enter system picture-in-picture on demand.
+     *
+     *  No UI calls this any more, and that is deliberate: the activity IS the
+     *  PiP window, so entering it from a button necessarily takes StreamNook off
+     *  screen, which reads as the app closing. In-app shrinking is the web
+     *  layer's mini player; system PiP is what LEAVING the app does. Kept for
+     *  the bridge surface and for anything that genuinely wants to hand off. */
     @JavascriptInterface
     fun enterPip() {
       runOnUiThread {
         if (!isInPictureInPictureMode) {
           try {
-            enterPictureInPictureMode(
-              PictureInPictureParams.Builder()
-                .setAspectRatio(Rational(16, 9))
-                .build(),
-            )
+            enterPictureInPictureMode(buildPipParams())
           } catch (_: Exception) {
             /* PiP unavailable on this device/config */
           }
@@ -101,6 +220,15 @@ class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+
+    // targetSdk is 36, so the export flag is mandatory. NOT_EXPORTED keeps the
+    // mute intent reachable only by our own PendingIntent.
+    ContextCompat.registerReceiver(
+      this,
+      muteReceiver,
+      IntentFilter(ACTION_PIP_MUTE),
+      ContextCompat.RECEIVER_NOT_EXPORTED,
+    )
 
     // Android back: ask the web shell first (sheets, drill stacks, the watch
     // layer). Unconsumed presses background the task instead of killing the
@@ -121,19 +249,33 @@ class MainActivity : TauriActivity() {
   }
 
   // Home/recents while a stream plays: keep it playing in a system PiP window.
+  // On API 31+ autoEnterEnabled has usually already done this, hence the
+  // isInPictureInPictureMode guard; this remains the path on 26..30.
   override fun onUserLeaveHint() {
     super.onUserLeaveHint()
     if (pipEligible && !isInPictureInPictureMode) {
       try {
-        enterPictureInPictureMode(
-          PictureInPictureParams.Builder()
-            .setAspectRatio(Rational(16, 9))
-            .build(),
-        )
+        enterPictureInPictureMode(buildPipParams())
       } catch (_: Exception) {
         /* PiP unavailable on this device/config */
       }
     }
+  }
+
+  /**
+   * Entering PiP moves the activity to PAUSED, and `WryActivity.onPause()`
+   * pauses the WebView along with it. In PiP that is wrong: the window is still
+   * on screen. A paused WebView stops drawing and stops media, so the PiP window
+   * freezes on whatever was last rendered - the tab you happened to be on, not
+   * the player - and playback dies with it.
+   *
+   * Undo it while pipped. `onPause` and `onPictureInPictureModeChanged` are not
+   * ordered against each other across OEMs and API levels, so both sites do it;
+   * `WebView.onResume()` is idempotent.
+   */
+  override fun onPause() {
+    super.onPause()
+    if (isInPictureInPictureMode) webView?.onResume()
   }
 
   override fun onPictureInPictureModeChanged(
@@ -141,6 +283,8 @@ class MainActivity : TauriActivity() {
     newConfig: android.content.res.Configuration,
   ) {
     super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+    // See onPause: keep the WebView live so the window keeps drawing and playing.
+    if (isInPictureInPictureMode) webView?.onResume()
     // Tell the web shell so it strips down to the bare player while pipped.
     val flag = if (isInPictureInPictureMode) "true" else "false"
     webView?.evaluateJavascript(
@@ -148,6 +292,25 @@ class MainActivity : TauriActivity() {
         "';window.dispatchEvent(new CustomEvent('sn:pip',{detail:" + flag + "}));})()",
       null,
     )
+
+    // Leaving PiP happens two ways and they mean opposite things:
+    //   expand  -> the activity comes to the foreground (STARTED / RESUMED)
+    //   close X -> the window is dismissed and the activity is on its way to
+    //              stopped, so the lifecycle is still at CREATED here.
+    // Dismissing the window is the viewer saying they are done with the stream.
+    // Closing PiP does NOT finish the activity on this device (verified: the
+    // process and the ActivityRecord both survive), so without this the stream
+    // stays loaded and playing and reappears the next time the app is opened.
+    if (!isInPictureInPictureMode && lifecycle.currentState == Lifecycle.State.CREATED) {
+      // Belt: stop it now, so audio does not carry on in the background.
+      webView?.evaluateJavascript(
+        "window.dispatchEvent(new CustomEvent('sn:pip-closed'))",
+        null,
+      )
+      // Braces: the activity is stopping, so that script may not get to run.
+      // This flag is read synchronously on the way back in and cannot be lost.
+      pipClosedPending = true
+    }
   }
 
   /**
@@ -243,5 +406,18 @@ class MainActivity : TauriActivity() {
       insets
     }
     ViewCompat.requestApplyInsets(webView)
+  }
+
+  override fun onDestroy() {
+    try {
+      unregisterReceiver(muteReceiver)
+    } catch (_: IllegalArgumentException) {
+      /* never registered */
+    }
+    super.onDestroy()
+  }
+
+  companion object {
+    private const val ACTION_PIP_MUTE = "app.streamnook.PIP_MUTE"
   }
 }

@@ -2,9 +2,9 @@
 
 # The MainActivity insets bridge is called reflectively from JS via
 # addJavascriptInterface; R8 must not strip or rename it.
--keepclassmembers class com.streamnook.dev.MainActivity$InsetsBridge {
+-keepclassmembers class app.streamnook.MainActivity$InsetsBridge {
     @android.webkit.JavascriptInterface <methods>;
 }
 
 # Tauri mobile plugins are instantiated reflectively by PluginManager.
--keep class com.streamnook.dev.TwitchLoginPlugin { *; }
+-keep class app.streamnook.TwitchLoginPlugin { *; }
