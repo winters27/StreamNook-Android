@@ -2,6 +2,11 @@ import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { X } from 'lucide-react';
 import { useAppStore } from '../../stores/AppStore';
+// This panel is genuinely SHARED - both shells render it - so a platform branch
+// here is legitimate, unlike in components that only ever run on one platform.
+// It hides rows whose backing feature does not exist on Android, so the phone
+// settings stop offering knobs that quietly do nothing.
+import { IS_MOBILE } from '../../utils/platform';
 import PanelChannelList from '../plugins/PanelChannelList';
 import { trustableHost } from '../../services/linkPreviewService';
 import { Tooltip } from '../ui/Tooltip';
@@ -356,7 +361,10 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
 
   return (
     <div className="space-y-8">
-      {!hidePlacement && (
+      {/* Desktop only. This positions the MAIN app's chat panel (left / right /
+          bottom / hidden) plus the hover-reveal that goes with it. The phone
+          shell stacks the player over chat and has no edge to tuck against. */}
+      {!hidePlacement && !IS_MOBILE && (
       <SettingsSection label="Chat Placement">
         <SettingsRow
           title="Placement"
@@ -464,6 +472,9 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
         />
       </SettingsSection>
 
+      {/* Desktop only. Writes .log files into a folder the user picks, and there
+          is no user-visible folder to point at on Android. */}
+      {!IS_MOBILE && (
       <SettingsSection label="Chat Logging">
         <SettingsRow
           title="Save chat logs"
@@ -539,6 +550,7 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
           </>
         )}
       </SettingsSection>
+      )}
 
       <SettingsSection label="Chat Design">
         <SettingsRow
@@ -593,20 +605,25 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
           />
         </SettingsRow>
 
-        <SettingsRow
-          title={`Activity Feed Size: ${cd.activity_font_size ?? 14}px`}
-          description="Text size of the MultiChat activity feed (subs, raids, gifts, ...)"
-        >
-          <input
-            type="range"
-            min="10"
-            max="28"
-            step="1"
-            value={cd.activity_font_size ?? 14}
-            onChange={(e) => setDesign({ activity_font_size: parseInt(e.target.value) })}
-            className="w-full accent-accent cursor-pointer"
-          />
-        </SettingsRow>
+        {/* Desktop only: its own description says MultiChat, and MultiChat is
+            gated off mobile entirely. Note this is NOT the phone's Activity tab,
+            which is drops and badges and takes no sizing from here. */}
+        {!IS_MOBILE && (
+          <SettingsRow
+            title={`Activity Feed Size: ${cd.activity_font_size ?? 14}px`}
+            description="Text size of the MultiChat activity feed (subs, raids, gifts, ...)"
+          >
+            <input
+              type="range"
+              min="10"
+              max="28"
+              step="1"
+              value={cd.activity_font_size ?? 14}
+              onChange={(e) => setDesign({ activity_font_size: parseInt(e.target.value) })}
+              className="w-full accent-accent cursor-pointer"
+            />
+          </SettingsRow>
+        )}
 
         <SettingsRow
           title="Font Weight"
@@ -907,18 +924,24 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
             />
           }
         />
-        <SettingsRow
-          title="Quick Send (Ctrl+Enter keeps message)"
-          description="Holding Ctrl while pressing Enter sends the message AND leaves it in the input box so you can re-send fast. Plain Enter still sends and clears like normal."
-          control={
-            <Toggle
-              enabled={settings.chat_input?.quick_send ?? false}
-              onChange={() => setInput({ quick_send: !(settings.chat_input?.quick_send ?? false) })}
-            />
-          }
-        />
+        {/* Desktop only: there is no Ctrl to hold on a phone keyboard. */}
+        {!IS_MOBILE && (
+          <SettingsRow
+            title="Quick Send (Ctrl+Enter keeps message)"
+            description="Holding Ctrl while pressing Enter sends the message AND leaves it in the input box so you can re-send fast. Plain Enter still sends and clears like normal."
+            control={
+              <Toggle
+                enabled={settings.chat_input?.quick_send ?? false}
+                onChange={() => setInput({ quick_send: !(settings.chat_input?.quick_send ?? false) })}
+              />
+            }
+          />
+        )}
       </SettingsSection>
 
+      {/* Desktop only: the whole feature is driven by the Tab key. The phone
+          composer reaches emotes through the emote sheet instead. */}
+      {!IS_MOBILE && (
       <SettingsSection
         label="Emote Tab Completion"
         description="Type part of an emote name in chat and press Tab to cycle through matching emotes. Shift+Tab cycles backwards."
@@ -966,6 +989,7 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
           }
         />
       </SettingsSection>
+      )}
 
       <SettingsSection
         label="Render Style"
@@ -1071,6 +1095,12 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
         </SettingsRow>
       </SettingsSection>
 
+      {/* Desktop only, and the WHOLE section, not just the row: it holds one
+          setting, so guarding the row alone would leave a titled section with
+          nothing in it. `user_card_opens_messages` is read solely by
+          UserProfileCard.tsx; the phone opens its own UserProfileSheet, which
+          never consults it, so the toggle did nothing on Android. */}
+      {!IS_MOBILE && (
       <SettingsSection
         id="settings-section-user-cards"
         label="User Cards"
@@ -1087,6 +1117,7 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
           }
         />
       </SettingsSection>
+      )}
 
       <SettingsSection
         label="7TV Cosmetics"
