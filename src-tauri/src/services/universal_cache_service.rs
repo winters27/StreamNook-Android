@@ -472,19 +472,32 @@ pub async fn get_cached_item(
 
 /// Save an item to local cache (with lock to prevent concurrent writes).
 ///
-/// The body runs on the blocking pool: `load_manifest()` + `save_manifest()`
-/// each clone the ENTIRE manifest (thousands of accumulated entries), so a sync
-/// run on a runtime worker is heavy CPU that stalls every async task — observed
-/// as a multi-second `rt_stall` when mid-session caching fires on a large
-/// manifest. (The O(N^2) per-file clone cost remains; this just keeps it off
-/// the async runtime. A true fix batches the manifest update — see the batch
-/// variant below, which `cache_file` callers should prefer for bulk work.)
+/// Inserts straight into the in-memory manifest under the write lock. It used to
+/// go `load_manifest()` -> insert -> `save_manifest()`, which deep-cloned the
+/// ENTIRE manifest twice for every single cached file; on a manifest with
+/// thousands of accumulated entries that is what produced the multi-second
+/// `rt_stall` when caching fired mid-session. One insert costs the same now
+/// whether the manifest holds ten entries or ten thousand.
+///
+/// Still on the blocking pool, and still under `MANIFEST_LOCK`, so the ordering
+/// guarantees callers rely on are unchanged.
+///
+/// `MANIFEST_MEMORY` is a `Lazy` initialized from `load_manifest_from_disk()`,
+/// and taking the write lock derefs it, so this still reads the manifest off
+/// disk on first touch. Do NOT convert it to a plain `RwLock`: the first insert
+/// would then land in an empty manifest and the next flush would overwrite the
+/// on-disk cache index with it.
 pub async fn save_cached_item(entry: UniversalCacheEntry) -> Result<()> {
     tokio::task::spawn_blocking(move || -> Result<()> {
         let _lock = MANIFEST_LOCK.lock().unwrap();
-        let mut manifest = load_manifest()?;
-        manifest.entries.insert(entry.id.clone(), entry);
-        save_manifest(&manifest)?;
+        {
+            let mut guard = MANIFEST_MEMORY
+                .write()
+                .map_err(|_| anyhow::anyhow!("manifest memory lock poisoned"))?;
+            guard.entries.insert(entry.id.clone(), entry);
+        }
+        MANIFEST_DIRTY.store(true, Ordering::Release);
+        ensure_flush_task();
         Ok(())
     })
     .await
