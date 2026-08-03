@@ -27,6 +27,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { fetchRecentMessagesAsIRC } from '../services/ivrService';
 import { fetchAllEmotes, fetchKickChannelEmotes, type EmoteSet } from '../services/emoteService';
 import { Logger } from '../utils/logger';
+import { IS_MOBILE } from '../utils/platform';
 import { useAppStore } from './AppStore';
 import { useGiftBombStore, type GiftRecipient } from './giftBombStore';
 import { giftBombOriginOf, isGiftBombAnnouncement, isGiftBombChild } from '../utils/giftBombCollapse';
@@ -38,6 +39,67 @@ import type { SongMatch } from '../utils/songId';
 const CHAT_HISTORY_MAX = 100;
 const CHAT_BUFFER_SIZE = 150; // extra slack while a channel is paused (scrolled up)
 const CHAT_MAX_WITH_BUFFER = CHAT_HISTORY_MAX + CHAT_BUFFER_SIZE;
+
+/**
+ * Ids of the messages still in a channel's retained buffer. Messages are a mix
+ * of parsed objects and raw IRC lines, so both shapes are handled.
+ */
+function retainedMessageIds(slice: ChannelSlice): Set<string> {
+  const ids = new Set<string>();
+  for (const m of slice.messages) {
+    if (typeof m === 'string') {
+      const match = m.match(/(?:^|;)id=([^;]+)/);
+      if (match) ids.add(match[1]);
+    } else if (m.id) {
+      ids.add(m.id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Drop moderation state for messages that have scrolled out of the buffer.
+ *
+ * `deletedMessageIds` and `clearedUserContexts` grow per moderation event and
+ * were never trimmed, unlike the `seenMessageIds` set they sit beside. In a
+ * heavily moderated channel that is thousands of entries and thousands of
+ * nested Sets over an evening, all handed to React on every revision bump.
+ *
+ * It intersects the live buffer rather than slicing a tail, because these are
+ * ordered by when the moderation happened, not by when the message arrived, so
+ * the oldest entry is not necessarily the one that has scrolled away. Both are
+ * only ever read to decide whether a RENDERED row gets strikethrough chrome, so
+ * anything no longer in the buffer can never be asked about again.
+ *
+ * Mobile only; desktop behaviour is untouched.
+ */
+function trimModerationState(slice: ChannelSlice): void {
+  if (!IS_MOBILE) return;
+  if (slice.deletedMessageIds.size === 0 && slice.clearedUserContexts.size === 0) return;
+
+  const live = retainedMessageIds(slice);
+
+  if (slice.deletedMessageIds.size > 0) {
+    const next = new Set<string>();
+    for (const id of slice.deletedMessageIds) {
+      if (live.has(id)) next.add(id);
+    }
+    slice.deletedMessageIds = next;
+  }
+
+  if (slice.clearedUserContexts.size > 0) {
+    const next = new Map<string, ClearedUserEntry>();
+    for (const [userId, entry] of slice.clearedUserContexts) {
+      const affected = new Set<string>();
+      for (const id of entry.affectedMessageIds) {
+        if (live.has(id)) affected.add(id);
+      }
+      // An entry with nothing left in the buffer can never match a row again.
+      if (affected.size > 0) next.set(userId, { ...entry, affectedMessageIds: affected });
+    }
+    slice.clearedUserContexts = next;
+  }
+}
 
 const MAX_RECONNECT_ATTEMPTS = 10;
 const WS_OPEN_RETRY_ATTEMPTS = 5;
@@ -1635,6 +1697,7 @@ function appendStructuredMessage(slice: ChannelSlice, parsed: any) {
   if (slice.seenMessageIds.size > CHAT_MAX_WITH_BUFFER) {
     slice.seenMessageIds = new Set(Array.from(slice.seenMessageIds).slice(-CHAT_MAX_WITH_BUFFER));
   }
+  trimModerationState(slice);
   // Gift-bomb collapse: keep only the announcement row and fold the individual
   // gifts into its recipient list. Handles anon variants and out-of-order arrival
   // (children before their announcement), mirroring the overlay via the shared
@@ -1903,6 +1966,7 @@ function handleRawIrcString(raw: string) {
     if (slice.seenMessageIds.size > CHAT_MAX_WITH_BUFFER) {
       slice.seenMessageIds = new Set(Array.from(slice.seenMessageIds).slice(-CHAT_MAX_WITH_BUFFER));
     }
+    trimModerationState(slice);
     queueMessage(slice.channel, raw);
   } else {
     queueMessage(slice.channel, raw);
