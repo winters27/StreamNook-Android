@@ -18,6 +18,7 @@ import { campaignEarnableOn } from '../dropsEligibility';
 import { Logger } from '../../utils/logger';
 import { channelHasEarnableCampaign, useDropsGameNames } from '../dropsCampaigns';
 import type { InventoryResponse, TimeBasedDrop } from '../../types';
+import { isBackgrounded } from '../backgroundGate';
 
 // Inventory is a network round trip, and accrued minutes only ever move once a
 // minute, so there is nothing a faster poll could learn.
@@ -189,7 +190,12 @@ export const DropProgressBar: React.FC<Props> = ({ onActiveChange, visible = tru
   useEffect(() => {
     if (!earnable) return;
     void refresh();
-    const t = setInterval(() => void refresh(), POLL_MS);
+    // Skipped while backgrounded rather than torn down: nobody is looking at
+    // the bar, and it re-reads on the next tick after resuming anyway.
+    const t = setInterval(() => {
+      if (isBackgrounded()) return;
+      void refresh();
+    }, POLL_MS);
     return () => clearInterval(t);
   }, [refresh, earnable]);
 

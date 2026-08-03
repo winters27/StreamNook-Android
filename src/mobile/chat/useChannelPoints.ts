@@ -28,6 +28,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import { NOTIFY_CHANNEL, postSystemNotification } from '../notifications';
 import { Logger } from '../../utils/logger';
+import { isBackgrounded } from '../backgroundGate';
 
 // Matches the desktop composer's cadence. Fast enough that a chest is collected
 // well inside its lifetime and the balance never looks frozen, slow enough to
@@ -216,6 +217,9 @@ export function useChannelPoints(
     // Chests appear mid-stream and passive points land every few minutes, so a
     // single read at join time goes stale within a minute of arriving.
     const timer = window.setInterval(() => {
+      // Skipped while backgrounded. The balance is re-read on resume, and the
+      // chest claim this drives needs the app in front to be worth anything.
+      if (isBackgrounded()) return;
       void read();
     }, POLL_MS);
 

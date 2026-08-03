@@ -18,6 +18,7 @@
 import { refreshEntitlementRegistries } from '../services/supabaseService';
 import { refreshFollowingIfStale } from './followRefresh';
 import { isInPip } from './nativeBridge';
+import { setBackgrounded } from './backgroundGate';
 import { Logger } from '../utils/logger';
 
 let installed = false;
@@ -53,6 +54,9 @@ function inPictureInPicture(): boolean {
 async function onHidden(): Promise<void> {
   if (inPictureInPicture()) return;
   hiddenSince = Date.now();
+  // The polls read this and skip their tick. Set before the await so a poll
+  // firing in the same turn already sees it.
+  setBackgrounded(true);
   try {
     const { stopBadgeFeed } = await import('../services/badgeSocketService');
     stopBadgeFeed();
@@ -62,6 +66,7 @@ async function onHidden(): Promise<void> {
 }
 
 async function onVisible(): Promise<void> {
+  setBackgrounded(false);
   try {
     const { startBadgeFeed } = await import('../services/badgeSocketService');
     startBadgeFeed();

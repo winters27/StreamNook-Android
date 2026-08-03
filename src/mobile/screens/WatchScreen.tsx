@@ -54,6 +54,7 @@ import {
   setPipSourceRect,
 } from '../nativeBridge';
 import { Logger } from '../../utils/logger';
+import { isBackgrounded } from '../backgroundGate';
 
 interface PinnedMessage {
   id: string;
@@ -315,7 +316,12 @@ export const WatchScreen: React.FC = () => {
       }
     };
     void fetchPins();
-    const t = setInterval(() => void fetchPins(), 30_000);
+    // Skipped while backgrounded: a pinned message is chat chrome nobody can
+    // see, and the next tick after resuming picks up whatever is current.
+    const t = setInterval(() => {
+      if (isBackgrounded()) return;
+      void fetchPins();
+    }, 30_000);
     return () => {
       cancelled = true;
       clearInterval(t);
