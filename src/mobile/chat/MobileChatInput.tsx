@@ -67,7 +67,12 @@ interface Props {
   onCloseChat?: () => void;
 }
 
-export const MobileChatInput: React.FC<Props> = ({
+// Memoized below. The pane re-renders on every arriving chat message and the
+// composer's props barely ever change, so without this the whole input subtree
+// (and the emote work behind it) is rebuilt at chat's message rate. The memo is
+// only worth anything while every callback prop stays referentially stable, so
+// keep them in useCallback on the pane side.
+const MobileChatInputImpl: React.FC<Props> = ({
   channel,
   channelId,
   channelLabel,
@@ -565,3 +570,5 @@ export const MobileChatInput: React.FC<Props> = ({
     </div>
   );
 };
+
+export const MobileChatInput = React.memo(MobileChatInputImpl);

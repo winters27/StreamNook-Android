@@ -135,6 +135,26 @@ export const MobileChatPane: React.FC = () => {
   } | null>(null);
   const replyTo = replyDraft && replyDraft.channel === activeChannel ? replyDraft : null;
 
+  // Held still so the memoized children below actually stay memoized. This pane
+  // re-renders on every arriving message, and an inline arrow prop is a new
+  // reference each time, which defeats React.memo entirely. onCloseChat is the
+  // easy one to miss: it is conditional, so it silently churns whenever the
+  // active tab is a room you added by hand.
+  const handleCancelReply = useCallback(() => setReplyDraft(null), []);
+  const handleAddChat = useCallback(() => setAddChatOpen(true), []);
+  const handleCloseAddChat = useCallback(() => setAddChatOpen(false), []);
+  const handleCloseSheet = useCallback(() => setSheetUser(null), []);
+  const handleReload = useCallback(() => {
+    if (activeChannel) reload(activeChannel);
+  }, [activeChannel, reload]);
+  const activeTabChannel = activeTab?.channel;
+  const activeTabPinned = activeTab?.pinnedToStream;
+  const handleCloseChat = useMemo(
+    () =>
+      activeTabChannel && !activeTabPinned ? () => removeTab(activeTabChannel) : undefined,
+    [activeTabChannel, activeTabPinned, removeTab],
+  );
+
   // Dedupe set for the cosmetics registration loop, tagged with the channel it
   // describes so switching rooms invalidates it without an effect reset.
   const processed = useRef<{ channel: string | null; ids: Set<string> }>({
@@ -477,17 +497,13 @@ export const MobileChatPane: React.FC = () => {
         gating={gating}
         emotes={emotes}
         replyTo={replyTo}
-        onCancelReply={() => setReplyDraft(null)}
+        onCancelReply={handleCancelReply}
         isModerator={isModerator}
         modToolsOn={modToolsOn}
         onToggleModTools={toggleModTools}
-        onAddChat={() => setAddChatOpen(true)}
-        onReload={() => activeChannel && reload(activeChannel)}
-        onCloseChat={
-          activeTab && !activeTab.pinnedToStream
-            ? () => removeTab(activeTab.channel)
-            : undefined
-        }
+        onAddChat={handleAddChat}
+        onReload={handleReload}
+        onCloseChat={handleCloseChat}
       />
       {/* Channel context matters: Twitch badges like sub tiers and moderator are
           scoped to the room, so without it the profile shows only global ones. */}
@@ -495,9 +511,9 @@ export const MobileChatPane: React.FC = () => {
         user={sheetUser}
         channelId={broadcasterId}
         channelName={activeChannel}
-        onClose={() => setSheetUser(null)}
+        onClose={handleCloseSheet}
       />
-      <AddChatSheet open={addChatOpen} onClose={() => setAddChatOpen(false)} />
+      <AddChatSheet open={addChatOpen} onClose={handleCloseAddChat} />
       {/* Long-press fan-out. Owns every per-message action now, for everyone:
           moderators simply get more buckets. */}
       <ChatFanOut

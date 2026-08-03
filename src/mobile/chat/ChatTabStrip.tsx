@@ -44,7 +44,10 @@ export function useViewingStreamChat(): boolean {
   });
 }
 
-export const ChatTabStrip: React.FC = () => {
+// Memoized below: this takes no props and subscribes to the tab store itself,
+// so the parent re-rendering (which it does on every arriving chat message)
+// tells it nothing it did not already know.
+const ChatTabStripImpl: React.FC = () => {
   const tabs = useChatTabsStore((s) => s.tabs);
   const activeChannel = useChatTabsStore((s) => s.activeChannel);
   const setActive = useChatTabsStore((s) => s.setActive);
@@ -111,3 +114,5 @@ export const ChatTabStrip: React.FC = () => {
     </div>
   );
 };
+
+export const ChatTabStrip = React.memo(ChatTabStripImpl);
