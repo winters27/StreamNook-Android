@@ -1,20 +1,26 @@
 // Category drill: live streams for one category, layered above the tab shell
 // (and below the watch layer, so back exits the stream first).
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { CaretLeft } from 'phosphor-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileNavStore } from '../navStore';
 import { DrillInScreen } from '../ui/DrillInScreen';
 import { useHypeTrains } from '../useHypeTrains';
-import { MobileStreamCard, useDropsGameNames } from '../ui/MobileStreamCard';
+import { MobileStreamCard } from '../ui/MobileStreamCard';
+import { useDropsGameNames } from '../dropsCampaigns';
 import { AdaptiveGrid } from '../ui/AdaptiveGrid';
+import { SettleIn, useSettleIn } from '../ui/SettleIn';
 import { PullToRefresh } from '../ui/PullToRefresh';
 import { SkeletonCards } from '../ui/SkeletonCards';
 import { Logger } from '../../utils/logger';
 import type { TwitchStream } from '../../types';
 
 type Category = NonNullable<ReturnType<typeof useMobileNavStore.getState>['browseCategory']>;
+
+// Streams per request. Matches the categories grid; big enough that scrolling
+// rarely waits, small enough that the first paint is quick on mobile data.
+const PAGE = 40;
 
 export const CategoryStreamsScreen: React.FC = () => {
   const category = useMobileNavStore((s) => s.browseCategory);
@@ -49,30 +55,86 @@ const CategoryStreamsList: React.FC<{ category: Category }> = ({ category }) => 
 
   const [streams, setStreams] = useState<TwitchStream[]>([]);
   const [loading, setLoading] = useState(true);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const moreSentinel = useRef<HTMLDivElement | null>(null);
 
   // This screen fetched no statuses and passed no badge, so a category drill
   // showed no hype trains at all.
   useHypeTrains(streams);
+
+  // One identity: the component is already keyed by category, so opening a
+  // different one remounts and settles again on its own.
+  const settled = useSettleIn(!loading && streams.length > 0);
 
   const load = useCallback(async () => {
     try {
       const res = await invoke<[TwitchStream[], string | null]>('get_streams_by_game', {
         gameId: category.id,
         cursor: null,
-        limit: 40,
+        limit: PAGE,
       });
       setStreams(res[0] ?? []);
+      setCursor(res[1]);
+      setHasMore(!!res[1]);
     } catch (err) {
       Logger.warn('[CategoryStreams] load failed:', err);
       setStreams([]);
+      setHasMore(false);
     } finally {
       setLoading(false);
     }
   }, [category]);
 
+  // A busy category runs to hundreds of live channels. The cursor for them was
+  // already coming back and being thrown away, so the list stopped at the first
+  // page with no sign there was anything past it.
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore || !cursor) return;
+    setLoadingMore(true);
+    try {
+      const res = await invoke<[TwitchStream[], string | null]>('get_streams_by_game', {
+        gameId: category.id,
+        cursor,
+        limit: PAGE,
+      });
+      const page = res[0] ?? [];
+      setStreams((prev) => {
+        // Live viewer counts reorder underneath a cursor, so the same channel
+        // can arrive on two pages and a duplicate key would break the grid.
+        const seen = new Set(prev.map((s) => s.id));
+        return [...prev, ...page.filter((s) => !seen.has(s.id))];
+      });
+      setCursor(res[1]);
+      setHasMore(!!res[1] && page.length > 0);
+    } catch (err) {
+      Logger.warn('[CategoryStreams] page failed:', err);
+      setHasMore(false);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [category, cursor, hasMore, loadingMore]);
+
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Observer rather than a scroll handler: PullToRefresh owns native
+  // non-passive touch listeners on this same scroller, and keeping the two
+  // apart avoids any chance of them interfering.
+  useEffect(() => {
+    const el = moreSentinel.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) void loadMore();
+      },
+      { rootMargin: '600px' },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [loadMore]);
 
   // The full-screen frame (position, z, background, top inset) belongs to the
   // DrillInScreen wrapper now, so this is just the contents.
@@ -102,20 +164,32 @@ const CategoryStreamsList: React.FC<{ category: Category }> = ({ category }) => 
           // puts its gutter at 50% of the viewport - straight down the crease.
           // AdaptiveGrid aligns the gutter TO the hinge instead, and this screen
           // now matches Following and Browse rather than having its own rules.
-          <AdaptiveGrid variant="card" gap={12} className="px-4 sn-tabbar-clearance">
-            {streams.map((s) => (
-              <MobileStreamCard
-                key={s.id}
-                stream={s}
-                dropsGameNames={dropsGameNames}
-                // Neither of these was passed, so a card here was missing
-                // identity the same card carries on Following and Browse.
-                hypeTrain={activeHypeTrainChannels.get(s.user_id) ?? undefined}
-                watchStreak={watchStreaks[s.user_id]}
-                onPress={(stream) => void startStream(stream.user_login, stream)}
-              />
-            ))}
-          </AdaptiveGrid>
+          <>
+            <AdaptiveGrid variant="card" gap={12} className="px-4">
+              {streams.map((s, i) => (
+                <SettleIn key={s.id} index={i} settled={settled}>
+                  <MobileStreamCard
+                    stream={s}
+                    dropsGameNames={dropsGameNames}
+                    // Neither of these was passed, so a card here was missing
+                    // identity the same card carries on Following and Browse.
+                    hypeTrain={activeHypeTrainChannels.get(s.user_id) ?? undefined}
+                    watchStreak={watchStreaks[s.user_id]}
+                    onPress={(stream) => void startStream(stream.user_login, stream)}
+                  />
+                </SettleIn>
+              ))}
+            </AdaptiveGrid>
+            {/* Below the grid, so seeing it means the list is running out. The
+                tab-bar clearance rides here to stay the last thing on the page. */}
+            <div ref={moreSentinel} className="sn-tabbar-clearance">
+              {loadingMore && (
+                <div className="py-4 text-center text-[12px] text-textMuted">
+                  Loading more streams
+                </div>
+              )}
+            </div>
+          </>
         )}
       </PullToRefresh>
     </>

@@ -39,8 +39,19 @@ Two caveats that make step 1 less mechanical than it sounds:
 ## Gates
 
 ```bash
-npx tsc --noEmit && npx eslint src/mobile/ && cargo check --manifest-path src-tauri/Cargo.toml
+npx tsc --noEmit && npx eslint src/mobile/
 ```
+
+```bash
+export NDK_HOME=/root/android-sdk/ndk/26.3.11579264
+export PATH="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-linux-android
+```
+
+The Rust gate needs both halves of that second block. Without `--target`, cargo builds for the
+host Linux target, which wants GTK and fails on a missing `gobject-2.0` that this tree has no
+reason to install. Without the NDK toolchain on `PATH`, cc-rs cannot find
+`aarch64-linux-android-clang`. `~/wsl_dev.sh` exports the same environment for `tauri android dev`.
 
 `.env` is gitignored and must be hand-copied into any fresh clone (17 lines). Without it the build
 succeeds and silently compiles empty secrets.

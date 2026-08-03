@@ -2404,6 +2404,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Listen for login completion event from backend
       const { listen } = await import('@tauri-apps/api/event');
 
+      // Set only on Android, where the login overlay can be dismissed by the
+      // user; stays null everywhere else, so the calls below are no-ops off
+      // that platform. See the registration further down.
+      let removeCancelListener: (() => void) | null = null;
+
       const unlisten = await listen('twitch-login-complete', async () => {
         Logger.debug('Login complete event received');
 
@@ -2436,6 +2441,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
         // Clean up listener
         unlisten();
+        removeCancelListener?.();
       });
 
       // Also listen for login errors
@@ -2457,7 +2463,28 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
 
         unlistenError();
+        removeCancelListener?.();
       });
+
+      // Android only: the login overlay is a native view sitting on top of the
+      // app, so closing it with its X leaves no trace on this side. Without
+      // this the sign-in button stays spinning forever behind a screen that is
+      // no longer there. The backend device-code poll is left to expire on its
+      // own, since there is no command to call it off and it is harmless once
+      // nothing is waiting on it.
+      if (isMobile) {
+        const onCancelled = () => {
+          removeCancelListener?.();
+          unlisten();
+          unlistenError();
+          set({ isLoading: false, deviceCodeInfo: null });
+        };
+        removeCancelListener = () => {
+          removeCancelListener = null;
+          window.removeEventListener('sn:login-cancelled', onCancelled);
+        };
+        window.addEventListener('sn:login-cancelled', onCancelled);
+      }
 
     } catch (e) {
       Logger.error('Login failed:', e);

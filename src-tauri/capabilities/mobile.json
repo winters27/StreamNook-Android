@@ -14,6 +14,10 @@
     "core:event:allow-emit-to",
     "os:default",
     "shell:allow-open",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://*" }, { "url": "http://*" }]
+    },
     "deep-link:default",
     "dialog:default",
     "clipboard-manager:default",

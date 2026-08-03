@@ -1,5 +1,7 @@
 package app.streamnook
 
+import android.Manifest
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.PictureInPictureParams
 import android.app.RemoteAction
@@ -9,13 +11,17 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Rect
 import android.graphics.drawable.Icon
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.util.Rational
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -60,6 +66,45 @@ class MainActivity : TauriActivity() {
     override fun onReceive(context: Context?, intent: Intent?) {
       webView?.evaluateJavascript(
         "window.dispatchEvent(new CustomEvent('sn:pip-mute'))",
+        null,
+      )
+    }
+  }
+
+  /**
+   * Tell the web shell that the in-app login overlay was closed by the user.
+   *
+   * Without this, closing it leaves whatever was waiting on a token polling
+   * against a screen that is no longer on top, with no way back: the sign-in
+   * button stays busy forever and the setup wizard stays stuck mid-step.
+   *
+   * Rides the same `sn:` custom-event channel as the PiP signals. The plugin's
+   * own `trigger` goes to Tauri's plugin event channel, which needs an ACL
+   * grant an app-local plugin does not get, and working around that is the
+   * reason its commands are forwarded through Rust in the first place.
+   */
+  fun notifyLoginCancelled() {
+    webView?.post {
+      webView?.evaluateJavascript(
+        "window.dispatchEvent(new CustomEvent('sn:login-cancelled'))",
+        null,
+      )
+    }
+  }
+
+  /**
+   * Hands the shell a value read out of the login WebView's own storage.
+   *
+   * 7TV's sign-in finishes by writing a token into its page's localStorage
+   * rather than by redirecting somewhere readable, so the value comes through
+   * here instead of being pulled off a URL. Carried as JSON so the token cannot
+   * break out of the string it is being embedded in.
+   */
+  fun notifyLoginStorage(key: String, value: String) {
+    val detail = org.json.JSONObject().put("key", key).put("value", value)
+    webView?.post {
+      webView?.evaluateJavascript(
+        "window.dispatchEvent(new CustomEvent('sn:login-storage',{detail:$detail}))",
         null,
       )
     }
@@ -214,6 +259,118 @@ class MainActivity : TauriActivity() {
           }
         }
       }
+    }
+
+    // ---- Notifications ---------------------------------------------------
+    //
+    // The in-app permission prompt can reach a dead end: once Android decides
+    // the user has permanently declined, requesting again returns denied
+    // without showing anything. A category can also be silenced in system
+    // settings while the app-level permission is still granted. Neither state
+    // is visible to the plugin's is_permission_granted, so the panel needs to
+    // read both and be able to open the one screen that can undo them.
+
+    /** App-level switch, separate from the runtime permission. */
+    @JavascriptInterface
+    fun areNotificationsEnabled(): Boolean =
+      NotificationManagerCompat.from(this@MainActivity).areNotificationsEnabled()
+
+    /**
+     * OS importance for a single channel: 0 is IMPORTANCE_NONE, meaning the
+     * user silenced that category. -1 when the channel does not exist yet.
+     */
+    @JavascriptInterface
+    fun channelImportance(id: String): Int {
+      val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+      return nm.getNotificationChannel(id)?.importance ?: -1
+    }
+
+    /**
+     * True while Android would still show a rationale, i.e. the user has
+     * declined but not permanently. Once this is false and the permission is
+     * still missing, an in-app request is a silent no-op and system settings is
+     * the only way back.
+     */
+    @JavascriptInterface
+    fun shouldShowNotificationRationale(): Boolean {
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return false
+      return shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
+    /** The per-app notification screen: the only exit from a blocked state. */
+    @JavascriptInterface
+    fun openNotificationSettings() {
+      runOnUiThread {
+        try {
+          startActivity(
+            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+              .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+          )
+        } catch (_: Exception) {
+          /* OEM without the standard screen */
+        }
+      }
+    }
+
+    /** Straight to one category, for fixing a single silenced channel. */
+    @JavascriptInterface
+    fun openChannelSettings(id: String) {
+      runOnUiThread {
+        try {
+          startActivity(
+            Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+              .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+              .putExtra(Settings.EXTRA_CHANNEL_ID, id)
+          )
+        } catch (_: Exception) {
+          openNotificationSettings()
+        }
+      }
+    }
+
+    // ---- Background delivery ---------------------------------------------
+    //
+    // This is not a nicety. In the Rare and Restricted standby buckets Android
+    // withholds network from jobs entirely, and Restricted is one batched run
+    // per day, so an app the user opens infrequently simply stops delivering.
+    // Being on the battery-optimisation allowlist exempts an app from Doze AND
+    // from standby-bucket restrictions, so this toggle is what decides whether
+    // background notifications work at all.
+
+    @JavascriptInterface
+    fun isIgnoringBatteryOptimizations(): Boolean {
+      val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+      return pm.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    @JavascriptInterface
+    fun requestIgnoreBatteryOptimizations() {
+      runOnUiThread {
+        try {
+          startActivity(
+            Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+              .setData(Uri.parse("package:$packageName"))
+          )
+        } catch (_: Exception) {
+          // Some OEMs refuse the direct request. The list screen needs no
+          // permission and always exists.
+          try {
+            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+          } catch (_: Exception) {
+            /* nothing sensible left to open */
+          }
+        }
+      }
+    }
+
+    @JavascriptInterface
+    fun scheduleBackgroundChecks(intervalMinutes: Int) {
+      NotifyScheduler.schedule(this@MainActivity, intervalMinutes.toLong())
+    }
+
+    @JavascriptInterface
+    fun cancelBackgroundChecks() {
+      NotifyScheduler.cancel(this@MainActivity)
     }
   }
 

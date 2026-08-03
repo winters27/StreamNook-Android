@@ -119,6 +119,12 @@ xcap = "0.9.6"
 image = { version = "0.25", default-features = false, features = ["png"] }
 webp-animation = "0.10"
 
+# Android-only. `jni` backs src/android_notify.rs, the entry point the
+# notification worker calls when there is no Tauri app to talk to. Pinned to the
+# 0.21 line tauri and wry already resolve to, so the tree carries one copy.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+
 # webview2-com powers services/twitch_auth_service.rs (CookieManager).
 # The windows crate features cover both that and the DXGI Output
 # Duplication pipeline that backs commands/screen_capture.rs's animated

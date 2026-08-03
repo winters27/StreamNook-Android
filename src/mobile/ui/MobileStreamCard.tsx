@@ -3,42 +3,15 @@
 // .live-dot, .drops-badge-glass, hype-train badge, watch-streak flame,
 // .glass-badge viewer chip, partner verified mark, and Apple-style emoji
 // titles. Only the sizing is phone-tuned.
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { Flame, Gift } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
 import StreamTitleWithEmojis from '../../components/StreamTitleWithEmojis';
-import type { DropCampaign, TwitchStream } from '../../types';
+import { campaignEarnableOn } from '../dropsEligibility';
+import type { DropsByGame } from '../dropsCampaigns';
+import type { TwitchStream } from '../../types';
 
 function thumbUrl(stream: TwitchStream): string {
   return stream.thumbnail_url.replace('{width}', '640').replace('{height}', '360');
-}
-
-// Drops-enabled games by lowercase name, shared across every card. Backend
-// caches the campaign list (1h), so one invoke per session is plenty.
-let dropsNamesCache: Map<string, DropCampaign> | null = null;
-let dropsNamesPromise: Promise<Map<string, DropCampaign>> | null = null;
-
-function loadDropsGameNames(): Promise<Map<string, DropCampaign>> {
-  if (dropsNamesCache) return Promise.resolve(dropsNamesCache);
-  dropsNamesPromise ??= invoke<DropCampaign[]>('get_active_drop_campaigns')
-    .then((campaigns) => {
-      const map = new Map<string, DropCampaign>();
-      for (const campaign of campaigns ?? []) {
-        if (campaign.game_name) map.set(campaign.game_name.toLowerCase(), campaign);
-      }
-      dropsNamesCache = map;
-      return map;
-    })
-    .catch(() => new Map<string, DropCampaign>());
-  return dropsNamesPromise;
-}
-
-export function useDropsGameNames(): Map<string, DropCampaign> {
-  const [map, setMap] = useState<Map<string, DropCampaign>>(() => dropsNamesCache ?? new Map());
-  useEffect(() => {
-    if (!dropsNamesCache) void loadDropsGameNames().then(setMap);
-  }, []);
-  return map;
 }
 
 export interface HypeTrainBadgeInfo {
@@ -69,15 +42,26 @@ const StreakBadge: React.FC<{ streak: number }> = ({ streak }) => (
 
 export const MobileStreamCard: React.FC<{
   stream: TwitchStream;
-  dropsGameNames?: Map<string, DropCampaign>;
+  dropsGameNames?: DropsByGame;
   hypeTrain?: HypeTrainBadgeInfo;
   watchStreak?: number;
   onPress: (stream: TwitchStream) => void;
   /** 'card' = big thumbnail stack; 'row' = compact list row (thumb left). */
   variant?: 'card' | 'row';
 }> = ({ stream, dropsGameNames, hypeTrain, watchStreak, onPress, variant = 'card' }) => {
+  // The icon means "you can earn drops HERE", not "this game has drops".
+  //
+  // It used to mean the latter, which put a gift on every channel in a
+  // drops-enabled category including the ones a restricted campaign excludes.
+  // Tapping through then showed no progress and nothing explained why. There is
+  // deliberately no third state for "this category has drops but not on this
+  // channel": that is a promise the channel cannot keep, and a card is the
+  // wrong place to explain someone else's campaign rules.
   const hasDrops = !!(
-    stream.game_name && dropsGameNames?.has(stream.game_name.toLowerCase())
+    stream.game_name &&
+    (dropsGameNames?.get(stream.game_name.toLowerCase()) ?? []).some((c) =>
+      campaignEarnableOn(c, stream.user_login),
+    )
   );
 
   if (variant === 'row') {

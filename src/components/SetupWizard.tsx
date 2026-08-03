@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, type Transition } from 'framer-motion';
 import {
     Check,
     ExternalLink,
@@ -36,6 +36,7 @@ import {
     type Theme,
 } from '../themes';
 import { getSidebarSettings, saveSidebarSettings, type SidebarMode } from './settings/InterfaceSettings';
+import { TwitchGlyph } from './ui/TwitchGlyph';
 
 import { Logger } from '../utils/logger';
 import { ANNOUNCEMENTS_BASELINE_PENDING_KEY } from './AnnouncementsBanner';
@@ -113,6 +114,77 @@ const WizardThemeCard = ({ theme, selected, onSelect }: { theme: Theme; selected
     );
 };
 
+// Mobile only: shows that the pages move sideways, by showing the gesture
+// instead of describing it.
+//
+// A line of muted 12px text was the first attempt and it was wrong twice over.
+// It is easy to miss entirely against a near-black panel, and reading about a
+// gesture is a worse way to learn one than watching it. This is a thumb
+// travelling right to left, which is the direction that advances, with a tail
+// behind it and a chevron ahead for it to move toward.
+//
+// Defined here beside WizardThemeCard rather than under `src/mobile/` on
+// purpose: this file is shared, so importing from the mobile tree would pull it
+// into the desktop bundle for something desktop never renders.
+// `times` matches the four-stop keyframes below: quick fade in, a long steady
+// travel across the middle, quick fade out. Every animated property here has to
+// keep four stops for it to line up.
+const SWIPE_LOOP: Transition = {
+    duration: 1.6,
+    repeat: Infinity,
+    repeatDelay: 0.7,
+    ease: 'easeInOut',
+    times: [0, 0.25, 0.75, 1],
+};
+
+const SwipeHint = () => {
+    // Someone who turned Motion down still has to be able to learn the gesture,
+    // and this hint is nothing but motion. Under `reduced` or `off` the app-wide
+    // MotionScope sets framer's reducedMotion to 'always', which snaps keyframed
+    // animations to their LAST value: here that is opacity 0, leaving a bare
+    // chevron and no explanation. So below 'full' it says it in words instead.
+    const motionMode = useAppStore((s) => s.settings.motion_mode) ?? 'full';
+    if (motionMode !== 'full') {
+        return (
+            <div className="text-center text-xs text-textSecondary">
+                Swipe sideways to move between pages
+            </div>
+        );
+    }
+    return (
+        <div
+            className="relative h-5 flex items-center justify-center pointer-events-none select-none"
+            aria-hidden="true"
+        >
+            {/* Just the gesture. No arrow.
+
+                An arrow was tried and cut: a static chevron next to a moving
+                thumb reads as a target or a control rather than a direction, and
+                the motion already says which way it goes. A chevron PAIR was
+                tried too and is worse, since more arrows is more of the thing
+                that was confusing. The travel is the whole message.
+
+                Everything is centre-anchored, so the tail's x sits half a width
+                ahead of the thumb for it to trail behind rather than straddle
+                it: centre = thumb + width / 2. Both ends have zero width, so
+                their x is simply the thumb's. */}
+            <motion.span
+                className="absolute h-[2px] rounded-full bg-accent"
+                style={{ opacity: 0.3 }}
+                initial={{ width: 0, x: 24 }}
+                animate={{ width: [0, 34, 34, 0], x: [24, 29, 5, -26] }}
+                transition={SWIPE_LOOP}
+            />
+            <motion.span
+                className="absolute w-[7px] h-[7px] rounded-full bg-accent"
+                initial={{ x: 24, opacity: 0 }}
+                animate={{ x: [24, 12, -12, -26], opacity: [0, 1, 1, 0] }}
+                transition={SWIPE_LOOP}
+            />
+        </div>
+    );
+};
+
 interface StepStatus {
     componentsInstalled: boolean | null;
     extractionError: string | null;
@@ -142,8 +214,10 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
     const [error, setError] = useState<string | null>(null);
 
     const { addToast, settings, updateSettings, isAuthenticated, checkAuthStatus, loginToTwitch, whisperImportState, setWhisperImportState, resetWhisperImportState } = useAppStore();
-    const [whisperImportStarted, setWhisperImportStarted] = useState(false);
     const unlistenRefs = useRef<Array<() => void>>([]);
+    // Mobile only: drives the one-time "these pages swipe" hint, which retires
+    // itself the moment it has been proven unnecessary.
+    const [hasSwiped, setHasSwiped] = useState(false);
 
     useEffect(() => {
         return () => {
@@ -264,11 +338,43 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
             await openDropsVerificationWindow(deviceInfo.verification_uri);
 
             try {
-                await invoke('poll_drops_token', {
+                const poll = invoke('poll_drops_token', {
                     deviceCode: deviceInfo.device_code,
                     interval: deviceInfo.interval,
                     expiresIn: deviceInfo.expires_in,
-                });
+                }).then(() => 'done' as const);
+
+                // Android only: the login overlay is a native view the user can
+                // close with its X, and the poll above then runs on for the
+                // several minutes until Twitch expires the code, with the step
+                // stuck on "authorizing" the whole time and no way out. Racing
+                // the dismissal hands the step straight back. `finally` below
+                // still tidies up either way.
+                if (IS_MOBILE) {
+                    const outcome = await new Promise<'done' | 'cancelled'>((resolve, reject) => {
+                        const onCancelled = () => resolve('cancelled');
+                        window.addEventListener('sn:login-cancelled', onCancelled, { once: true });
+                        // Both arms clear the listener and settle, so a poll
+                        // failure still reaches the catch below rather than
+                        // leaving this await pending forever.
+                        void poll.then(
+                            () => {
+                                window.removeEventListener('sn:login-cancelled', onCancelled);
+                                resolve('done');
+                            },
+                            (err) => {
+                                window.removeEventListener('sn:login-cancelled', onCancelled);
+                                reject(err);
+                            },
+                        );
+                    });
+                    if (outcome === 'cancelled') {
+                        setDropsDeviceCode(null);
+                        return;
+                    }
+                } else {
+                    await poll;
+                }
 
                 setStatus(prev => ({ ...prev, dropsAuthenticated: true }));
                 setDropsDeviceCode(null);
@@ -346,7 +452,25 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                 unlistenRefs.current = [];
             });
 
-            unlistenRefs.current = [unlisten, unlistenError];
+            const refs: Array<() => void> = [unlisten, unlistenError];
+
+            // Android: the login overlay is a native view the user can close
+            // with its X, and doing so fires NONE of the events above. Without
+            // this the step sits on "Waiting for sign-in" forever, and since
+            // sign-in is now mandatory and the forward swipe is locked behind
+            // it, that is a dead end with no way out but force-quitting the app.
+            // The native side reports the dismissal on this event.
+            if (IS_MOBILE) {
+                const onCancelled = () => {
+                    setIsAuthenticating(false);
+                    unlistenRefs.current.forEach((fn) => fn());
+                    unlistenRefs.current = [];
+                };
+                window.addEventListener('sn:login-cancelled', onCancelled);
+                refs.push(() => window.removeEventListener('sn:login-cancelled', onCancelled));
+            }
+
+            unlistenRefs.current = refs;
         } catch (e) {
             Logger.error('Failed to start login:', e);
             setError(`Failed to start login: ${e}`);
@@ -483,13 +607,40 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
     ];
 
     // Per-step primary CTA that lives bottom-right. null hides it entirely.
-    const primaryAction: { label: string; onClick: () => void; disabled?: boolean } | null = (() => {
+    const primaryAction: {
+        label: string;
+        onClick: () => void;
+        disabled?: boolean;
+        variant?: 'twitch';
+    } | null = (() => {
         switch (currentStep) {
             case 0:
                 return { label: 'Get started', onClick: () => setCurrentStep(1) };
             case 1:
                 return null;
             case 2:
+                // Signing in IS this step, so the primary action performs it
+                // rather than skipping past it.
+                //
+                // Continuing without an account used to be allowed, and the end
+                // of that road was the problem: you reach "You're all set", tap
+                // Start watching, and the app immediately asks you to sign in.
+                // Setup declared itself finished and the app disagreed a second
+                // later. Making this the sign-in, and holding the forward swipe
+                // until it lands, means the wizard cannot promise something it
+                // has not got.
+                //
+                // Drops (step 3) is deliberately NOT gated this way: the app is
+                // fully usable without it, so it stays skippable.
+                if (IS_MOBILE && !status.mainAuthenticated) {
+                    return {
+                        label: isAuthenticating ? 'Waiting for sign-in' : 'Sign in with Twitch',
+                        onClick: handleMainLogin,
+                        disabled: isAuthenticating,
+                        variant: 'twitch',
+                    };
+                }
+                return { label: 'Continue', onClick: () => setCurrentStep(stepAfter(currentStep)) };
             case 3:
             case 4:
             case 5:
@@ -532,13 +683,29 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
     // the component extraction and advances itself when that finishes, so swiping
     // past it would skip a required step; step 8 commits setup, which should stay a
     // deliberate tap rather than something you can trigger with a stray flick.
-    const canSwipeForward = currentStep === 0 || (currentStep >= 2 && currentStep <= 7);
+    // Sign-in is the one step you cannot swipe past. See the primary action for
+    // step 2 for why. Mobile-only: `canSwipeForward` is read solely by the drag
+    // handler, which desktop never runs.
+    const signInRequired = IS_MOBILE && currentStep === 2 && !status.mainAuthenticated;
+    const canSwipeForward =
+        !signInRequired && (currentStep === 0 || (currentStep >= 2 && currentStep <= 7));
     // Timestamp of the last swipe-driven step change, used to swallow swipes that
     // arrive while the exit animation is still running.
     const lastStepChangeRef = useRef(0);
-    // Buttons survive on the bookends only: the opening call to action (which also
-    // teaches that this flow is tappable) and the final commit.
-    const showPrimaryOnMobile = currentStep === 0 || currentStep === 8;
+    // Every step that can advance shows its button.
+    //
+    // This used to be the bookends only, on the reasoning that the step dots
+    // already imply a swipeable carousel and a Continue button everywhere was
+    // redundant. Testing said otherwise: the sign-in steps advance themselves,
+    // so the first time anyone has to move the wizard along by hand is several
+    // pages in, by which point nothing has taught them the pages swipe at all.
+    // They just stop. A dot is not an affordance, and the cost of being wrong
+    // here is someone stranded in setup.
+    //
+    // `primaryAction` is already null on the one step that must not be advanced
+    // by hand (component install advances itself when it finishes), so it
+    // decides this on its own.
+    const showPrimaryOnMobile = primaryAction !== null;
 
     const renderStepContent = () => {
         switch (currentStep) {
@@ -663,8 +830,18 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
             case 2:
                 return (
                     <>
+                        {/* The step glyph. A generic person icon said "account"
+                            when the step is specifically about Twitch, so the
+                            phone shows Twitch's own mark in Twitch purple.
+
+                            IS_MOBILE-gated only because this file is shared and
+                            desktop's look is frozen unless separately agreed;
+                            there is nothing phone-specific about the choice, so
+                            dropping the branch applies it to both. */}
                         {status.mainAuthenticated ? (
                             <CheckCircle2 size={64} strokeWidth={1.4} className="text-success mb-10" />
+                        ) : IS_MOBILE ? (
+                            <TwitchGlyph size={56} className="mb-10 text-[#9146FF]" />
                         ) : (
                             <User size={56} strokeWidth={1.4} className="text-accent mb-10" />
                         )}
@@ -684,7 +861,13 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                             </div>
                         )}
 
-                        {!status.mainAuthenticated && (
+                        {/* Desktop only. On the phone this action moved to the
+                            footer, where it is the primary CTA: sign-in is now
+                            mandatory here, so it belongs in the same place every
+                            other step puts its action, full width and under the
+                            thumb. Keeping this one too would put two identical
+                            buttons on one screen. */}
+                        {!IS_MOBILE && !status.mainAuthenticated && (
                             <button
                                 onClick={handleMainLogin}
                                 disabled={isAuthenticating}
@@ -764,7 +947,6 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                         {!whisperImportState.isImporting && !whisperImportState.result && (
                             <button
                                 onClick={async () => {
-                                    setWhisperImportStarted(true);
                                     setWhisperImportState({
                                         isImporting: true,
                                         error: null,
@@ -803,8 +985,29 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                         <p className="text-textSecondary text-base max-w-md mb-8">
                             Choose a theme to start with. Tap one to try it on. There are more options, fonts, and a theme builder in Settings later.
                         </p>
-                        <div className="w-full max-w-2xl max-h-[42vh] overflow-y-auto pr-1">
-                            <div className="grid grid-cols-3 gap-3">
+                        {/* `touch-action: pan-y` is what makes the page swipeable
+                            over the palettes.
+
+                            This is a nested scroller, and a scroller's default
+                            `touch-action: auto` claims BOTH axes. So a sideways
+                            drag starting on a theme card was consumed here as a
+                            horizontal pan of a container that has nothing to pan,
+                            and never reached the page drag: swiping worked on the
+                            heading and did nothing on the grid, which is most of
+                            the screen. Restricting this to the vertical axis
+                            leaves horizontal gestures to the page. It has to be
+                            static CSS, since Chromium fixes a gesture's
+                            disposition at touchstart and never re-reads it. */}
+                        <div
+                            className={`w-full max-w-2xl overflow-y-auto pr-1 ${
+                                IS_MOBILE ? 'max-h-[46vh]' : 'max-h-[42vh]'
+                            }`}
+                            style={{ touchAction: 'pan-y' }}
+                        >
+                            {/* Three columns on a ~360px phone leaves ~100px a
+                                card, which truncated most theme names and packed
+                                the swatches together. Two gives them room. */}
+                            <div className={`grid gap-3 ${IS_MOBILE ? 'grid-cols-2' : 'grid-cols-3'}`}>
                                 {themes.map((t) => {
                                     const display = t.id === OLED_THEME_ID ? getOledTheme(settings.oled_accent) : t;
                                     return (
@@ -928,11 +1131,17 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                 const rows: Array<{ ok: boolean; pending?: boolean; label: string }> = [
                     { ok: status.dropsAuthenticated, label: 'Drops sign-in' },
                     { ok: status.mainAuthenticated, label: 'Twitch sign-in' },
-                    {
-                        ok: !!whisperImportState.result,
-                        pending: whisperImportState.isImporting,
-                        label: 'Whisper history'
-                    },
+                    // Whisper import is a step mobile never shows, so reporting
+                    // it as "skipped" on the summary named something the phone
+                    // had not offered to do in the first place, which reads as a
+                    // missing feature rather than a skipped one.
+                    ...(IS_MOBILE
+                        ? []
+                        : [{
+                            ok: !!whisperImportState.result,
+                            pending: whisperImportState.isImporting,
+                            label: 'Whisper history',
+                        }]),
                 ];
 
                 return (
@@ -1039,11 +1248,48 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                 {/* px-8 py-16 is desktop breathing room. On a 360px-wide phone that
                     padding is a third of the width, and py-16 pushes taller steps
                     (the theme grid) off-screen. Tighten it and let the step scroll. */}
-                <div
+                {/* The drag lives on this whole band, not on the step content.
+                    It used to sit on the content block, which is only as wide as
+                    the text and as tall as the step, so a swipe that started in
+                    the empty space either side of it did nothing at all and the
+                    gesture felt broken more often than it worked. This element
+                    fills everything between the back control and the footer, so
+                    almost anywhere on the screen is a valid place to start.
+
+                    Horizontal only, so vertical scrolling inside a tall step
+                    (the theme grid) still works. Constraints are pinned to 0
+                    with a little elasticity: the page rubber-bands to acknowledge
+                    the gesture and snaps back, and the step change comes from the
+                    release distance rather than from the drag itself. */}
+                <motion.div
                     className={`flex-1 flex items-center justify-center min-h-0 ${
                         IS_MOBILE ? 'px-5 py-6 overflow-y-auto' : 'px-8 py-16'
                     }`}
                     style={IS_MOBILE ? { paddingTop: 'calc(1.5rem + var(--sn-safe-top))' } : undefined}
+                    drag={IS_MOBILE ? 'x' : false}
+                    dragConstraints={{ left: 0, right: 0 }}
+                    dragElastic={0.15}
+                    dragMomentum={false}
+                    onDragEnd={(_, info) => {
+                        if (!IS_MOBILE) return;
+                        // Swallow a second swipe that lands while the previous
+                        // step is still animating out, so one flick advances
+                        // exactly one step rather than two.
+                        const now = performance.now();
+                        if (now - lastStepChangeRef.current < STEP_DURATION * 1000) return;
+                        // Distance threshold so a slow drag on a theme card is
+                        // not read as a page change.
+                        const THRESHOLD = 70;
+                        if (info.offset.x < -THRESHOLD && canSwipeForward) {
+                            lastStepChangeRef.current = now;
+                            setHasSwiped(true);
+                            setCurrentStep(stepAfter(currentStep));
+                        } else if (info.offset.x > THRESHOLD && canGoBack) {
+                            lastStepChangeRef.current = now;
+                            setHasSwiped(true);
+                            setCurrentStep(stepBefore(currentStep));
+                        }
+                    }}
                 >
                     <AnimatePresence mode="wait">
                         <motion.div
@@ -1052,39 +1298,12 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                             animate={{ opacity: 1, y: 0 }}
                             exit={{ opacity: 0, y: -14 }}
                             transition={{ duration: STEP_DURATION, ease: STEP_EASE }}
-                            // Horizontal drag only, so vertical scrolling inside a tall
-                            // step (the theme grid) still works. Constraints are pinned
-                            // to 0 with a little elasticity: the card rubber-bands to
-                            // signal the gesture, then snaps back, and the step change
-                            // is driven by the release distance rather than the drag.
-                            drag={IS_MOBILE ? 'x' : false}
-                            dragConstraints={{ left: 0, right: 0 }}
-                            dragElastic={0.15}
-                            dragMomentum={false}
-                            onDragEnd={(_, info) => {
-                                if (!IS_MOBILE) return;
-                                // Swallow a second swipe that lands while the previous
-                                // step is still animating out, so one flick advances
-                                // exactly one step rather than two.
-                                const now = performance.now();
-                                if (now - lastStepChangeRef.current < STEP_DURATION * 1000) return;
-                                // Distance threshold so a slow drag on a theme card is
-                                // not read as a page change.
-                                const THRESHOLD = 70;
-                                if (info.offset.x < -THRESHOLD && canSwipeForward) {
-                                    lastStepChangeRef.current = now;
-                                    setCurrentStep(stepAfter(currentStep));
-                                } else if (info.offset.x > THRESHOLD && canGoBack) {
-                                    lastStepChangeRef.current = now;
-                                    setCurrentStep(stepBefore(currentStep));
-                                }
-                            }}
                             className="w-full max-w-2xl flex flex-col items-center text-center"
                         >
                             {renderStepContent()}
                         </motion.div>
                     </AnimatePresence>
-                </div>
+                </motion.div>
 
                 {/* Footer. On desktop this is one row: step dots on the left, Back +
                     primary action on the right. That does not fit a phone. The dots
@@ -1130,6 +1349,12 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                         })}
                     </div>
 
+                    {/* Demonstrates the gesture until it has been used once, then
+                        retires for good. The buttons are the real navigation, so
+                        this only exists to make the gesture discoverable to
+                        anyone who would rather use it. */}
+                    {IS_MOBILE && !hasSwiped && (canSwipeForward || canGoBack) && <SwipeHint />}
+
                     <div className={`flex items-center gap-2 ${IS_MOBILE ? 'w-full' : ''}`}>
                         {/* Back is NOT in this row on mobile. Sharing the row with the
                             primary action made the CTA start wherever Back happened to
@@ -1150,10 +1375,18 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                             <button
                                 onClick={primaryAction.onClick}
                                 disabled={primaryAction.disabled}
-                                className={`glass-button text-textPrimary rounded-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed ${
-                                    IS_MOBILE ? 'w-full py-4 text-base' : 'px-5 py-2.5 text-sm'
-                                }`}
+                                className={`flex items-center justify-center gap-2 rounded-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed ${
+                                    primaryAction.variant === 'twitch'
+                                        ? 'bg-[#9146FF] text-white active:opacity-90'
+                                        : 'glass-button text-textPrimary'
+                                } ${IS_MOBILE ? 'w-full py-4 text-base' : 'px-5 py-2.5 text-sm'}`}
                             >
+                                {primaryAction.variant === 'twitch' &&
+                                    (primaryAction.disabled ? (
+                                        <Loader2 size={18} className="animate-spin" />
+                                    ) : (
+                                        <TwitchGlyph size={18} />
+                                    ))}
                                 {primaryAction.label}
                             </button>
                         )}

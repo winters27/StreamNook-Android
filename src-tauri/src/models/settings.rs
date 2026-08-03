@@ -332,10 +332,27 @@ pub struct LiveNotificationSettings {
     pub toast_position: String,
     #[serde(default = "default_toast_edge_offset")]
     pub toast_edge_offset: u32,
+    // Android background delivery. The in-app path needs a live WebView, so
+    // these drive the WorkManager poll that keeps notifications arriving after
+    // the app is closed. Desktop never reads them.
+    #[serde(default = "default_true")]
+    pub background_checks: bool,
+    #[serde(default = "default_background_interval")]
+    pub background_interval_minutes: u32,
+    // Channels excluded from live alerts, by login. Empty means every followed
+    // channel notifies, which is the behaviour everyone already has, so an
+    // upgrade changes nothing until someone opts a channel out.
+    #[serde(default)]
+    pub muted_live_channels: Vec<String>,
 }
 
 fn default_true() -> bool {
     true
+}
+
+/// WorkManager's floor is 15 minutes and it will not schedule anything tighter.
+fn default_background_interval() -> u32 {
+    15
 }
 
 fn default_toast_position() -> String {
@@ -366,6 +383,9 @@ impl Default for LiveNotificationSettings {
             quick_update_on_toast: false,
             toast_position: "bottom-right".to_string(),
             toast_edge_offset: 72,
+            background_checks: true,
+            background_interval_minutes: 15,
+            muted_live_channels: Vec::new(),
         }
     }
 }

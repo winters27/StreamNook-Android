@@ -5,7 +5,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileNavStore } from '../navStore';
 import { useHypeTrains } from '../useHypeTrains';
-import { MobileStreamCard, useDropsGameNames } from '../ui/MobileStreamCard';
+import { SettleIn, useSettleIn } from '../ui/SettleIn';
+import { MobileStreamCard } from '../ui/MobileStreamCard';
+import { useDropsGameNames } from '../dropsCampaigns';
 import { readStreamView, writeStreamView, type StreamViewMode } from './FollowingScreen';
 import { PullToRefresh } from '../ui/PullToRefresh';
 import { SkeletonCards } from '../ui/SkeletonCards';
@@ -20,8 +22,20 @@ function boxArt(category: TwitchCategory): string {
   return gameBoxArt(category.box_art_url, 285, 380);
 }
 
+// One page of categories. Twitch orders games only roughly by viewers, so the
+// backend sums each game's viewers and sorts the page on that, which is also
+// why a page costs a request per game and is worth keeping to a sensible size.
+const CATEGORY_PAGE = 40;
+
 // Top categories, module-cached for the session (pull-to-refresh reloads).
-let topCategoriesCache: TwitchCategory[] | null = null;
+// Carries the paging cursor with the items: without it, coming back to Browse
+// restored the list but not the position in it, so scrolling would have
+// restarted from page two every time.
+let topCategoriesCache: {
+  items: TwitchCategory[];
+  cursor: string | null;
+  hasMore: boolean;
+} | null = null;
 
 export const BrowseScreen: React.FC = () => {
   const recommendedStreams = useAppStore((s) => s.recommendedStreams);
@@ -42,7 +56,17 @@ export const BrowseScreen: React.FC = () => {
   const [query, setQuery] = useState('');
   const [streamResults, setStreamResults] = useState<TwitchStream[] | null>(null);
   const [categoryResults, setCategoryResults] = useState<TwitchCategory[] | null>(null);
-  const [categories, setCategories] = useState<TwitchCategory[]>(topCategoriesCache ?? []);
+  const [categories, setCategories] = useState<TwitchCategory[]>(
+    () => topCategoriesCache?.items ?? [],
+  );
+  const [categoriesCursor, setCategoriesCursor] = useState<string | null>(
+    () => topCategoriesCache?.cursor ?? null,
+  );
+  const [hasMoreCategories, setHasMoreCategories] = useState(
+    () => topCategoriesCache?.hasMore ?? true,
+  );
+  const [loadingMore, setLoadingMore] = useState(false);
+  const moreSentinel = useRef<HTMLDivElement | null>(null);
   const [searching, setSearching] = useState(false);
   const [firstLoad, setFirstLoad] = useState(recommendedStreams.length === 0);
   const [categoriesLoading, setCategoriesLoading] = useState(false);
@@ -60,12 +84,15 @@ export const BrowseScreen: React.FC = () => {
   const loadCategories = async () => {
     setCategoriesLoading(true);
     try {
-      const [games] = await invoke<[TwitchCategory[], string | null]>(
+      const [games, cursor] = await invoke<[TwitchCategory[], string | null]>(
         'get_top_games_paginated',
-        { cursor: null, limit: 30 },
+        { cursor: null, limit: CATEGORY_PAGE },
       );
-      topCategoriesCache = games ?? [];
-      setCategories(topCategoriesCache);
+      const items = games ?? [];
+      topCategoriesCache = { items, cursor, hasMore: !!cursor };
+      setCategories(items);
+      setCategoriesCursor(cursor);
+      setHasMoreCategories(!!cursor);
     } catch (err) {
       Logger.warn('[BrowseScreen] categories load failed:', err);
     } finally {
@@ -73,10 +100,66 @@ export const BrowseScreen: React.FC = () => {
     }
   };
 
+  // The next page. Twitch's category list runs to hundreds of entries, and the
+  // cursor to reach them was already coming back from the backend and being
+  // dropped on the floor, which is the whole reason this list used to stop
+  // dead well short of what Twitch itself shows.
+  const loadMoreCategories = async () => {
+    if (loadingMore || !hasMoreCategories || !categoriesCursor) return;
+    setLoadingMore(true);
+    try {
+      const [games, cursor] = await invoke<[TwitchCategory[], string | null]>(
+        'get_top_games_paginated',
+        { cursor: categoriesCursor, limit: CATEGORY_PAGE },
+      );
+      const page = games ?? [];
+      setCategories((prev) => {
+        // Twitch can repeat an entry across a cursor boundary as the live
+        // viewer ordering shifts underneath, and a duplicate key would break
+        // the grid.
+        const seen = new Set(prev.map((c) => c.id));
+        const merged = [...prev, ...page.filter((c) => !seen.has(c.id))];
+        topCategoriesCache = { items: merged, cursor, hasMore: !!cursor && page.length > 0 };
+        return merged;
+      });
+      setCategoriesCursor(cursor);
+      setHasMoreCategories(!!cursor && page.length > 0);
+    } catch (err) {
+      Logger.warn('[BrowseScreen] categories page failed:', err);
+      // Stop asking rather than retry against the sentinel forever.
+      setHasMoreCategories(false);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
   useEffect(() => {
     if (mode === 'categories' && categories.length === 0) void loadCategories();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
+
+  // Load the next page when the end of the list comes into view.
+  //
+  // An observer rather than a scroll handler on purpose: this grid lives inside
+  // PullToRefresh, which owns native non-passive touch listeners on the same
+  // scroller, and adding scroll-position maths beside them is asking for the
+  // two to interfere. The observer never touches the event stream.
+  useEffect(() => {
+    const el = moreSentinel.current;
+    if (!el) return;
+    if (mode !== 'categories' || categoryResults) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) void loadMoreCategories();
+      },
+      // A screen of lead time, so the next page is usually already there by the
+      // time the current one runs out.
+      { rootMargin: '600px' },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, categoryResults, categoriesCursor, hasMoreCategories, loadingMore]);
 
   const runSearch = async (q: string, seq: number, searchMode: BrowseMode) => {
     try {
@@ -134,6 +217,20 @@ export const BrowseScreen: React.FC = () => {
   // only ever showed for channels that happened to also be in your following.
   useHypeTrains(shownStreams);
   const shownCategories = categoryResults ?? categories;
+
+  // Keyed on WHICH list is showing, not on its contents. A new search is a new
+  // list and settles in; loading the next page of the same list is the same
+  // list getting longer, so those rows simply appear.
+  // `view` is in the key for the same reason as Following: switching between
+  // cards and list reshapes every row, which is worth animating.
+  const streamsSettled = useSettleIn(
+    !firstLoad && shownStreams.length > 0,
+    `${view}:${streamResults ? `q:${query.trim()}` : 'recommended'}`,
+  );
+  const categoriesSettled = useSettleIn(
+    !categoriesLoading && shownCategories.length > 0,
+    categoryResults ? `q:${query.trim()}` : 'top',
+  );
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
@@ -220,16 +317,17 @@ export const BrowseScreen: React.FC = () => {
               gap={view === 'list' ? 8 : 12}
               className="px-4 sn-tabbar-clearance"
             >
-              {shownStreams.map((s) => (
-                <MobileStreamCard
-                  key={s.id}
-                  stream={s}
-                  dropsGameNames={dropsGameNames}
-                  hypeTrain={activeHypeTrainChannels.get(s.user_id) ?? undefined}
-                  watchStreak={watchStreaks[s.user_id]}
-                  onPress={(stream) => void startStream(stream.user_login, stream)}
-                  variant={view === 'list' ? 'row' : 'card'}
-                />
+              {shownStreams.map((s, i) => (
+                <SettleIn key={s.id} index={i} settled={streamsSettled}>
+                  <MobileStreamCard
+                    stream={s}
+                    dropsGameNames={dropsGameNames}
+                    hypeTrain={activeHypeTrainChannels.get(s.user_id) ?? undefined}
+                    watchStreak={watchStreaks[s.user_id]}
+                    onPress={(stream) => void startStream(stream.user_login, stream)}
+                    variant={view === 'list' ? 'row' : 'card'}
+                  />
+                </SettleIn>
               ))}
             </AdaptiveGrid>
           )
@@ -240,26 +338,43 @@ export const BrowseScreen: React.FC = () => {
             {categoryResults ? 'No categories found.' : 'No categories yet, pull to refresh.'}
           </div>
         ) : (
-          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3 px-4 sn-tabbar-clearance">
-            {shownCategories.map((c) => (
-              <button
-                key={c.id}
-                onClick={() => openBrowseCategory(c)}
-                className="glass-panel media-card p-2 text-left active:opacity-80 transition-opacity"
-              >
-                <img
-                  loading="lazy"
-                  src={boxArt(c)}
-                  alt=""
-                  className="w-full aspect-[3/4] object-cover rounded mb-1.5"
-                  draggable={false}
-                />
-                <div className="text-[13px] font-medium text-textPrimary line-clamp-1">
-                  {c.name}
-                </div>
-              </button>
+          <>
+          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3 px-4">
+            {shownCategories.map((c, i) => (
+              <SettleIn key={c.id} index={i} settled={categoriesSettled}>
+                <button
+                  onClick={() => openBrowseCategory(c)}
+                  className="glass-panel media-card p-2 text-left active:opacity-80 transition-opacity w-full"
+                >
+                  <img
+                    loading="lazy"
+                    src={boxArt(c)}
+                    alt=""
+                    className="w-full aspect-[3/4] object-cover rounded mb-1.5"
+                    draggable={false}
+                  />
+                  <div className="text-[13px] font-medium text-textPrimary line-clamp-1">
+                    {c.name}
+                  </div>
+                </button>
+              </SettleIn>
             ))}
           </div>
+          {/* Sits below the grid so coming into view means the list is running
+              out. Only while browsing: search returns one fixed set of results
+              and has no cursor to follow. The tab-bar clearance moved here from
+              the grid so it stays the last thing on the page. */}
+          {!categoryResults && (
+            <div ref={moreSentinel} className="sn-tabbar-clearance">
+              {loadingMore && (
+                <div className="py-4 text-center text-[12px] text-textMuted">
+                  Loading more categories
+                </div>
+              )}
+            </div>
+          )}
+          {categoryResults && <div className="sn-tabbar-clearance" />}
+          </>
         )}
       </PullToRefresh>
     </div>

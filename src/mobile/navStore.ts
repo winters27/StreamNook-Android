@@ -7,7 +7,7 @@ import { create } from 'zustand';
 import { useAppStore } from '../stores/AppStore';
 import type { TwitchCategory } from '../types';
 
-export type MobileTab = 'following' | 'browse' | 'activity' | 'you';
+export type MobileTab = 'following' | 'browse' | 'rewards' | 'you';
 
 export const DEFAULT_TAB: MobileTab = 'following';
 
@@ -60,7 +60,7 @@ export const useMobileNavStore = create<MobileNavState>((set, get) => ({
   openDropCampaign: (campaignId) =>
     set({
       playerMode: 'mini',
-      activeTab: 'activity',
+      activeTab: 'rewards',
       focusDropCampaignId: campaignId,
     }),
   clearDropFocus: () => set({ focusDropCampaignId: null }),

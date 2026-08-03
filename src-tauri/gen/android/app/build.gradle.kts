@@ -27,6 +27,14 @@ val hasReleaseKeystore = keystoreProperties.getProperty("storeFile") != null
 
 android {
     compileSdk = 36
+    // Must match local.properties `ndk.dir`. Without it AGP assumes its own
+    // bundled default (27.0.12077973 for AGP 8.11), fails to find llvm-strip at
+    // that path, and packages the .so UNSTRIPPED with only a warning: a debug
+    // APK goes from about 110 MB to 494 MB, which is the difference between an
+    // install that works over wifi adb and one that dies mid-transfer. The
+    // mismatch also undermines the r28 pin, which exists so the .so gets 16 KB
+    // aligned segments. Keep this in step whenever the NDK moves.
+    ndkVersion = "28.2.13676358"
     // `app.streamnook`, NOT the desktop's `com.streamnook.dev`, and the split is
     // deliberate. Both derive from the Tauri identifier, but Android's is
     // overridden in `src-tauri/tauri.android.conf.json` (platform config files
@@ -103,6 +111,15 @@ dependencies {
     implementation("androidx.window:window:1.3.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("com.google.android.material:material:1.12.0")
+    // Notification delivery while the app is closed. Two version traps here:
+    // work-runtime-ktx has been an empty shim since WorkManager 2.9.0 (all the
+    // Kotlin API, CoroutineWorker included, moved into work-runtime itself), and
+    // 2.11.x switched its kotlin-stdlib dependency to 2.1.20, whose metadata the
+    // Kotlin 1.9.25 plugin this project builds with cannot read. 2.10.5 is the
+    // newest release still on stdlib 1.8.22, and it has everything needed
+    // (ExistingPeriodicWorkPolicy.UPDATE landed in 2.8.0). Revisit if the
+    // project's Kotlin plugin is ever bumped past 2.0.
+    implementation("androidx.work:work-runtime:2.10.5")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.4")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")

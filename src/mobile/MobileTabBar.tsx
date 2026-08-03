@@ -9,7 +9,7 @@ import { useMobileNavStore, type MobileTab } from './navStore';
 const TABS: { id: MobileTab; label: string; Icon: typeof Heart }[] = [
   { id: 'following', label: 'Following', Icon: Heart },
   { id: 'browse', label: 'Browse', Icon: Compass },
-  { id: 'activity', label: 'Activity', Icon: Gift },
+  { id: 'rewards', label: 'Rewards', Icon: Gift },
   { id: 'you', label: 'You', Icon: UserCircle },
 ];
 

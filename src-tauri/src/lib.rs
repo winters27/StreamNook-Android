@@ -182,6 +182,8 @@ fn close_main_window(app: tauri::AppHandle) {
     }
 }
 
+#[cfg(target_os = "android")]
+mod android_notify;
 mod commands;
 mod models;
 mod plugin_host;
@@ -1203,6 +1205,12 @@ pub fn run() {
             receive_badge_data,
             #[cfg(desktop)]
             receive_update_result,
+            // Same feature on Android, GQL only — there is no second webview to
+            // fall back to, so the scrape half simply does not exist there.
+            #[cfg(target_os = "android")]
+            fetch_chat_identity_badges_gql,
+            #[cfg(target_os = "android")]
+            update_chat_identity_gql,
             // StreamNook Identity (badge loadout) commands
             get_streamnook_identity,
             get_streamnook_identities,

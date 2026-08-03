@@ -4,6 +4,9 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.graphics.Color
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -19,12 +22,48 @@ import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import org.json.JSONArray
+import org.json.JSONObject
+
+// Height of the overlay's title bar. The WebView is pushed down by the same
+// amount, so the two are read from here rather than written out twice.
+private const val BAR_DP = 48
+
+/** How often the login page's storage is checked, once watching. */
+private const val STORAGE_POLL_MS = 700L
+
+/** Matches the desktop capture window, after which sign-in is assumed given up on. */
+private const val STORAGE_WATCH_TIMEOUT_MS = 5 * 60 * 1000L
+
+/** A session token is long. Anything shorter is a placeholder the page wrote early. */
+private const val MIN_TOKEN_LEN = 50
 
 @InvokeArg
 class OpenLoginArgs {
     lateinit var url: String
+
+    /**
+     * Optional localStorage key to watch for inside the login WebView.
+     *
+     * This exists for 7TV, whose sign-in does not end at a redirect carrying a
+     * token: it round-trips through Twitch and lands back on 7tv.app, which
+     * writes the session token into ITS OWN localStorage. There is nothing in
+     * the URL to intercept, so the only way to get it out is to read the
+     * storage of the page we are showing.
+     *
+     * Desktop solves the same problem by injecting a script that stuffs the
+     * token into an `about:blank#...` fragment and polling the window URL. That
+     * dance exists because a Tauri window offers no better channel; a WebView we
+     * own does, so the value is read directly and handed to the shell.
+     */
+    var watchStorageKey: String? = null
+
+    /** Bar label. Defaults to Twitch, since that is what this is usually for. */
+    var title: String? = null
 }
 
 // Twitch's login page gates on browser version via User-Agent Client Hints
@@ -82,8 +121,12 @@ class TwitchLoginPlugin(private val activity: Activity) : Plugin(activity) {
         val args = invoke.parseArgs(OpenLoginArgs::class.java)
         activity.runOnUiThread {
             if (overlay != null) {
-                // Already open — just navigate to the (possibly new) url.
+                // Already open — just navigate to the (possibly new) url. The
+                // watch is restarted rather than left alone, since reusing the
+                // overlay for a different sign-in means a different key.
+                stopStorageWatch()
                 webView?.loadUrl(args.url)
+                args.watchStorageKey?.let { startStorageWatch(it) }
                 invoke.resolve()
                 return@runOnUiThread
             }
@@ -100,7 +143,7 @@ class TwitchLoginPlugin(private val activity: Activity) : Plugin(activity) {
                 layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
-                ).apply { topMargin = dp(48) }
+                ).apply { topMargin = dp(BAR_DP) }
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 settings.userAgentString = chromeUa
@@ -170,7 +213,12 @@ class TwitchLoginPlugin(private val activity: Activity) : Plugin(activity) {
                     // logcat if Twitch ever moves where it lands.
                     android.util.Log.i("SNLogin", "nav: $u")
                     rememberRedirectTarget(u)
-                    if (isApprovalLanding(u)) {
+                    // In watch mode the redirect is NOT the finish line. 7TV's
+                    // sign-in also travels through auth.twitch.tv/authorize, so
+                    // the redirect_uri captured above is 7TV's own callback, and
+                    // dismissing there would tear the page down in the moment
+                    // before it writes the token. The token is the signal.
+                    if (storageWatchKey == null && isApprovalLanding(u)) {
                         android.util.Log.i("SNLogin", "authorized; dismissing overlay early")
                         activity.runOnUiThread { dismiss() }
                     }
@@ -182,11 +230,11 @@ class TwitchLoginPlugin(private val activity: Activity) : Plugin(activity) {
             val bar = FrameLayout(activity).apply {
                 setBackgroundColor(Color.parseColor("#18181B"))
                 layoutParams = FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(48)
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(BAR_DP)
                 )
             }
             val title = TextView(activity).apply {
-                text = "Sign in to Twitch"
+                text = args.title ?: "Sign in to Twitch"
                 setTextColor(Color.parseColor("#EFEFF1"))
                 textSize = 15f
                 layoutParams = FrameLayout.LayoutParams(
@@ -203,7 +251,14 @@ class TwitchLoginPlugin(private val activity: Activity) : Plugin(activity) {
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
                 ).apply { gravity = Gravity.CENTER_VERTICAL or Gravity.START }
-                setOnClickListener { dismiss(); trigger("twitch-login-cancelled", JSObject()) }
+                setOnClickListener {
+                    dismiss()
+                    trigger("twitch-login-cancelled", JSObject())
+                    // The trigger above lands on the plugin event channel, which
+                    // nothing can subscribe to without an ACL grant this plugin
+                    // does not have. This is the one the shell actually hears.
+                    (activity as? MainActivity)?.notifyLoginCancelled()
+                }
             }
             bar.addView(title)
             bar.addView(close)
@@ -219,9 +274,41 @@ class TwitchLoginPlugin(private val activity: Activity) : Plugin(activity) {
                 )
             )
 
+            // The activity draws edge to edge and lays out through the display
+            // cutout, and a view handed to addContentView gets none of that
+            // sorted out for it: it lands at the very top of the screen. Left
+            // alone the bar sits exactly on the status bar, so the title runs
+            // into the clock and the close button ends up under the camera
+            // cutout, where it is genuinely hard to hit.
+            //
+            // The bar grows by the top inset and pads its own contents down by
+            // the same amount, so it still reads as one strip that happens to
+            // start behind the status bar rather than a floating band with a
+            // gap above it. The rest keeps the page clear of the gesture bar
+            // and, in landscape, of the cutout.
+            ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+                val bars = insets.getInsets(
+                    WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+                )
+                bar.layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(BAR_DP) + bars.top
+                )
+                bar.setPadding(0, bars.top, 0, 0)
+                (wv.layoutParams as FrameLayout.LayoutParams).also {
+                    it.topMargin = dp(BAR_DP) + bars.top
+                    wv.layoutParams = it
+                }
+                view.setPadding(bars.left, 0, bars.right, bars.bottom)
+                insets
+            }
+            // This view is added after the activity's first inset pass, so
+            // nothing would dispatch to it without asking.
+            ViewCompat.requestApplyInsets(root)
+
             overlay = root
             webView = wv
             wv.loadUrl(args.url)
+            args.watchStorageKey?.let { startStorageWatch(it) }
             invoke.resolve()
         }
     }
@@ -287,7 +374,63 @@ class TwitchLoginPlugin(private val activity: Activity) : Plugin(activity) {
         return here == "www.twitch.tv/settings/connections"
     }
 
+    // ── Watching the login page's own storage ────────────────────────────────
+    // See OpenLoginArgs.watchStorageKey for why this exists.
+
+    private var storageWatchKey: String? = null
+    private val storageWatchHandler = Handler(Looper.getMainLooper())
+    private var storageWatchTick: Runnable? = null
+
+    private fun startStorageWatch(key: String) {
+        val js = "(function(){try{return window.localStorage.getItem(" +
+            JSONObject.quote(key) + ")}catch(e){return null}})()"
+        val deadline = SystemClock.elapsedRealtime() + STORAGE_WATCH_TIMEOUT_MS
+        lateinit var tick: Runnable
+        tick = Runnable {
+            val wv = webView
+            if (wv == null || storageWatchKey != key) return@Runnable
+            if (SystemClock.elapsedRealtime() > deadline) {
+                android.util.Log.i("SNLogin", "storage watch for $key timed out")
+                return@Runnable
+            }
+            wv.evaluateJavascript(js) { raw ->
+                // Only meaningful once the flow has landed back on the origin
+                // that owns the key, so a null here is the ordinary case for
+                // most of the sign-in rather than a failure.
+                val value = decodeJsString(raw)
+                if (value != null && value.length > MIN_TOKEN_LEN) {
+                    android.util.Log.i("SNLogin", "captured $key (${value.length} chars)")
+                    stopStorageWatch()
+                    (activity as? MainActivity)?.notifyLoginStorage(key, value)
+                    dismiss()
+                } else {
+                    storageWatchHandler.postDelayed(tick, STORAGE_POLL_MS)
+                }
+            }
+        }
+        storageWatchKey = key
+        storageWatchTick = tick
+        storageWatchHandler.postDelayed(tick, STORAGE_POLL_MS)
+    }
+
+    private fun stopStorageWatch() {
+        storageWatchTick?.let { storageWatchHandler.removeCallbacks(it) }
+        storageWatchTick = null
+        storageWatchKey = null
+    }
+
+    /** `evaluateJavascript` hands back JSON, so `null` and quoting are real. */
+    private fun decodeJsString(raw: String?): String? {
+        if (raw == null || !raw.startsWith("\"")) return null
+        return try {
+            JSONArray("[$raw]").getString(0)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun dismiss() {
+        stopStorageWatch()
         overlay?.let { o ->
             (o.parent as? ViewGroup)?.removeView(o)
         }

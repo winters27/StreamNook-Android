@@ -12,6 +12,7 @@
 // permissions, integrity checking and the installer intent, to arrive at the
 // same place the browser reaches on its own.
 import { Logger } from '../utils/logger';
+import { openExternal } from './openExternal';
 
 const MANIFEST_URL = 'https://streamnook.app/api/v1/update-android';
 const DOWNLOAD_URL = 'https://streamnook.app/download/android';
@@ -87,12 +88,14 @@ export async function checkForAndroidUpdate(): Promise<AndroidUpdate | null> {
   }
 }
 
-/** Hands off to the browser, which hands off to Android's package installer. */
-export async function openAndroidUpdate(): Promise<void> {
-  try {
-    const { open } = await import('@tauri-apps/plugin-shell');
-    await open(DOWNLOAD_URL);
-  } catch (err) {
-    Logger.error('[Update] could not open the download page:', err);
-  }
+/**
+ * Hands off to the browser, which hands off to Android's package installer.
+ *
+ * Returns whether the handoff was accepted, so a refusal can be said out loud.
+ * This used to swallow the failure, and since the shell plugin's `open` cannot
+ * work on Android at all (see `openExternal`), the update button did nothing
+ * and said nothing, for everyone, every time.
+ */
+export async function openAndroidUpdate(): Promise<boolean> {
+  return openExternal(DOWNLOAD_URL);
 }

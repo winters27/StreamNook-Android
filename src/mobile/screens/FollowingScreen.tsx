@@ -1,9 +1,11 @@
 // Followed live channels: card feed or compact list, user's choice persisted.
 import React, { useEffect, useState } from 'react';
+import { SettleIn, useSettleIn } from '../ui/SettleIn';
 import { ListBullets, SquaresFour } from 'phosphor-react';
 import { useAppStore } from '../../stores/AppStore';
 import { markFollowingFresh } from '../followRefresh';
-import { MobileStreamCard, useDropsGameNames } from '../ui/MobileStreamCard';
+import { MobileStreamCard } from '../ui/MobileStreamCard';
+import { useDropsGameNames } from '../dropsCampaigns';
 import { PullToRefresh } from '../ui/PullToRefresh';
 import { SkeletonCards } from '../ui/SkeletonCards';
 import { AdaptiveGrid } from '../ui/AdaptiveGrid';
@@ -34,6 +36,12 @@ export const FollowingScreen: React.FC = () => {
   // View choice persists: if a user can choose it, it survives restart.
   const [view, setView] = useState<StreamViewMode>(readStreamView);
   const dropsGameNames = useDropsGameNames();
+
+  // Keyed on the view, so switching between cards and list re-settles. Every
+  // row changes shape and size in that swap, which is a big enough visual
+  // change to deserve being animated rather than snapping; a refresh, where the
+  // same cards stay the same shape, still does not replay.
+  const settled = useSettleIn(!firstLoad && followedStreams.length > 0, view);
 
   const setViewPersisted = (mode: StreamViewMode) => {
     setView(mode);
@@ -114,16 +122,17 @@ export const FollowingScreen: React.FC = () => {
             gap={view === 'list' ? 8 : 12}
             className="px-4 sn-tabbar-clearance"
           >
-            {followedStreams.map((s) => (
-              <MobileStreamCard
-                key={s.id}
-                stream={s}
-                dropsGameNames={dropsGameNames}
-                hypeTrain={activeHypeTrainChannels.get(s.user_id) ?? undefined}
-                watchStreak={watchStreaks[s.user_id]}
-                onPress={onPress}
-                variant={view === 'list' ? 'row' : 'card'}
-              />
+            {followedStreams.map((s, i) => (
+              <SettleIn key={s.id} index={i} settled={settled}>
+                <MobileStreamCard
+                  stream={s}
+                  dropsGameNames={dropsGameNames}
+                  hypeTrain={activeHypeTrainChannels.get(s.user_id) ?? undefined}
+                  watchStreak={watchStreaks[s.user_id]}
+                  onPress={onPress}
+                  variant={view === 'list' ? 'row' : 'card'}
+                />
+              </SettleIn>
             ))}
           </AdaptiveGrid>
         )}

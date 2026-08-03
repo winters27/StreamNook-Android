@@ -16,8 +16,14 @@ use tauri::{AppHandle, Manager, Runtime};
 pub struct TwitchLoginState<R: Runtime>(pub PluginHandle<R>);
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct OpenLoginArgs {
     url: String,
+    /// localStorage key the overlay should watch for. See the Kotlin side.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    watch_storage_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -36,11 +42,23 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
 }
 
 #[tauri::command]
-pub async fn open_mobile_login<R: Runtime>(app: AppHandle<R>, url: String) -> Result<(), String> {
+pub async fn open_mobile_login<R: Runtime>(
+    app: AppHandle<R>,
+    url: String,
+    watch_storage_key: Option<String>,
+    title: Option<String>,
+) -> Result<(), String> {
     let state = app.state::<TwitchLoginState<R>>();
     state
         .0
-        .run_mobile_plugin::<serde_json::Value>("openLogin", OpenLoginArgs { url })
+        .run_mobile_plugin::<serde_json::Value>(
+            "openLogin",
+            OpenLoginArgs {
+                url,
+                watch_storage_key,
+                title,
+            },
+        )
         .map(|_| ())
         .map_err(|e| e.to_string())
 }

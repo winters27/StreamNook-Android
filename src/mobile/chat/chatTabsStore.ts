@@ -139,17 +139,29 @@ export const useChatTabsStore = create<ChatTabsState>((set, get) => ({
     const key = channel.toLowerCase();
     const tab = get().tabs.find((t) => t.channel === key);
     if (!tab) return;
-    // Drop and retake the reference. The socket is shared, so this re-runs the
-    // channel's join and refetches its badge/emote context without disturbing
-    // the other open rooms.
+    // Rebuild the whole chat service rather than just this room.
+    //
+    // Dropping and retaking the reference is only a PART and a re-JOIN, which
+    // is the right shape when the connection is healthy and the wrong one
+    // whenever someone actually reaches for this control. People reload because
+    // messages stopped, and messages stop because the upstream connection died,
+    // in which case there is nothing left to re-JOIN onto and the reload
+    // appears to do nothing at all. See chatRecovery for why only a full stop
+    // clears that state.
+    //
+    // Forced, because a deliberate tap must always act even if something else
+    // rebuilt the connection moments ago. hardCycleChat bumps the nonce for
+    // every room it touches, so this one gets refreshed along the way.
+    //
+    // Imported here rather than at the top because chatRecovery reads this
+    // store, and a static import both ways is a cycle.
     void (async () => {
       try {
-        await releaseChannel(key);
-        await acquireChannel(key, tab.channelId);
+        const { hardCycleChat } = await import('./chatRecovery');
+        await hardCycleChat(`manual reload of ${key}`, true);
       } catch (err) {
         Logger.warn('[ChatTabs] reload failed:', err);
       }
     })();
-    set((s) => ({ reloadNonce: { ...s.reloadNonce, [key]: (s.reloadNonce[key] ?? 0) + 1 } }));
   },
 }));

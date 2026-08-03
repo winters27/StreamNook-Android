@@ -1,8 +1,9 @@
 // Touch-first player surface: the video element plus a tap-driven glass control
 // overlay. No Plyr; hls.js runs via useMobileHlsEngine.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowsOut, Columns, Eye, Gear, Pause, PictureInPicture, Play, Rows, ShareNetwork, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
+import { ArrowsOut, Bell, BellSlash, Columns, Eye, Gear, Pause, PictureInPicture, Play, Rows, ShareNetwork, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
 import { setPipMuted, shareText } from '../nativeBridge';
+import { toggleChannelMuted } from '../notifyChannels';
 import { buildShareUrl } from '../../utils/shareLink';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileHlsEngine } from './useMobileHlsEngine';
@@ -47,6 +48,10 @@ export const MobilePlayer: React.FC<{
   const { state } = useMobileHlsEngine(videoRef);
   const restartStream = useAppStore((s) => s.restartStream);
   const currentStream = useAppStore((s) => s.currentStream);
+  // Subscribed rather than read through the helper, so toggling the bell
+  // re-renders this overlay instead of leaving a stale icon behind.
+  const mutedChannels = useAppStore((s) => s.settings.live_notifications?.muted_live_channels);
+  const alertsOff = !!currentStream && (mutedChannels ?? []).includes(currentStream.user_login.toLowerCase());
 
   const [controlsVisible, setControlsVisible] = useState(true);
   const [paused, setPaused] = useState(false);
@@ -204,6 +209,23 @@ export const MobilePlayer: React.FC<{
                   ></path>
                 </svg>
               )}
+              {/* Live-alert opt-out for this channel, next to who it is rather
+                  than down in the playback controls: it is a fact about the
+                  channel, not about this session's playback. */}
+              <button
+                onClick={() => void toggleChannelMuted(currentStream.user_login)}
+                aria-label={
+                  alertsOff
+                    ? `Turn on live alerts for ${currentStream.user_name}`
+                    : `Turn off live alerts for ${currentStream.user_name}`
+                }
+                aria-pressed={!alertsOff}
+                className={`shrink-0 flex items-center justify-center p-1 transition-colors ${
+                  alertsOff ? 'text-white/45' : 'text-white'
+                }`}
+              >
+                {alertsOff ? <BellSlash size={15} /> : <Bell size={15} weight="fill" />}
+              </button>
               <span className="ml-auto flex items-center gap-2 shrink-0 pl-2">
                 <span className="flex items-center gap-1 text-[12px] font-medium text-live">
                   <Eye size={12} weight="fill" />

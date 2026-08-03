@@ -23,6 +23,7 @@ dependencies = [
  "futures",
  "futures-util",
  "image",
+ "jni",
  "keyring",
  "lazy_static",
  "log",

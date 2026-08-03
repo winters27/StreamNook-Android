@@ -1,24 +1,138 @@
-// Activity: drops progress and rewards. Uses the same backend surface as the
-// desktop Drops Center; connecting uses the device-code flow directly (the
-// desktop's authorize popup is desktop-gated), showing the code here and
-// opening the browser, mirroring the main Twitch login pattern on mobile.
+// Rewards: drops and badges, the two things you earn by watching.
+//
+// Named Activity until it was pointed out that the word describes neither of
+// the things on it. Both tabs are collections of rewards, so the tab says that.
+//
+// Uses the same backend surface as the desktop Drops Center; connecting uses
+// the device-code flow directly (the desktop's authorize popup is
+// desktop-gated), showing the code here and opening the browser, mirroring the
+// main Twitch login pattern on mobile.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowSquareOut, CalendarBlank, CheckCircle, Gift, Warning } from 'phosphor-react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { ArrowSquareOut, CalendarBlank, CaretRight, CheckCircle, Gift, MagnifyingGlass, Warning, X } from 'phosphor-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileNavStore } from '../navStore';
 import { PullToRefresh } from '../ui/PullToRefresh';
 import { MobileSheet } from '../ui/MobileSheet';
+import { SettleIn, useSettleIn } from '../ui/SettleIn';
 import { getAllUserBadgesWithEarned } from '../../services/badgeService';
 import {
   deriveBadgeStatus,
   formatBadgeDateInfo,
   type BadgeWindowStatus,
 } from '../../utils/badgeWindow';
+import { gameBoxArt } from '../../utils/boxArt';
+import { openExternal } from '../openExternal';
 import { Logger } from '../../utils/logger';
-import type { DropsDeviceCodeInfo, InventoryItem, InventoryResponse } from '../../types';
+import type {
+  DropCampaign,
+  DropsDeviceCodeInfo,
+  InventoryItem,
+  InventoryResponse,
+} from '../../types';
 
-type ActivityTab = 'drops' | 'badges';
+type RewardsTab = 'drops' | 'badges';
+
+interface GameGroup<T> {
+  game: string;
+  art: string;
+  items: T[];
+}
+
+function groupByGame<T>(
+  items: T[],
+  getGame: (t: T) => string,
+  getArt: (t: T) => string,
+): GameGroup<T>[] {
+  const map = new Map<string, GameGroup<T>>();
+  for (const item of items) {
+    const game = getGame(item) || 'Other';
+    const existing = map.get(game);
+    if (existing) existing.items.push(item);
+    else map.set(game, { game, art: getArt(item), items: [item] });
+  }
+  // Busiest game first, then alphabetical. The tiebreak matters: without it the
+  // order follows whatever the API happened to return and the list reshuffles
+  // itself under the reader on every poll.
+  return [...map.values()].sort(
+    (a, b) => b.items.length - a.items.length || a.game.localeCompare(b.game),
+  );
+}
+
+/**
+ * One game, collapsed to a single row until you open it.
+ *
+ * A game routinely runs half a dozen campaigns at once, and listing them all
+ * flat turned this screen into the same box art repeated down the page. Closed
+ * by default means the list answers "which games have drops" at a glance, and
+ * opening one is a deliberate ask for the detail.
+ *
+ * Searching overrides it and opens everything that matched, because hiding
+ * results behind another tap defeats the point of having searched.
+ */
+const GameGroupSection: React.FC<{
+  art: string;
+  game: string;
+  count: number;
+  expanded: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}> = ({ art, game, count, expanded, onToggle, children }) => (
+  <div>
+    <button
+      onClick={onToggle}
+      aria-expanded={expanded}
+      className="w-full flex items-center gap-2 mt-3 mb-1.5 text-left active:opacity-70 transition-opacity"
+    >
+      {/* Through gameBoxArt, not straight into src. Twitch hands back box art in
+          two shapes and one of them is a TEMPLATE carrying literal
+          {width}x{height} placeholders, which is not a loadable URL. The
+          Available now campaigns come back in that shape, which is why they
+          were the ones rendering with no art at all. */}
+      {art ? (
+        <img
+          src={gameBoxArt(art, 144, 192)}
+          alt=""
+          loading="lazy"
+          draggable={false}
+          className="w-10 aspect-[3/4] object-cover rounded shrink-0"
+        />
+      ) : (
+        <div className="w-10 aspect-[3/4] rounded bg-surface shrink-0" />
+      )}
+      <div className="flex-1 min-w-0">
+        <div className="text-[14px] font-semibold text-textPrimary truncate">{game}</div>
+        <div className="text-[12px] text-textMuted">
+          {count} {count === 1 ? 'campaign' : 'campaigns'}
+        </div>
+      </div>
+      <motion.span
+        className="ml-auto shrink-0 flex text-textMuted"
+        animate={{ rotate: expanded ? 90 : 0 }}
+        transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+      >
+        <CaretRight size={14} weight="bold" />
+      </motion.span>
+    </button>
+    <AnimatePresence>
+      {expanded && (
+        <motion.div
+          // Height to `auto` is measured by framer, so this animates properly
+          // rather than snapping. `overflow-hidden` is what makes the content
+          // wipe rather than spill out during the transition.
+          initial={{ height: 0, opacity: 0 }}
+          animate={{ height: 'auto', opacity: 1 }}
+          exit={{ height: 0, opacity: 0 }}
+          transition={{ duration: 0.26, ease: [0.16, 1, 0.3, 1] }}
+          className="overflow-hidden"
+        >
+          <div className="flex flex-col gap-2 pb-1">{children}</div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  </div>
+);
 
 // Mirrors the desktop Global Cosmetics gallery: newest first, with each
 // badge's live earn status derived from its BadgeBase window.
@@ -55,6 +169,20 @@ function parseUsage(raw: string | null | undefined): number {
   if (!raw) return 0;
   const digits = raw.replace(/[^0-9]/g, '');
   return digits ? parseInt(digits, 10) : 0;
+}
+
+// How long is left to earn a campaign, at the coarsest useful resolution.
+// Anything past a couple of days does not need an hour count, and anything
+// under a day very much does.
+function campaignEndsIn(campaign: DropCampaign): string | null {
+  const end = new Date(campaign.end_at).getTime();
+  if (Number.isNaN(end)) return null;
+  const ms = end - Date.now();
+  if (ms <= 0) return null;
+  const hours = Math.floor(ms / 3_600_000);
+  if (hours < 1) return `${Math.max(1, Math.round(ms / 60_000))}m left`;
+  if (hours < 48) return `${hours}h left`;
+  return `${Math.floor(hours / 24)}d left`;
 }
 
 function parseAdded(raw: string | null | undefined): number {
@@ -117,22 +245,39 @@ interface CachedBadgeMeta {
   position?: number;
 }
 
-export const ActivityScreen: React.FC = () => {
+export const RewardsScreen: React.FC = () => {
   const addToast = useAppStore((s) => s.addToast);
   const currentUser = useAppStore((s) => s.currentUser);
-  const [tab, setTab] = useState<ActivityTab>('drops');
+  const [tab, setTab] = useState<RewardsTab>('drops');
 
   // Arriving from a tap on the live drop progress: land on Drops, scroll that
   // campaign into view and flash it, so the jump obviously ends somewhere rather
   // than dumping you at the top of a list to hunt.
   const focusDropCampaignId = useMobileNavStore((s) => s.focusDropCampaignId);
   const clearDropFocus = useMobileNavStore((s) => s.clearDropFocus);
+  const openBrowseCategory = useMobileNavStore((s) => s.openBrowseCategory);
+  // Named apart from this screen's own `setTab`, which switches drops/badges.
+  const setNavTab = useMobileNavStore((s) => s.setTab);
   const campaignRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [flashedCampaign, setFlashedCampaign] = useState<string | null>(null);
   // Tapping a campaign opens every reward in it, the way the desktop Drops
   // Center does. The card alone only says "2/5", which tells you nothing about
   // WHAT the remaining three are.
-  const [campaignDetail, setCampaignDetail] = useState<InventoryItem | null>(null);
+  // One sheet serves both lists. An inventory entry knows how many of its drops
+  // you have already claimed; a campaign you have not started has no such entry,
+  // so `claimed` is null and the sheet says how many rewards it holds instead.
+  const [campaignDetail, setCampaignDetail] = useState<{
+    campaign: DropCampaign;
+    claimed: number | null;
+    total: number;
+  } | null>(null);
+  const [campaigns, setCampaigns] = useState<DropCampaign[]>([]);
+  const [dropsQuery, setDropsQuery] = useState('');
+  // Participating-channels list inside the campaign sheet. Stamped with the
+  // campaign it was opened for and compared during render, so opening a
+  // different campaign starts closed without an effect to reset it.
+  const [channelsOpenFor, setChannelsOpenFor] = useState<string | null>(null);
+  const startStream = useAppStore((s) => s.startStream);
   const [globalBadges, setGlobalBadges] = useState<GlobalBadge[]>([]);
   const [ownedTitles, setOwnedTitles] = useState<Set<string>>(new Set());
   const [badgesLoading, setBadgesLoading] = useState(false);
@@ -153,9 +298,16 @@ export const ActivityScreen: React.FC = () => {
       if (ok) {
         const inv = await invoke<InventoryResponse>('get_drops_inventory').catch(() => null);
         setInventory(inv);
+        // Everything currently running, not just what you have already started.
+        // The inventory only lists a campaign once it has progress, so on its
+        // own it can never answer "what could I be earning right now". The
+        // backend caches this for a few minutes, so asking on load and on
+        // pull-to-refresh is cheap.
+        const active = await invoke<DropCampaign[]>('get_active_drop_campaigns').catch(() => []);
+        setCampaigns(active ?? []);
       }
     } catch (err) {
-      Logger.warn('[Activity] load failed:', err);
+      Logger.warn('[Rewards] load failed:', err);
       setAuthed(false);
     }
   }, []);
@@ -201,7 +353,7 @@ export const ActivityScreen: React.FC = () => {
             cacheType: 'badge',
           })) ?? {};
       } catch (err) {
-        Logger.warn('[Activity] badge metadata cache unavailable:', err);
+        Logger.warn('[Rewards] badge metadata cache unavailable:', err);
       }
 
       const build = (metaMap: Record<string, CachedBadgeMeta>): GlobalBadge[] => {
@@ -269,13 +421,13 @@ export const ActivityScreen: React.FC = () => {
           setGlobalBadges(build(refreshed));
         }
       } catch (err) {
-        Logger.warn('[Activity] badge metadata backfill failed:', err);
+        Logger.warn('[Rewards] badge metadata backfill failed:', err);
       } finally {
         setMetaProgress(0);
       }
       return;
     } catch (err) {
-      Logger.warn('[Activity] badge load failed:', err);
+      Logger.warn('[Rewards] badge load failed:', err);
     } finally {
       setBadgesLoading(false);
     }
@@ -315,7 +467,7 @@ export const ActivityScreen: React.FC = () => {
       // Surface the real backend reason (expired code, denied, network) instead
       // of a generic failure, so a stuck connect is diagnosable from the phone.
       const reason = err instanceof Error ? err.message : String(err);
-      Logger.error('[Activity] drops connect failed:', err);
+      Logger.error('[Rewards] drops connect failed:', err);
       setConnectError(reason);
       addToast(`Drops connection failed: ${reason}`, 'error');
       setDeviceCode(null);
@@ -377,12 +529,68 @@ export const ActivityScreen: React.FC = () => {
   );
   const completed = inventory?.completed_drops ?? [];
 
+  // Everything running that is not already listed above, soonest to end first.
+  // A campaign you have progress on appears in both feeds otherwise, and the
+  // one with a progress bar on it is the more useful of the two.
+  const available = useMemo(() => {
+    const started = new Set(inProgress.map((i) => i.campaign.id));
+    return campaigns
+      .filter((c) => !started.has(c.id))
+      .sort((a, b) => new Date(a.end_at).getTime() - new Date(b.end_at).getTime());
+    // inProgress is rebuilt every render from `inventory`, so depend on that.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [campaigns, inventory]);
+
+  // Grouped by game, and filtered by the search box.
+  //
+  // A busy game routinely runs several campaigns at once, and flat lists showed
+  // them as the same game's art and name repeated down the screen with no
+  // indication they belonged together. One heading per game with its campaigns
+  // beneath says what the list actually contains.
+  const q = dropsQuery.trim().toLowerCase();
+  const matchesQuery = (game: string, name: string) =>
+    !q || game.toLowerCase().includes(q) || name.toLowerCase().includes(q);
+
+  const inProgressGroups = groupByGame(
+    inProgress.filter((i) => matchesQuery(i.campaign.game_name || '', i.campaign.name || '')),
+    (i) => i.campaign.game_name || '',
+    (i) => i.campaign.image_url || '',
+  );
+  const availableGroups = groupByGame(
+    available.filter((c) => matchesQuery(c.game_name || '', c.name || '')),
+    (c) => c.game_name || '',
+    (c) => c.image_url || '',
+  );
+
+  // Which game groups are open. Keyed by section too, since the same game can
+  // appear under both In progress and Available and they open independently.
+  const [openGroups, setOpenGroups] = useState<Set<string>>(new Set());
+  const toggleGroup = (key: string) =>
+    setOpenGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  // A search opens everything it matched. Making someone tap again to see what
+  // their own search found would be a strange thing to ask.
+  const isGroupOpen = (key: string) => !!q || openGroups.has(key);
+
+  // Re-settles on each new search, so results arrive the same way the rest of
+  // the app's lists do. Refreshing the same view keeps its key and stays put.
+  // The headings are what settle, since the campaigns start collapsed.
+  const dropsSettled = useSettleIn(
+    authed === true && inProgressGroups.length + availableGroups.length > 0,
+    `drops:${q}`,
+  );
+  const badgesSettled = useSettleIn(sortedBadges.length > 0, `badges:${badgeSort}`);
+
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       <div className="px-4 pt-3 pb-2 shrink-0">
-        <h1 className="text-xl font-bold text-textPrimary mb-2.5">Activity</h1>
+        <h1 className="text-xl font-bold text-textPrimary mb-2.5">Rewards</h1>
         <div className="flex gap-1">
-          {(['drops', 'badges'] as ActivityTab[]).map((t) => (
+          {(['drops', 'badges'] as RewardsTab[]).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -437,15 +645,15 @@ export const ActivityScreen: React.FC = () => {
                 ))}
               </div>
               <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-7 gap-2">
-                {sortedBadges.map((badge) => {
+                {sortedBadges.map((badge, bi) => {
                   const owned = ownedTitles.has(badge.title);
                   const available = badge.status === 'available';
                   const comingSoon = badge.status === 'coming-soon';
                   return (
+                    <SettleIn key={badge.key} index={bi} settled={badgesSettled}>
                     <button
-                      key={badge.key}
                       onClick={() => setBadgeDetail(badge)}
-                      className={`glass-panel p-2 flex flex-col items-center gap-1.5 relative active:opacity-80 ${
+                      className={`glass-panel p-2 flex flex-col items-center gap-1.5 relative active:opacity-80 w-full h-full ${
                         available && !owned ? 'ring-1 ring-success/70' : ''
                       } ${owned ? 'ring-1 ring-accent/60' : ''}`}
                     >
@@ -484,6 +692,7 @@ export const ActivityScreen: React.FC = () => {
                         </span>
                       )}
                     </button>
+                    </SettleIn>
                   );
                 })}
               </div>
@@ -538,38 +747,74 @@ export const ActivityScreen: React.FC = () => {
 
           {authed && (
             <>
+              {/* Searching by game, since that is how anyone thinks about
+                  drops. Campaign names are matched too, because a lot of them
+                  read like event names and are what someone actually remembers. */}
+              <div className="relative mt-1 mb-1">
+                <MagnifyingGlass
+                  size={16}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-textMuted z-10"
+                />
+                <input
+                  value={dropsQuery}
+                  onChange={(e) => setDropsQuery(e.target.value)}
+                  placeholder="Search games or campaigns"
+                  className="glass-input w-full rounded-lg pl-9 pr-9 py-2.5 text-[14px] text-textPrimary placeholder:text-textMuted outline-none"
+                />
+                {dropsQuery && (
+                  <button
+                    onClick={() => setDropsQuery('')}
+                    aria-label="Clear search"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-textMuted z-10"
+                  >
+                    <X size={15} />
+                  </button>
+                )}
+              </div>
+
               <div className="text-[12px] font-semibold text-textMuted uppercase tracking-wide mt-2 mb-1.5">
                 In progress
               </div>
-              {inProgress.length === 0 ? (
+              {inProgressGroups.length === 0 ? (
                 <div className="glass-panel p-4 text-[13px] text-textMuted">
-                  No drop campaigns in progress. Watch a drops-enabled stream to start earning.
+                  {q
+                    ? 'No drops in progress match that search.'
+                    : 'No drop campaigns in progress. Watch a drops-enabled stream to start earning.'}
                 </div>
               ) : (
-                <div className="flex flex-col gap-2">
-                  {inProgress.map((item) => (
+                inProgressGroups.map((group, gIdx) => (
+                  <SettleIn key={group.game} index={gIdx} settled={dropsSettled}>
+                    <GameGroupSection
+                      art={group.art}
+                      game={group.game}
+                      count={group.items.length}
+                      expanded={isGroupOpen(`progress:${group.game}`)}
+                      onToggle={() => toggleGroup(`progress:${group.game}`)}
+                    >
+                      {group.items.map((item) => (
+                        <React.Fragment key={item.campaign.id}>
                     <div
-                      key={item.campaign.id}
                       ref={(el) => {
                         campaignRefs.current[item.campaign.id] = el;
                       }}
                       role="button"
                       tabIndex={0}
-                      onClick={() => setCampaignDetail(item)}
+                      onClick={() =>
+                        setCampaignDetail({
+                          campaign: item.campaign,
+                          claimed: item.claimed_drops,
+                          total: item.total_drops,
+                        })
+                      }
                       className={`glass-panel p-2.5 flex gap-2.5 transition-shadow duration-500 active:opacity-80 ${
                         flashedCampaign === item.campaign.id ? 'ring-2 ring-accent' : ''
                       }`}
                     >
-                      {/* Campaign / category art, like the desktop drop cards. */}
-                      {item.campaign.image_url && (
-                        <img
-                          src={item.campaign.image_url}
-                          alt=""
-                          loading="lazy"
-                          draggable={false}
-                          className="w-[52px] shrink-0 aspect-[3/4] object-cover rounded"
-                        />
-                      )}
+                      {/* No art on the card. `image_url` is the GAME's box art,
+                          so inside a group it is the heading's image repeated
+                          once per row, eating a third of the width to say the
+                          same thing six times. The name and the progress are
+                          what differ between these, so they get the space. */}
                       <div className="flex-1 min-w-0 flex flex-col justify-center">
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-[13.5px] font-medium text-textPrimary truncate">
@@ -579,12 +824,10 @@ export const ActivityScreen: React.FC = () => {
                             {item.claimed_drops}/{item.total_drops}
                           </span>
                         </div>
-                        {item.campaign.game_name && (
-                          <div className="text-[12px] text-textMuted truncate mt-0.5 mb-1.5">
-                            {item.campaign.game_name}
-                          </div>
-                        )}
-                        <div className="h-1.5 rounded-full bg-surface overflow-hidden">
+                        {/* No game name here: the heading above the group
+                            already says it, and repeating it on every card is
+                            what made these lists read as noise. */}
+                        <div className="h-1.5 rounded-full bg-surface overflow-hidden mt-1.5">
                           <div
                             className="h-full rounded-full bg-accent transition-[width]"
                             style={{ width: `${Math.min(100, item.progress_percentage)}%` }}
@@ -592,8 +835,99 @@ export const ActivityScreen: React.FC = () => {
                         </div>
                       </div>
                     </div>
+                        </React.Fragment>
+                      ))}
+                    </GameGroupSection>
+                  </SettleIn>
+                ))
+              )}
+
+              {availableGroups.length > 0 && (
+                <>
+                  <div className="text-[12px] font-semibold text-textMuted uppercase tracking-wide mt-4 mb-1.5">
+                    Available now
+                  </div>
+                  {availableGroups.map((group, gIdx) => (
+                    <SettleIn
+                      key={group.game}
+                      index={inProgressGroups.length + gIdx}
+                      settled={dropsSettled}
+                    >
+                      <GameGroupSection
+                        art={group.art}
+                        game={group.game}
+                        count={group.items.length}
+                        expanded={isGroupOpen(`available:${group.game}`)}
+                        onToggle={() => toggleGroup(`available:${group.game}`)}
+                      >
+                        {group.items.map((campaign) => {
+                          const rewards = campaign.time_based_drops?.length ?? 0;
+                          // What the row is FOR is showing the reward, so show
+                          // the reward: the first tier's benefit art, the same
+                          // image the detail sheet lists below.
+                          //
+                          // `campaign.image_url` was being used here and is not
+                          // that. It is the GAME's box art (desktop feeds the
+                          // very same field into getOrCreateGame), and it arrives
+                          // as a `{width}x{height}` template. Handed to an img
+                          // unresolved, Twitch's CDN answers with its generic
+                          // grey box art, which is why every one of these tiles
+                          // turned into the same placeholder gamepad. It stays
+                          // as the fallback, but resolved through gameBoxArt
+                          // this time.
+                          const rewardArt =
+                            campaign.time_based_drops?.[0]?.benefit_edges?.[0]?.image_url;
+                          const art =
+                            rewardArt ||
+                            (campaign.image_url ? gameBoxArt(campaign.image_url, 144, 192) : '');
+                          return (
+                            <React.Fragment key={campaign.id}>
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                onClick={() =>
+                                  setCampaignDetail({ campaign, claimed: null, total: rewards })
+                                }
+                                className="glass-panel p-2.5 flex gap-2.5 active:opacity-80"
+                              >
+                                {art ? (
+                                  <img
+                                    src={art}
+                                    alt=""
+                                    loading="lazy"
+                                    draggable={false}
+                                    className="w-[52px] h-[52px] shrink-0 object-cover rounded-md ring-1 ring-white/10"
+                                  />
+                                ) : (
+                                  <div className="w-[52px] h-[52px] shrink-0 rounded-md bg-surface flex items-center justify-center">
+                                    <Gift size={18} className="text-textMuted" />
+                                  </div>
+                                )}
+                                <div className="flex-1 min-w-0 flex flex-col justify-center">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[13.5px] font-medium text-textPrimary truncate">
+                                      {campaign.name}
+                                    </span>
+                                    {!campaign.is_account_connected && (
+                                      <Warning size={14} className="text-warning shrink-0" />
+                                    )}
+                                  </div>
+                                  {/* Game name lives on the group heading now. */}
+                                  <div className="text-[11.5px] text-textMuted mt-1">
+                                    {rewards} {rewards === 1 ? 'reward' : 'rewards'}
+                                    {campaignEndsIn(campaign)
+                                      ? ` · ${campaignEndsIn(campaign)}`
+                                      : ''}
+                                  </div>
+                                </div>
+                              </div>
+                            </React.Fragment>
+                          );
+                        })}
+                      </GameGroupSection>
+                    </SettleIn>
                   ))}
-                </div>
+                </>
               )}
 
               {completed.length > 0 && (
@@ -726,9 +1060,141 @@ export const ActivityScreen: React.FC = () => {
                 <span className="truncate">{campaignDetail.campaign.game_name}</span>
               )}
               <span className="ml-auto shrink-0">
-                {campaignDetail.claimed_drops}/{campaignDetail.total_drops} claimed
+                {campaignDetail.claimed !== null
+                  ? `${campaignDetail.claimed}/${campaignDetail.total} claimed`
+                  : `${campaignDetail.total} ${campaignDetail.total === 1 ? 'reward' : 'rewards'}`}
               </span>
             </div>
+
+            {/* Twitch will not credit watch time until the game account is
+                linked, so saying this up front is the difference between a
+                wasted evening and a working one. */}
+            {!campaignDetail.campaign.is_account_connected && (
+              <button
+                onClick={() => {
+                  const url = campaignDetail.campaign.account_link;
+                  if (!url) return;
+                  void openExternal(url).then((ok) => {
+                    if (!ok) addToast('Could not open the account link page.', 'error');
+                  });
+                }}
+                disabled={!campaignDetail.campaign.account_link}
+                className="glass-panel p-2.5 flex items-center gap-2 text-left disabled:opacity-70"
+              >
+                <Warning size={16} className="text-warning shrink-0" />
+                <span className="flex-1 text-[12.5px] text-textSecondary leading-snug">
+                  Your game account is not linked, so this campaign will not earn yet.
+                </span>
+                {campaignDetail.campaign.account_link && (
+                  <ArrowSquareOut size={14} className="text-textMuted shrink-0" />
+                )}
+              </button>
+            )}
+
+            {/* Where it can be earned. An ACL campaign only credits on these
+                channels, so it is the whole plan for the evening rather than
+                trivia; a category-wide one lists none and needs no list.
+
+                Collapsed, and a list rather than prose. These run to dozens of
+                names, and joining them with commas produced a paragraph nobody
+                could read or act on. Each name is now a row you can tap to go
+                and watch it, which is the only thing anyone wanted from this
+                list in the first place. */}
+            {campaignDetail.campaign.allowed_channels?.length > 0 && (() => {
+              const channelsOpen = channelsOpenFor === campaignDetail.campaign.id;
+              return (
+              <div>
+                <button
+                  onClick={() =>
+                    setChannelsOpenFor(channelsOpen ? null : campaignDetail.campaign.id)
+                  }
+                  aria-expanded={channelsOpen}
+                  className="w-full glass-panel px-3 py-2.5 flex items-center gap-2 text-left active:opacity-80"
+                >
+                  <span className="text-[12.5px] text-textSecondary flex-1">
+                    Earn on {campaignDetail.campaign.allowed_channels.length}{' '}
+                    {campaignDetail.campaign.allowed_channels.length === 1
+                      ? 'channel'
+                      : 'channels'}
+                  </span>
+                  <motion.span
+                    className="shrink-0 flex text-textMuted"
+                    animate={{ rotate: channelsOpen ? 90 : 0 }}
+                    transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+                  >
+                    <CaretRight size={13} weight="bold" />
+                  </motion.span>
+                </button>
+                <AnimatePresence>
+                  {channelsOpen && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.26, ease: [0.16, 1, 0.3, 1] }}
+                      className="overflow-hidden"
+                    >
+                      {/* Capped height so a campaign with eighty channels does
+                          not push the rest of the sheet off the bottom. */}
+                      <div className="max-h-[40vh] overflow-y-auto mt-1 flex flex-col">
+                        {campaignDetail.campaign.allowed_channels.map((c) => (
+                          <button
+                            key={c.id || c.name}
+                            onClick={() => {
+                              setCampaignDetail(null);
+                              setChannelsOpenFor(null);
+                              // Pass the broadcaster id through. Without it
+                              // startStream falls back to a channel-info lookup,
+                              // and if that throws it lands on an empty user_id,
+                              // which skips drops monitoring entirely and leaves
+                              // the watch heartbeat pointed at whatever channel
+                              // came before. A campaign's channel list is exactly
+                              // where someone starts a streamer they do not
+                              // follow, so the followed-streams shortcut cannot
+                              // cover for it. Title and category are left blank
+                              // on purpose; startStream backfills both.
+                              void startStream(c.name.toLowerCase(), {
+                                id: '',
+                                user_id: c.id,
+                                user_name: c.name,
+                                user_login: c.name.toLowerCase(),
+                                title: '',
+                                viewer_count: 0,
+                                game_name: '',
+                                thumbnail_url: '',
+                                started_at: new Date().toISOString(),
+                              });
+                            }}
+                            className="px-3 py-2.5 text-left text-[13px] text-textPrimary border-b border-borderSubtle last:border-b-0 active:opacity-70"
+                          >
+                            {c.name}
+                          </button>
+                        ))}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+              );
+            })()}
+
+            {campaignDetail.campaign.game_id && campaignDetail.campaign.game_name && (
+              <button
+                onClick={() => {
+                  const c = campaignDetail.campaign;
+                  setCampaignDetail(null);
+                  openBrowseCategory({
+                    id: c.game_id,
+                    name: c.game_name,
+                    box_art_url: c.image_url || '',
+                  });
+                  setNavTab('browse');
+                }}
+                className="glass-button rounded-lg py-2.5 text-[13px] font-medium text-textPrimary"
+              >
+                Find a stream
+              </button>
+            )}
 
             {[...(campaignDetail.campaign.time_based_drops || [])]
               .sort((a, b) => a.required_minutes_watched - b.required_minutes_watched)

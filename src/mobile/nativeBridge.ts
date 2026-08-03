@@ -11,6 +11,15 @@ interface SNBridge {
   setPipSourceRect?(l: number, t: number, r: number, b: number): void;
   setPipMuted?(muted: boolean): void;
   share?(text: string, subject: string): void;
+  areNotificationsEnabled?(): boolean;
+  channelImportance?(id: string): number;
+  shouldShowNotificationRationale?(): boolean;
+  openNotificationSettings?(): void;
+  openChannelSettings?(id: string): void;
+  isIgnoringBatteryOptimizations?(): boolean;
+  requestIgnoreBatteryOptimizations?(): void;
+  scheduleBackgroundChecks?(intervalMinutes: number): void;
+  cancelBackgroundChecks?(): void;
 }
 
 function bridge(): SNBridge | undefined {
@@ -117,4 +126,117 @@ export function shareText(text: string, subject = ''): boolean {
   }
   void navigator.clipboard?.writeText(text).catch(() => {});
   return false;
+}
+
+// ---- Notifications --------------------------------------------------------
+//
+// The notification plugin only knows about the runtime permission. Two other
+// states silence notifications just as completely and it cannot see either: the
+// app-level switch in system settings, and a single category set to
+// IMPORTANCE_NONE. Both are read here so the panel can tell someone what is
+// actually wrong instead of reporting that everything is fine.
+//
+// Each returns null when the bridge is absent, so "unknown" stays distinct from
+// "off" and the desktop/dev-browser case renders nothing rather than a scare.
+
+export function areNotificationsEnabled(): boolean | null {
+  try {
+    const b = bridge();
+    if (typeof b?.areNotificationsEnabled === 'function') return b.areNotificationsEnabled();
+  } catch {
+    /* bridge absent */
+  }
+  return null;
+}
+
+/** OS importance for one channel: 0 is blocked, -1 not created yet, null unknown. */
+export function channelImportance(id: string): number | null {
+  try {
+    const b = bridge();
+    if (typeof b?.channelImportance === 'function') return b.channelImportance(id);
+  } catch {
+    /* bridge absent */
+  }
+  return null;
+}
+
+/**
+ * Whether Android would still show a rationale for the notification permission.
+ *
+ * False plus "not granted" means the user has permanently declined, and every
+ * further in-app request returns denied without showing anything. That is the
+ * one state where the only honest UI is a link into system settings.
+ */
+export function shouldShowNotificationRationale(): boolean | null {
+  try {
+    const b = bridge();
+    if (typeof b?.shouldShowNotificationRationale === 'function') {
+      return b.shouldShowNotificationRationale();
+    }
+  } catch {
+    /* bridge absent */
+  }
+  return null;
+}
+
+export function openNotificationSettings(): void {
+  try {
+    bridge()?.openNotificationSettings?.();
+  } catch {
+    /* bridge absent */
+  }
+}
+
+export function openChannelSettings(id: string): void {
+  try {
+    bridge()?.openChannelSettings?.(id);
+  } catch {
+    /* bridge absent */
+  }
+}
+
+// ---- Background delivery --------------------------------------------------
+
+/**
+ * Whether the app is exempt from battery optimisation.
+ *
+ * This decides whether background notifications work at all, not just how
+ * promptly they arrive: Android withholds network from jobs entirely in the
+ * Rare and Restricted standby buckets, and the exemption is what lifts an app
+ * out of them.
+ */
+export function isIgnoringBatteryOptimizations(): boolean | null {
+  try {
+    const b = bridge();
+    if (typeof b?.isIgnoringBatteryOptimizations === 'function') {
+      return b.isIgnoringBatteryOptimizations();
+    }
+  } catch {
+    /* bridge absent */
+  }
+  return null;
+}
+
+export function requestIgnoreBatteryOptimizations(): void {
+  try {
+    bridge()?.requestIgnoreBatteryOptimizations?.();
+  } catch {
+    /* bridge absent */
+  }
+}
+
+export function scheduleBackgroundChecks(intervalMinutes: number): void {
+  try {
+    bridge()?.scheduleBackgroundChecks?.(intervalMinutes);
+  } catch {
+    /* bridge absent */
+  }
+}
+
+export function cancelBackgroundChecks(): void {
+  try {
+    bridge()?.cancelBackgroundChecks?.();
+  } catch {
+    /* bridge absent */
+  }
 }

@@ -25,6 +25,7 @@ import { UserProfileSheet, type SheetUser } from '../profile/UserProfileSheet';
 import { ChatTabStrip } from './ChatTabStrip';
 import { AddChatSheet } from './AddChatSheet';
 import { useChatTabsStore } from './chatTabsStore';
+import { useChatWatchdog } from './useChatWatchdog';
 import { banUser, deleteMessage, isModeratorFrom, pinMessage, unbanUser } from './modActions';
 import { deriveChatGating } from './chatGating';
 import { useFollowStatus } from './useFollowStatus';
@@ -77,6 +78,10 @@ export const MobileChatPane: React.FC = () => {
   } = chat;
 
   const emotes = useChannelEmotes(activeChannel, activeTab?.channelId ?? null, 'twitch');
+
+  // Rebuilds the connection if it dies while the app is open. Every room rides
+  // one connection, so watching the active one covers all of them.
+  useChatWatchdog(activeChannel);
 
   const isModerator = isModeratorFrom(userBadges);
   /** Every Helix mod action keys off the channel's numeric id. */

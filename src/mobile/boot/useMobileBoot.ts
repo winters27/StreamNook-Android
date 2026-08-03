@@ -13,6 +13,7 @@
 // snippet sync, window sizing, universal-cache disk sync (features.assetDiskCache).
 import { useEffect } from 'react';
 import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import {
   handleSeventvCosmeticUpdate,
@@ -29,7 +30,15 @@ import {
   subscribeToStreamNookRegistry,
   trackPresence,
 } from '../../services/supabaseService';
-import { postSystemNotification } from '../notifications';
+import {
+  NOTIFY_CHANNEL,
+  ensureNotificationChannels,
+  ensureNotificationPermission,
+  getNotificationPermission,
+  postSystemNotification,
+  syncBackgroundChecks,
+} from '../notifications';
+import { isChannelMuted } from '../notifyChannels';
 import { Logger } from '../../utils/logger';
 
 export function useMobileBoot(): void {
@@ -57,6 +66,30 @@ export function useMobileBoot(): void {
         // failed; either way drop the boot overlay.
         if (isMounted) useAppStore.setState({ isBooting: false });
       }
+
+      // Is the drops token actually still good?
+      //
+      // Every other surface asks `is_drops_authenticated`, which only checks
+      // that a token file exists, never that Twitch still accepts it. The
+      // device-code client has no secret, so it cannot refresh: once a token
+      // dies (password change, session revoke) it stays dead. Nothing noticed,
+      // because the failure is silent all the way down - the watch heartbeat
+      // just returns early and earns nothing, the drops panel keeps saying
+      // connected, and the only trace is a warn line in logcat.
+      //
+      // `validate_drops_token` deletes the stored token and cookies on a 401,
+      // so one call at boot converts that silent permanent failure into an
+      // honest "not connected" the user can act on. Fire and forget: it is a
+      // single request, nothing downstream waits on it, and being offline at
+      // boot must not be mistaken for a bad token (the command only clears on
+      // an actual 401, not on a transport error).
+      void invoke<boolean>('validate_drops_token')
+        .then((ok) => {
+          if (!ok) Logger.warn('[MobileBoot] drops token rejected; cleared, reconnect needed');
+        })
+        .catch((err) => {
+          Logger.debug('[MobileBoot] drops token validation skipped:', err);
+        });
 
       // Active drops cache (1h TTL); powers the Activity surface.
       useAppStore.getState().loadActiveDropsCache();
@@ -114,16 +147,22 @@ export function useMobileBoot(): void {
         void handleSeventvCosmeticUpdate(event.payload);
       });
 
-      // Channel points from the PubSub watcher and the background claim path.
+      // Lifetime points stat, fed by collecting a bonus chest.
       //
       // The event is `channel-points-earned`, carrying `points`. This listener
       // used to wait on `channel-points-claimed`, a name nothing in the Rust
-      // source has ever emitted, so it never fired once. That means the lifetime
-      // `channel_points_collected` stat has never incremented on mobile either —
-      // not merely that the toast never appeared.
+      // source has ever emitted, so it never fired once.
       //
-      // No toast now: the composer's points icon pulses with the amount instead,
-      // and this fires every few minutes while watching.
+      // On this platform the only thing that emits it is the composer's own
+      // chest claim. The PubSub watcher points at an endpoint Twitch retired,
+      // and the background claim path belongs to the automation plugin, which
+      // does not run here. So expect this roughly every quarter hour while
+      // watching, not every minute; passive per-minute earning is credited by
+      // Twitch but announced nowhere, which is why the composer watches the
+      // balance itself for the floating amount.
+      //
+      // The claim deliberately leaves the counting to this listener so a chest
+      // is never scored twice. No toast: the points icon pulses instead.
       await addListener<{ points?: number }>('channel-points-earned', (event) => {
         const earned = event.payload?.points ?? 0;
         if (earned <= 0) return;
@@ -133,6 +172,10 @@ export function useMobileBoot(): void {
             void incrementStat(user.user_id, 'channel_points_collected', earned);
           }
         }
+        // No notification here. Points are announced from useChannelPoints,
+        // which is the one place that sees BOTH sources: this event (a bonus
+        // chest) and the balance delta that passive earning only ever shows up
+        // as. Notifying from both would double-report every chest.
       });
 
       // Ad auto-pivot: backend re-resolved a clean player URL; applying it
@@ -147,25 +190,108 @@ export function useMobileBoot(): void {
         void useAppStore.getState().loadFollowedStreams();
       });
 
-      // Live channel alerts land in the system shade, which is the only
-      // surface that works when the app is backgrounded. The desktop routes
-      // this same event to a toast / Dynamic Island; on a phone the OS owns it.
+      // ---- System notifications -------------------------------------------
+      //
+      // Every one of these listens to the event RUST emits, never to a
+      // re-broadcast. That distinction is the whole reason none of them worked.
+      //
+      // Live alerts were wired to `show-live-toast`, which sounds like the
+      // backend's event and is not: Rust emits `streamer-went-live`, and the
+      // ONLY thing that turns it into `show-live-toast` is `DynamicIsland.tsx`,
+      // a desktop component the phone never renders. So the backend was firing
+      // correctly the whole time into a relay that does not exist here. The
+      // other three categories had no listener at all, which is why the panel
+      // offered five toggles and exactly none of them did anything.
+      //
+      // The Rust services behind these all start unconditionally, so nothing
+      // needed enabling on that side.
+      const notifyPrefs = () => useAppStore.getState().settings.live_notifications;
+
+      // Register the OS categories before anything can post. Idempotent, and
+      // what gives Android's own per-app notification settings a row per
+      // category instead of one switch for the whole app.
+      void ensureNotificationChannels();
+
+      // Ask for the notification permission once, for people the wizard cannot
+      // reach. Android 13+ grants nothing by default, and the wizard step only
+      // ever runs on a first-time setup, so anyone who updated in place has
+      // never been asked and has no way of knowing that is why they hear
+      // nothing. Only when setup is already complete (a fresh install gets the
+      // wizard's own prompt) and only when Android will still show the dialog:
+      // once it has decided the refusal is permanent, asking again does nothing
+      // and the settings panel is the only honest route.
+      void (async () => {
+        if (!useAppStore.getState().settings.setup_complete) return;
+        if ((await getNotificationPermission()) !== 'default') return;
+        await ensureNotificationPermission();
+      })();
+
+      // Keep the background poll in step with the settings on every launch, so
+      // scheduled work can never outlive the preference that asked for it.
+      syncBackgroundChecks(notifyPrefs());
+
       await addListener<{
         streamer_name: string;
+        streamer_login?: string;
         game_name?: string;
         stream_title?: string;
         streamer_avatar?: string;
         is_test?: boolean;
-      }>('show-live-toast', (event) => {
+      }>('streamer-went-live', (event) => {
         const n = event.payload;
-        const prefs = useAppStore.getState().settings.live_notifications;
-        if (prefs?.show_live_notifications === false) return;
+        if (notifyPrefs()?.show_live_notifications === false) return;
+        // Per-channel opt-out. Checked here as well as in the background poll,
+        // since either can be the one that sees a channel go live.
+        if (n.streamer_login && isChannelMuted(n.streamer_login)) return;
+        // No avatar. The plugin resolves both of its icon fields as drawable
+        // RESOURCE NAMES, so the streamer avatar URL that used to be passed
+        // here resolved to nothing and was silently dropped. Showing a remote
+        // image needs a NotificationCompat call that fetches the bitmap, which
+        // only the background worker does.
         void postSystemNotification({
           title: `${n.streamer_name} is live`,
           body: n.stream_title || (n.game_name ? `Playing ${n.game_name}` : undefined),
-          icon: n.streamer_avatar,
+          channelId: NOTIFY_CHANNEL.live,
         });
       });
+
+      // Badges arrive as an ARRAY, since the scanner can surface several at
+      // once. One notification each; there are rarely more than a couple.
+      await addListener<
+        Array<{ badge_name: string; badge_image_url?: string; badge_description?: string }>
+      >('badge-notification', (event) => {
+        if (notifyPrefs()?.show_badge_notifications === false) return;
+        for (const badge of event.payload ?? []) {
+          void postSystemNotification({
+            title: `New badge: ${badge.badge_name}`,
+            body: badge.badge_description,
+            channelId: NOTIFY_CHANNEL.badges,
+          });
+        }
+      });
+
+      await addListener<{ drop_name?: string; campaign_name?: string }>('drop-ready', (event) => {
+        if (notifyPrefs()?.show_drops_notifications === false) return;
+        const d = event.payload;
+        void postSystemNotification({
+          title: 'Drop ready to claim',
+          body: [d?.drop_name, d?.campaign_name].filter(Boolean).join(' · ') || undefined,
+          channelId: NOTIFY_CHANNEL.drops,
+        });
+      });
+
+      await addListener<{ benefit_name?: string; campaign_name?: string }>(
+        'drop-claimed',
+        (event) => {
+          if (notifyPrefs()?.show_drops_notifications === false) return;
+          const d = event.payload;
+          void postSystemNotification({
+            title: 'Drop claimed',
+            body: [d?.benefit_name, d?.campaign_name].filter(Boolean).join(' · ') || undefined,
+            channelId: NOTIFY_CHANNEL.drops,
+          });
+        },
+      );
 
       // Supabase presence + the server-driven registries (membership, cosmetics
       // catalog + ownership, atmospheres). Without these the cosmetics surfaces

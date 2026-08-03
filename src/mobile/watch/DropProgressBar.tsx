@@ -14,14 +14,19 @@ import { Gift } from 'phosphor-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileNavStore } from '../navStore';
+import { campaignEarnableOn } from '../dropsEligibility';
 import { Logger } from '../../utils/logger';
+import { channelHasEarnableCampaign, useDropsGameNames } from '../dropsCampaigns';
 import type { InventoryResponse, TimeBasedDrop } from '../../types';
 
-// Inventory is a network round trip. While we have nothing to show we are
-// waiting for the campaign to appear at all, so check often; once tracking, back
-// off because accrued minutes only move once a minute.
-const POLL_SEARCHING_MS = 20_000;
-const POLL_TRACKING_MS = 60_000;
+// Inventory is a network round trip, and accrued minutes only ever move once a
+// minute, so there is nothing a faster poll could learn.
+//
+// It also only runs on a channel that can actually earn something. Most watching
+// is on channels with no campaign at all, and polling there asked the same
+// question forever and was always going to get the same answer. That is the
+// difference between a request a minute for the whole session and none.
+const POLL_MS = 60_000;
 
 interface Shown {
   dropId: string;
@@ -64,6 +69,9 @@ export const DropProgressBar: React.FC<Props> = ({ onActiveChange, visible = tru
   const gameName = currentStream?.game_name || originCategory?.name || '';
   const channelLogin = currentStream?.user_login;
 
+  const dropsByGame = useDropsGameNames();
+  const earnable = channelHasEarnableCampaign(dropsByGame, gameName, channelLogin);
+
   const refresh = useCallback(async () => {
     if (!gameName && !channelLogin) {
       setShown(null);
@@ -81,21 +89,35 @@ export const DropProgressBar: React.FC<Props> = ({ onActiveChange, visible = tru
       // Only campaigns that this stream can actually advance. Watching Rust does
       // not earn a Fortnite drop, and showing one would imply it does.
       //
-      // CATEGORY IS THE RULE, not a hint: Twitch credits watch-time against a
-      // campaign only while the channel is streaming that campaign's game, and
-      // that holds for ACL campaigns too. An earlier version treated "this
-      // channel is in the campaign's allow-list" as sufficient on its own, which
-      // showed a Marvel Rivals drop progressing while the channel played
-      // something else entirely. The allow-list is now only consulted when the
-      // category is genuinely unknown.
+      // Category and allow-list are BOTH requirements, not alternatives.
+      //
+      // This has now been wrong in both directions, so the rule is worth stating
+      // plainly: Twitch credits watch-time only while the channel is streaming
+      // the campaign's game, AND, if the campaign names channels, only on those
+      // channels. Either condition failing means zero progress.
+      //
+      // The first version treated an allow-list hit as sufficient, and showed a
+      // Marvel Rivals drop advancing while the channel played something else.
+      // The fix over-corrected into treating the category as sufficient, which
+      // is this bug: watching any stream of the right game showed a bar for a
+      // campaign restricted to a handful of channels the viewer was not on, so
+      // it promised progress that could never arrive.
+      //
+      // A campaign flagged ACL that parses to zero channels is excluded, which
+      // is deliberate: the backend calls that state unfarmable, so there is no
+      // channel that could advance it and nothing honest to show.
       const target = gameName.toLowerCase();
       const login = (channelLogin || '').toLowerCase();
       const relevant = inv.items.filter((it) => {
-        if (target) return (it.campaign.game_name || '').toLowerCase() === target;
-        if (!login) return false;
-        return (it.campaign.allowed_channels || []).some(
-          (c) => (c.name || '').toLowerCase() === login,
-        );
+        const campaign = it.campaign;
+        // Shared with the stream card's drops icon, so the two cannot drift
+        // apart again and promise different things about the same channel.
+        if (!campaignEarnableOn(campaign, login)) return false;
+
+        if (target) return (campaign.game_name || '').toLowerCase() === target;
+        // Category genuinely unknown. Being on a campaign's allow-list is the
+        // only evidence left, and an unrestricted campaign gives none.
+        return (campaign.allowed_channels || []).length > 0 || campaign.is_acl_based;
       });
       const drops: TimeBasedDrop[] = relevant.flatMap((it) => it.campaign.time_based_drops || []);
       // Warn, not debug: debug is silenced by default, and a stream that Twitch
@@ -156,41 +178,45 @@ export const DropProgressBar: React.FC<Props> = ({ onActiveChange, visible = tru
     }
   }, [gameName, channelLogin]);
 
-  // Adaptive interval, and this is the fix for "it never appears until I leave
-  // and come back". A campaign only enters the inventory ONCE YOU HAVE PROGRESS,
-  // so at the moment you start watching there is genuinely nothing to find. On a
-  // flat two-minute poll that meant up to three minutes of blank before the bar
-  // showed, while rejoining remounted the component and refreshed instantly —
-  // which is exactly the behaviour that looked like a bug.
+  // Nothing happens at all until this channel is known to have a campaign you
+  // can earn on. The same test the stream card's drops icon uses, off the same
+  // once-per-session campaign list, so the two cannot disagree.
   //
-  // So: hunt quickly while there is nothing to show, then back off once we are
-  // tracking something, since accrued minutes only tick once a minute anyway.
+  // A campaign only enters the inventory ONCE YOU HAVE PROGRESS, so for the
+  // first minute or two of watching an earnable channel there is genuinely
+  // nothing to find and the bar stays empty. That wait is the drop accruing, not
+  // a stall, and polling harder cannot shorten it.
   useEffect(() => {
+    if (!earnable) return;
     void refresh();
-    const t = setInterval(() => void refresh(), shown ? POLL_TRACKING_MS : POLL_SEARCHING_MS);
+    const t = setInterval(() => void refresh(), POLL_MS);
     return () => clearInterval(t);
-  }, [refresh, shown]);
+  }, [refresh, earnable]);
+
+  // Derived rather than cleared from an effect, so moving to a channel with no
+  // campaign cannot leave the previous channel's bar on screen for a frame.
+  const live = earnable ? shown : null;
 
   useEffect(() => {
     // Report inactive while hidden too, so the header does not reserve space for
     // a bar that is not being drawn.
-    onActiveChange?.(visible && !!shown);
+    onActiveChange?.(visible && !!live);
     return () => onActiveChange?.(false);
-  }, [shown, visible, onActiveChange]);
+  }, [live, visible, onActiveChange]);
 
-  if (!shown || !visible) return null;
+  if (!live || !visible) return null;
 
-  const pct = Math.min(100, (shown.current / shown.required) * 100);
-  const complete = shown.current >= shown.required;
-  const remaining = Math.max(0, shown.required - shown.current);
+  const pct = Math.min(100, (live.current / live.required) * 100);
+  const complete = live.current >= live.required;
+  const remaining = Math.max(0, live.required - live.current);
 
   const claim = async () => {
     if (claiming) return;
     setClaiming(true);
     try {
       await invoke('claim_drop', {
-        dropId: shown.dropId,
-        dropInstanceId: shown.dropInstanceId ?? null,
+        dropId: live.dropId,
+        dropInstanceId: live.dropInstanceId ?? null,
       });
       addToast('Drop claimed', 'success');
       await refresh();
@@ -209,16 +235,16 @@ export const DropProgressBar: React.FC<Props> = ({ onActiveChange, visible = tru
     <div
       role="button"
       tabIndex={0}
-      onClick={() => shown.campaignId && openDropCampaign(shown.campaignId)}
+      onClick={() => live.campaignId && openDropCampaign(live.campaignId)}
       // Carries its own container, like PinnedBanner does. The chat header that
       // used to supply a shared background is pure layout now, so anything
       // sitting in it has to be a self-contained floating card or it reads as
       // loose text over chat.
       className="sn-popover pointer-events-auto flex items-center gap-2.5 px-2.5 py-1.5 active:opacity-70"
     >
-      {shown.image ? (
+      {live.image ? (
         <img
-          src={shown.image}
+          src={live.image}
           alt=""
           className="w-9 h-9 rounded-md object-cover shrink-0 ring-1 ring-white/10"
           draggable={false}
@@ -231,7 +257,7 @@ export const DropProgressBar: React.FC<Props> = ({ onActiveChange, visible = tru
       <div className="flex-1 min-w-0">
         {/* Line 1: what you are earning, and how long is left. */}
         <div className="flex items-baseline gap-2">
-          <span className="text-[12px] font-semibold text-textPrimary truncate">{shown.name}</span>
+          <span className="text-[12px] font-semibold text-textPrimary truncate">{live.name}</span>
           <span
             className={`ml-auto text-[11px] shrink-0 tabular-nums ${
               complete ? 'text-success font-semibold' : 'text-textMuted'
@@ -243,11 +269,11 @@ export const DropProgressBar: React.FC<Props> = ({ onActiveChange, visible = tru
         {/* Line 2: which campaign, which tier, and the exact minutes. The bar
             alone says roughly-how-far; this says where you actually are. */}
         <div className="flex items-baseline gap-1.5 text-[10.5px] text-textMuted">
-          {shown.campaign && <span className="truncate min-w-0">{shown.campaign}</span>}
-          {shown.tierIndex && shown.tierCount && shown.tierCount > 1 && (
+          {live.campaign && <span className="truncate min-w-0">{live.campaign}</span>}
+          {live.tierIndex && live.tierCount && live.tierCount > 1 && (
             <span className="shrink-0">
-              {shown.campaign ? '· ' : ''}
-              {shown.tierIndex} of {shown.tierCount}
+              {live.campaign ? '· ' : ''}
+              {live.tierIndex} of {live.tierCount}
             </span>
           )}
           {/* No minute count here. "36m left" on the line above already says

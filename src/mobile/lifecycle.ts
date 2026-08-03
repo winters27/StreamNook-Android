@@ -22,6 +22,22 @@ import { Logger } from '../utils/logger';
 
 let installed = false;
 
+// When the app went into the background, so returning knows how long it was
+// gone. See the chat rebuild in onVisible for why the duration matters.
+let hiddenSince = 0;
+
+// How long away before chat is assumed dead on return.
+//
+// Android freezes a backgrounded process, Twitch then drops the connection for
+// a missed keepalive, and the reconnect that follows runs before the network is
+// back, which ends the connection for good. A brief switch away to read a
+// notification does none of that, and rebuilding costs a visible reload of
+// every open room, so short absences are left alone and the staleness watchdog
+// picks up the rare miss. Anything longer is worth rebuilding on sight rather
+// than making someone stare at a dead room for the two minutes the watchdog
+// needs to be sure.
+const CHAT_REBUILD_AFTER_HIDDEN_MS = 90_000;
+
 // Ask the activity directly. The dataset mirror is written by an async
 // evaluateJavascript from onPictureInPictureModeChanged, and `visibilitychange`
 // fires independently as the activity pauses, so the flag frequently has not
@@ -36,6 +52,7 @@ function inPictureInPicture(): boolean {
 
 async function onHidden(): Promise<void> {
   if (inPictureInPicture()) return;
+  hiddenSince = Date.now();
   try {
     const { stopBadgeFeed } = await import('../services/badgeSocketService');
     stopBadgeFeed();
@@ -63,6 +80,22 @@ async function onVisible(): Promise<void> {
   // backgrounding, so nothing else would ever invalidate the list. Throttled
   // internally; see followRefresh.ts.
   void refreshFollowingIfStale();
+
+  // Chat is the one thing that does not survive a long absence, and it cannot
+  // report that itself: the frontend reads a local bridge that stays up whether
+  // or not the connection behind it is alive, so a dead room looks connected
+  // forever. Rebuild it rather than trust it. Re-joining refetches recent
+  // history, so the room comes back populated instead of blank.
+  const awayFor = hiddenSince ? Date.now() - hiddenSince : 0;
+  hiddenSince = 0;
+  if (awayFor >= CHAT_REBUILD_AFTER_HIDDEN_MS) {
+    try {
+      const { hardCycleChat } = await import('./chat/chatRecovery');
+      await hardCycleChat(`away for ${Math.round(awayFor / 1000)}s`);
+    } catch (err) {
+      Logger.warn('[Lifecycle] chat resume failed:', err);
+    }
+  }
 }
 
 /** Idempotent; returns a teardown. */

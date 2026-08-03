@@ -509,6 +509,14 @@ export interface LiveNotificationSettings {
   // Toast placement: anchor + distance from the anchored top/bottom edge (px)
   toast_position?: ToastPosition;
   toast_edge_offset?: number;
+  // Android background delivery. The in-app path needs a live WebView, so these
+  // drive the WorkManager poll that keeps notifications arriving once the app is
+  // closed. Desktop never reads them.
+  background_checks?: boolean;
+  background_interval_minutes?: number;
+  // Channel logins excluded from live alerts. Empty means everything you follow
+  // notifies, so an upgrade changes nothing until a channel is opted out.
+  muted_live_channels?: string[];
 }
 
 export type AutoSwitchMode = 'same_category' | 'followed_streams';

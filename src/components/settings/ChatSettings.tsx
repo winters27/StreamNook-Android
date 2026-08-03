@@ -939,17 +939,32 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
         )}
       </SettingsSection>
 
-      {/* Desktop only: the whole feature is driven by the Tab key. The phone
-          composer reaches emotes through the emote sheet instead. */}
-      {!IS_MOBILE && (
+      {/* Shown on both now. It used to be hidden on the phone because the
+          feature was Tab-driven and there is no Tab key; the phone composer
+          reaches the same suggestions by swiping a strip above the input. The
+          settings themselves were always shared, and hiding the section left
+          them searchable but unreachable.
+
+          Only the wording differs, and it differs through a ternary rather than
+          a rewrite: these strings are mirrored in the settings search index and
+          the command palette, neither of which is platform-aware, so changing
+          the desktop copy here would silently desync three files. */}
       <SettingsSection
         label="Emote Tab Completion"
-        description="Type part of an emote name in chat and press Tab to cycle through matching emotes. Shift+Tab cycles backwards."
+        description={
+          IS_MOBILE
+            ? 'Type part of an emote name in chat to see matching emotes above the input. Swipe the strip to see more, tap one to use it.'
+            : 'Type part of an emote name in chat and press Tab to cycle through matching emotes. Shift+Tab cycles backwards.'
+        }
         id="settings-section-emote-tab-completion"
       >
         <SettingsRow
           title="Enable Tab Completion"
-          description="Press Tab while typing to insert the best-matching emote. Press Tab again to cycle to the next match."
+          description={
+            IS_MOBILE
+              ? 'Suggest matching emotes as you type.'
+              : 'Press Tab while typing to insert the best-matching emote. Press Tab again to cycle to the next match.'
+          }
           control={
             <Toggle
               enabled={settings.chat_input?.emote_tab_complete_enabled ?? true}
@@ -976,7 +991,11 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
         </SettingsRow>
         <SettingsRow
           title="Include Chat Users"
-          description="Also cycle through display names of users currently in chat."
+          description={
+            IS_MOBILE
+              ? 'Also suggest display names of users currently in chat.'
+              : 'Also cycle through display names of users currently in chat.'
+          }
           control={
             <Toggle
               enabled={settings.chat_input?.emote_tab_complete_include_chatters ?? true}
@@ -989,7 +1008,6 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
           }
         />
       </SettingsSection>
-      )}
 
       <SettingsSection
         label="Render Style"

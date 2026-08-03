@@ -27,13 +27,13 @@ import { YouScreen } from './screens/YouScreen';
 import { WatchScreen } from './screens/WatchScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { CategoryStreamsScreen } from './screens/CategoryStreamsScreen';
-import { ActivityScreen } from './screens/ActivityScreen';
+import { RewardsScreen } from './screens/RewardsScreen';
 import { CosmeticsScreen } from './screens/CosmeticsScreen';
 import LoadingWidget from '../components/LoadingWidget';
 import DeviceLoginOverlay from '../components/DeviceLoginOverlay';
 import ToastManager from '../components/ToastManager';
 
-const TAB_ORDER = ['following', 'browse', 'activity', 'you'] as const;
+const TAB_ORDER = ['following', 'browse', 'rewards', 'you'] as const;
 
 const MobileApp: React.FC = () => {
   useThemeBoot();
@@ -123,7 +123,7 @@ const MobileApp: React.FC = () => {
               >
                 {activeTab === 'following' && <FollowingScreen />}
                 {activeTab === 'browse' && <BrowseScreen />}
-                {activeTab === 'activity' && <ActivityScreen />}
+                {activeTab === 'rewards' && <RewardsScreen />}
                 {activeTab === 'you' && <YouScreen />}
               </motion.div>
             </AnimatePresence>

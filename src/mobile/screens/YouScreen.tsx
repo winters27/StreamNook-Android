@@ -13,6 +13,7 @@ export const YouScreen: React.FC = () => {
   const signOutActiveAccount = useAppStore((s) => s.signOutActiveAccount);
   const openSettings = useMobileNavStore((s) => s.openSettings);
   const setCosmeticsOpen = useMobileNavStore((s) => s.setCosmeticsOpen);
+  const addToast = useAppStore((s) => s.addToast);
   const [confirmSignOut, setConfirmSignOut] = useState(false);
 
   // Checked once when this tab mounts rather than at boot: a sideloaded app has
@@ -90,7 +91,11 @@ export const YouScreen: React.FC = () => {
       {update && (
         <div className="px-3 mb-2">
           <button
-            onClick={() => void openAndroidUpdate()}
+            onClick={() =>
+              void openAndroidUpdate().then((ok) => {
+                if (!ok) addToast('Could not open the download page.', 'error');
+              })
+            }
             className="w-full flex items-center gap-3 px-3 py-3 rounded-lg bg-accent/10 active:bg-accent/20 text-left"
           >
             <ArrowCircleDown size={20} weight="fill" className="text-accent shrink-0" />
@@ -117,7 +122,7 @@ export const YouScreen: React.FC = () => {
           <span className="flex-1 min-w-0">
             <span className="block text-[15px] font-medium text-textPrimary">Cosmetics</span>
             <span className="block text-[12.5px] text-textMuted truncate">
-              Your badge and atmosphere
+              Your badges, atmosphere, and 7TV paint
             </span>
           </span>
           <ChevronRight size={16} className="text-textMuted shrink-0" />
