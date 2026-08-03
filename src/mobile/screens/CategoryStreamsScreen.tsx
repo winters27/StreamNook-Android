@@ -21,6 +21,8 @@ type Category = NonNullable<ReturnType<typeof useMobileNavStore.getState>['brows
 // Streams per request. Matches the categories grid; big enough that scrolling
 // rarely waits, small enough that the first paint is quick on mobile data.
 const PAGE = 40;
+/** Ceiling on how much of a category the infinite scroll will accumulate. */
+const MAX_LOADED_STREAMS = 320;
 
 export const CategoryStreamsScreen: React.FC = () => {
   const category = useMobileNavStore((s) => s.browseCategory);
@@ -91,6 +93,12 @@ const CategoryStreamsList: React.FC<{ category: Category }> = ({ category }) => 
   // already coming back and being thrown away, so the list stopped at the first
   // page with no sign there was anything past it.
   const loadMore = useCallback(async () => {
+    // Stop rather than trim, so nothing already on screen moves under a finger
+    // mid-scroll. This grid is unvirtualized and stays mounted behind the player
+    // once you tap into a stream, so an unbounded scroll leaves every card, its
+    // thumbnail and its blur layers resident for the rest of the session. Eight
+    // pages of a category is already far more than anyone scrolls.
+    if (streams.length >= MAX_LOADED_STREAMS) return;
     if (loadingMore || !hasMore || !cursor) return;
     setLoadingMore(true);
     try {
@@ -104,7 +112,7 @@ const CategoryStreamsList: React.FC<{ category: Category }> = ({ category }) => 
         // Live viewer counts reorder underneath a cursor, so the same channel
         // can arrive on two pages and a duplicate key would break the grid.
         const seen = new Set(prev.map((s) => s.id));
-        return [...prev, ...page.filter((s) => !seen.has(s.id))];
+        return [...prev, ...page.filter((s) => !seen.has(s.id))].slice(0, MAX_LOADED_STREAMS);
       });
       setCursor(res[1]);
       setHasMore(!!res[1] && page.length > 0);
@@ -114,7 +122,7 @@ const CategoryStreamsList: React.FC<{ category: Category }> = ({ category }) => 
     } finally {
       setLoadingMore(false);
     }
-  }, [category, cursor, hasMore, loadingMore]);
+  }, [category, cursor, hasMore, loadingMore, streams.length]);
 
   useEffect(() => {
     void load();

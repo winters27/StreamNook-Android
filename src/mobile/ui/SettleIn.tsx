@@ -75,19 +75,40 @@ export const SettleIn: React.FC<{
   settled: boolean;
   className?: string;
   children: React.ReactNode;
-}> = ({ index, settled, className, children }) => (
-  <motion.div
-    className={className}
-    // Explicit: framer then starts at whatever `animate` currently says, which
-    // on the first commit is the start state.
-    initial={false}
-    animate={settled ? { opacity: 1, y: 0, scale: 1 } : { opacity: 0, y: 14, scale: 0.97 }}
-    transition={{
-      duration: 0.34,
-      ease: [0.16, 1, 0.3, 1],
-      delay: settled ? Math.min(index * STEP, MAX_DELAY) : 0,
-    }}
-  >
-    {children}
-  </motion.div>
-);
+}> = ({ index, settled, className, children }) => {
+  // Steps down to a plain div once the entrance has finished playing. There is
+  // nothing left to animate at that point, and a motion component that stays
+  // mounted keeps a live subscription and its own compositor layer. That is
+  // invisible on a short list and very much not on a deep scroll through a busy
+  // category, where several hundred of these sit mounted for the rest of the
+  // session because the grid stays behind the player.
+  const [done, setDone] = useState(false);
+  // Adjust-state-during-render rather than an effect: the repo's lint rules flag
+  // setState inside effects, and this is the pattern React documents for
+  // resetting state when a prop changes.
+  const [wasSettled, setWasSettled] = useState(settled);
+  if (wasSettled !== settled) {
+    setWasSettled(settled);
+    if (!settled) setDone(false);
+  }
+
+  if (settled && done) return <div className={className}>{children}</div>;
+
+  return (
+    <motion.div
+      className={className}
+      // Explicit: framer then starts at whatever `animate` currently says, which
+      // on the first commit is the start state.
+      initial={false}
+      animate={settled ? { opacity: 1, y: 0, scale: 1 } : { opacity: 0, y: 14, scale: 0.97 }}
+      transition={{
+        duration: 0.34,
+        ease: [0.16, 1, 0.3, 1],
+        delay: settled ? Math.min(index * STEP, MAX_DELAY) : 0,
+      }}
+      onAnimationComplete={() => setDone(true)}
+    >
+      {children}
+    </motion.div>
+  );
+};
