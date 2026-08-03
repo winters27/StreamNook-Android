@@ -5,6 +5,8 @@ import { SevenTVBadge, SevenTVPaint } from '../types';
 
 import { Logger } from '../utils/logger';
 import { features } from '../features';
+import { LruMap } from './cosmeticsCache';
+import { IS_MOBILE } from '../utils/platform';
 // The paint → CSS engine + its v4 paint types now live in the standalone,
 // Tauri-free `paintStyle` module so the hosted overlay page can share the exact
 // same rendering. Re-exported here so existing importers stay unchanged.
@@ -42,7 +44,24 @@ interface UserCosmeticsResponse {
 //   - Hard failures (network error, 5xx, retry-exhausted) get a much shorter
 //     TTL so a transient 7TV blip can't strand a real user without a paint
 //     for 5 minutes. The next request retries.
-const userCache = new Map<string, { data: UserCosmeticsResponse; hardFail: boolean; timestamp: number }>();
+// Bounded, because this used to be a plain Map that only ever grew: the TTL
+// below decides FRESHNESS, and an expired entry is overwritten rather than
+// deleted, so a long session in a busy channel accumulated one entry per unique
+// chatter forever. Each one holds that user's whole 7TV inventory.
+//
+// A size cap is safe precisely BECAUSE of the TTL: anything older than
+// CACHE_DURATION is re-fetched on read anyway, so evicting a cold entry can
+// only ever discard something the next read would have thrown away. The cap is
+// set well above a realistic 5-minute working set so it never causes refetches
+// that the TTL would not already have caused.
+//
+// Note for anyone tempted to shrink these entries instead: the full inventory
+// is load-bearing. The pickers map over it to change a selection, and the
+// public profile overlay reports a paint COUNT for other users, both fed from
+// this same data via getFullProfileWithFallback.
+const userCache = new LruMap<string, { data: UserCosmeticsResponse; hardFail: boolean; timestamp: number }>(
+  IS_MOBILE ? 1500 : 4000,
+);
 const CACHE_DURATION = 5 * 60 * 1000;
 const HARD_FAIL_CACHE_DURATION = 30 * 1000;
 
