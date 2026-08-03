@@ -76,6 +76,12 @@ export interface UserCosmeticsResult {
 
 // Cache for cosmetic file paths (id -> localPath) to avoid repeated IPC calls
 let cachedCosmeticFiles: Record<string, string> | null = null;
+// Whether the disk listing has been read successfully. Split out from
+// `cachedCosmeticFiles === null` because that sentinel was doing two jobs at
+// once: "we have not loaded from disk yet" and "we have nothing memoized". A
+// download that finished before the listing arrived therefore had nowhere to
+// record itself and got re-queued forever, at a manifest write each time.
+let cosmeticFilesLoadedFromDisk = false;
 
 // Track pending requests to prevent duplicate fetches
 const pendingRequests = new Map<string, Promise<UserCosmeticsResult>>();
@@ -324,8 +330,12 @@ async function downloadCosmeticIfNeeded(id: string, url: string): Promise<string
         expiryDays: settings.expiryDays
       }) as string;
 
-      if (localPath && cachedCosmeticFiles) {
-        cachedCosmeticFiles[id] = localPath;
+      if (localPath) {
+        // Record it even if the disk listing has not arrived yet. This used to
+        // be gated on cachedCosmeticFiles being non-null, so a download that
+        // won that race was cached on disk, reported as a miss, and queued
+        // again on the next render.
+        (cachedCosmeticFiles ??= {})[id] = localPath;
         return localPath;
       }
       return null;
@@ -570,17 +580,23 @@ export async function getUserCosmetics(twitchId: string): Promise<UserCosmeticsR
     }
   }
 
-  if (cachedCosmeticFiles === null && !filesInitializationPromise) {
+  if (!cosmeticFilesLoadedFromDisk && !filesInitializationPromise) {
     filesInitializationPromise = (async () => {
       try {
-        cachedCosmeticFiles = await invoke('get_cached_files', { cacheType: 'cosmetic' });
+        const fromDisk = await invoke<Record<string, string>>('get_cached_files', {
+          cacheType: 'cosmetic',
+        });
+        // Merge rather than replace: anything downloaded while this was in
+        // flight is already memoized above and would otherwise be dropped.
+        cachedCosmeticFiles = { ...fromDisk, ...(cachedCosmeticFiles ?? {}) };
+        cosmeticFilesLoadedFromDisk = true;
       } catch (e) {
         Logger.warn('Failed to get cached cosmetic files:', e);
-        // Leave it null (NOT {}) so the next cosmetic resolve retries. A
-        // transient failure here (e.g. the shared Rust file cache contended
-        // while another window is also hitting it) used to poison the cache as
-        // {} forever, which left 7TV paints/badges broken until an app restart.
-        cachedCosmeticFiles = null;
+        // Leave the flag false so the next cosmetic resolve retries. A transient
+        // failure here (e.g. the shared Rust file cache contended while another
+        // window is also hitting it) used to poison the cache as {} forever,
+        // which left 7TV paints/badges broken until an app restart. Whatever is
+        // already memoized stays: it came from real downloads, not from disk.
       } finally {
         filesInitializationPromise = null;
       }
@@ -709,5 +725,8 @@ export const getBadgeImageUrlForProvider = (badge: any, provider: '7tv' | 'ffz')
 
 export function clearUserCache() {
   userCache.clear();
-  cachedCosmeticFiles = null; // Also clear the file cache so it re-fetches
+  // Also clear the file cache so it re-fetches. Both halves: the map itself and
+  // the flag that says we have read the disk listing.
+  cachedCosmeticFiles = null;
+  cosmeticFilesLoadedFromDisk = false;
 }

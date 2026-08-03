@@ -209,8 +209,9 @@ async function downloadEmoteIfNeeded(id: string, url: string): Promise<string | 
     return pendingDownloads.get(id)!;
   }
 
-  // No disk cache on mobile yet (the Android asset protocol and cache dir are
-  // unwired), so consumers fall back to the CDN URL they already carry.
+  // When the disk cache is off, consumers fall back to the CDN URL they already
+  // carry. This used to claim the cache was unavailable on mobile; that stopped
+  // being true when the flag was turned on for Android. See features.ts.
   if (!features.assetDiskCache) return null;
 
   const settings = await getEmoteCacheSettings();
