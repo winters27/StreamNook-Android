@@ -676,7 +676,18 @@ export const WatchScreen: React.FC = () => {
               <button
                 className="absolute top-0 right-0 z-20 w-14 h-14 flex items-start justify-end p-1.5"
                 aria-label="Close stream"
-                onPointerDown={(e) => e.stopPropagation()}
+                onPointerDown={(e) => {
+                  // A new tap clears any stale trailing-click suppression. The
+                  // band normally does this in ITS pointerdown, but this button
+                  // stops propagation (so a tap here never starts a drag) —
+                  // making it the one control that could not reset the flag.
+                  // On touch, the swipe that CREATES the mini box arms the
+                  // suppressor and produces no trailing click to consume it,
+                  // so the very next X tap was always swallowed: the reported
+                  // "first tap focuses, second tap closes".
+                  suppressClick.current = false;
+                  e.stopPropagation();
+                }}
                 onClick={(e) => {
                   e.stopPropagation();
                   void exitStream();
