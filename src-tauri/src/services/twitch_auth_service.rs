@@ -31,9 +31,11 @@
 //     the next read re-harvests for the now-active account (or returns
 //     not-logged-in) instead of serving the previous account's cached token.
 //
-// On non-Windows the WebView2 bridge is stubbed to `WebViewUnavailable` so the
-// service compiles cross-platform; StreamNook only ships on Windows today so
-// this is just future-proofing.
+// Android reads the same two cookies out of the app-global `CookieManager`,
+// which is where the native Kotlin login overlay writes them. There is no
+// hidden window and no per-account profile involved, so that path is a single
+// plugin call (see the bottom of this file). Desktop platforms other than
+// Windows have no cookie source and stay stubbed out.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -66,7 +68,7 @@ const SESSION_WINDOW_LABEL: &str = "twitch-session";
 
 /// Cookies a single harvest collects, so one window read serves both the token
 /// and the device-id callers.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "android"))]
 const COOKIE_NAMES: &[&str] = &["auth-token", "unique_id"];
 
 #[derive(Debug, Clone)]
@@ -478,7 +480,69 @@ fn extract_cookies(
     Ok(found)
 }
 
-#[cfg(not(windows))]
+// ---------------------------------------------------------------------------
+// Android bridge.
+//
+// There is no second webview to build here (Tauri 2's child-webview API is
+// desktop-only), and no per-account profile either: the login overlay is a
+// native Kotlin WebView writing into the app-global `CookieManager`, which is
+// the same jar the harvest reads back. So the whole hidden-window dance above
+// collapses to one plugin call.
+// ---------------------------------------------------------------------------
+
+/// Read the twitch.tv cookies the Kotlin login overlay left in the app-global
+/// `CookieManager`, and keep the two the rest of the app asks for.
+#[cfg(target_os = "android")]
+async fn harvest(app: &AppHandle) -> HashMap<String, String> {
+    use tauri::Manager;
+
+    let mut found = HashMap::new();
+    let Some(state) = app.try_state::<crate::twitch_login_plugin::TwitchLoginState<tauri::Wry>>()
+    else {
+        log::warn!("[Auth] android harvest: twitch-login plugin is not registered");
+        return found;
+    };
+
+    // `getCookies` resolves on the calling thread (unlike the overlay's
+    // open/close commands, which hop to the UI thread), so this cannot park on a
+    // suspended activity.
+    let header = match state
+        .0
+        .run_mobile_plugin::<CookiesResp>("getCookies", ())
+    {
+        Ok(r) => r.cookies,
+        Err(e) => {
+            log::warn!("[Auth] android harvest: getCookies failed: {}", e);
+            return found;
+        }
+    };
+
+    for pair in header.split(';') {
+        let Some((name, value)) = pair.trim().split_once('=') else {
+            continue;
+        };
+        // Split on the FIRST `=` only: a token value can contain more of them.
+        if COOKIE_NAMES.contains(&name) && !value.is_empty() {
+            found.insert(name.to_string(), value.to_string());
+        }
+    }
+
+    log::info!(
+        "[Auth] android harvest: {} twitch.tv cookie(s) in the jar, auth-token present = {}",
+        header.split(';').filter(|p| !p.trim().is_empty()).count(),
+        found.contains_key("auth-token")
+    );
+    found
+}
+
+#[cfg(target_os = "android")]
+#[derive(serde::Deserialize)]
+struct CookiesResp {
+    cookies: String,
+}
+
+/// Desktop platforms other than Windows do not ship, and have no cookie source.
+#[cfg(all(not(windows), not(target_os = "android")))]
 async fn harvest(_app: &AppHandle) -> HashMap<String, String> {
     HashMap::new()
 }
