@@ -190,6 +190,47 @@ fn stream_inf_height(inf: &str) -> Option<u32> {
     }
 }
 
+/// What Twitch says it is withholding from this viewer and why.
+///
+/// The usher request asks for `include_unavailable=true`, so a tier the viewer
+/// cannot have is still described, in a base64 session-data blob, with an
+/// `AUTHORIZATION_REASONS` list. `AUTHZ_GEO` means the region relay can lift it;
+/// anything else means it cannot. Without this, a missing 1440p tier looks
+/// identical whether Twitch never offered it or offered it and the unlock
+/// failed, which is the difference between an account question and a bug.
+pub fn withheld_reasons(master: &str) -> Vec<String> {
+    use base64::prelude::{Engine as _, BASE64_STANDARD};
+    let mut out = Vec::new();
+    for line in master.lines() {
+        if !line.contains("com.amazon.ivs.unavailable-media") {
+            continue;
+        }
+        let Some(b64) = extract_attr(line, "VALUE") else {
+            continue;
+        };
+        let Ok(bytes) = BASE64_STANDARD.decode(b64.as_bytes()) else {
+            continue;
+        };
+        let Ok(entries) = serde_json::from_slice::<Vec<serde_json::Value>>(&bytes) else {
+            continue;
+        };
+        for e in entries {
+            let name = e
+                .get("NAME")
+                .or_else(|| e.get("GROUP_ID"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let reasons: Vec<&str> = e
+                .get("AUTHORIZATION_REASONS")
+                .and_then(|r| r.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                .unwrap_or_default();
+            out.push(format!("{}:{}", name, reasons.join("+")));
+        }
+    }
+    out
+}
+
 /// Every video height a master offers, highest first. For logging.
 pub fn sorted_heights(master: &str) -> Vec<u32> {
     let mut v: Vec<u32> = heights(master).into_iter().collect();

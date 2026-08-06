@@ -178,10 +178,11 @@ pub(crate) async fn resolve_through_relay(
     let full_master = match core {
         Some(c) => {
             info!(
-                "[AdBypass] {} ladders: relay={:?} viewer={:?}",
+                "[AdBypass] {} ladders: relay={:?} viewer={:?} withheld={:?}",
                 channel,
                 sorted_heights(&relay_master),
-                sorted_heights(&c.master)
+                sorted_heights(&c.master),
+                master::withheld_reasons(&c.master)
             );
             master::splice(&relay_master, &c.master)
         }
