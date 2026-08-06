@@ -159,15 +159,38 @@ fn parse_name_height(line: &str) -> Option<u32> {
     digits.parse().ok()
 }
 
-/// Pull the playlist blocks for tiers above 1080p (1440p / 2160p) out of the
-/// authenticated master, so they can be grafted onto the anonymous relay master
-/// (Twitch caps anonymous viewers at FULL_HD).
+/// The video height of an `#EXT-X-STREAM-INF` line, from `RESOLUTION=WxH` or
+/// the `NAME`/`IVS-NAME` label. None for audio-only.
+fn stream_inf_height(inf: &str) -> Option<u32> {
+    let res = extract_attr(inf, "RESOLUTION").and_then(|r| {
+        r.split(['x', 'X'])
+            .nth(1)
+            .and_then(|h| h.trim().parse::<u32>().ok())
+    });
+    match (res, parse_name_height(inf)) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Every video height a master offers.
+fn heights(master: &str) -> HashSet<u32> {
+    master
+        .lines()
+        .filter(|l| l.trim_start().starts_with("#EXT-X-STREAM-INF:"))
+        .filter_map(stream_inf_height)
+        .collect()
+}
+
+/// The playlist blocks in `master` for heights `have` does not already cover.
 ///
 /// Anchored on `#EXT-X-STREAM-INF` (same as the resolver's parser) so it works
-/// on both master layouts: the height comes from `RESOLUTION`, falling back to
-/// the `NAME`/`IVS-NAME` label, and the emitted block carries the preceding
-/// legacy `#EXT-X-MEDIA` tag when one is present so the label survives.
-fn extract_high_tier_blocks(master: &str) -> Vec<String> {
+/// on both master layouts, and each block carries the preceding legacy
+/// `#EXT-X-MEDIA` tag when there is one so the quality label survives. The URLs
+/// are copied verbatim, which is what carries the geo-unlocked tiers through:
+/// by the time the master reaches us those already point at the region relay's
+/// media proxy, and rewriting them would undo the unlock.
+fn missing_tier_blocks(master: &str, have: &HashSet<u32>) -> Vec<String> {
     let lines: Vec<&str> = master.lines().collect();
     let mut out = Vec::new();
     let mut i = 0;
@@ -186,40 +209,46 @@ fn extract_high_tier_blocks(master: &str) -> Vec<String> {
         if j >= lines.len() {
             break;
         }
-        let res_h = extract_attr(inf, "RESOLUTION")
-            .and_then(|r| {
-                r.split(['x', 'X'])
-                    .nth(1)
-                    .and_then(|h| h.trim().parse::<u32>().ok())
-            })
-            .unwrap_or(0);
-        let height = res_h.max(parse_name_height(inf).unwrap_or(0));
-        if height > 1080 {
-            let mut block = String::new();
-            if i > 0 {
-                let prev = lines[i - 1].trim_start();
-                if prev.starts_with("#EXT-X-MEDIA:") && prev.contains("TYPE=VIDEO") {
-                    block.push_str(lines[i - 1]);
-                    block.push('\n');
+        if let Some(h) = stream_inf_height(inf) {
+            if !have.contains(&h) {
+                let mut block = String::new();
+                if i > 0 {
+                    let prev = lines[i - 1].trim_start();
+                    if prev.starts_with("#EXT-X-MEDIA:") && prev.contains("TYPE=VIDEO") {
+                        block.push_str(lines[i - 1]);
+                        block.push('\n');
+                    }
                 }
+                block.push_str(inf);
+                block.push('\n');
+                block.push_str(lines[j].trim());
+                out.push(block);
             }
-            block.push_str(inf);
-            block.push('\n');
-            block.push_str(lines[j].trim());
-            out.push(block);
         }
         i = j + 1;
     }
     out
 }
 
-/// Keep the relay master as the base, then append every tier the authenticated
-/// master resolves above 1080p. Those tiers don't exist in the anonymous master
-/// because Twitch caps anonymous viewers at FULL_HD, so this is what keeps
-/// 1440p/2160p available while playback stays ad-free.
+/// Keep the relay master as the base, then append every tier the viewer's own
+/// master has that the relay's lacks.
+///
+/// 7.8.6 grafted only above 1080p, on the assumption that a relay always serves
+/// the full ladder up to FULL_HD. Measured against the live pool on 2026-08-06
+/// that does not hold: for the same channel at the same moment, some relays
+/// answered with a ladder topping out at 720p while others reached 1080p, and
+/// the race is won on speed. Keying on "which heights are missing" instead of a
+/// fixed 1080 line keeps the viewer's full quality menu no matter which relay
+/// wins, and is also what carries the geo-unlocked 1440p tier through, since by
+/// then it is simply another tier the relay master does not have.
+///
+/// A grafted tier is the viewer's own stream, so it can carry ads that the
+/// relay's tiers would not. The playlist filter strips those as they are
+/// served, which is the same defense that covers a relay leaking an ad.
 pub fn splice(relay_master: &str, auth_master: &str) -> String {
+    let have = heights(relay_master);
     let mut out = relay_master.trim_end().to_string();
-    for block in extract_high_tier_blocks(auth_master) {
+    for block in missing_tier_blocks(auth_master, &have) {
         // Log the real RESOLUTION/CODECS of each grafted variant: this is the
         // proof that a tier labeled "1440p60" really points at a 2560x1440
         // variant from the authenticated master, not a relabeled lower tier.
@@ -274,15 +303,42 @@ https://cdn/relay-1080.m3u8\n";
         assert!(out.contains("NAME=\"1440p60\""), "the label rides along: {out}");
         assert!(
             !out.contains("https://cdn/auth-1080.m3u8"),
-            "1080p and below stay on the relay's own tiers: {out}"
+            "a tier the relay already serves is never swapped for the ad-bearing one: {out}"
         );
     }
 
     #[test]
-    fn splice_without_high_tiers_is_a_passthrough() {
+    fn splice_adds_nothing_when_the_relay_covers_every_tier() {
         let auth_1080_only = "#EXTM3U\n\
 #EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080\nhttps://cdn/auth-1080.m3u8\n";
         assert_eq!(splice(RELAY_MASTER, auth_1080_only), RELAY_MASTER);
+    }
+
+    #[test]
+    fn splice_restores_a_tier_the_winning_relay_capped_away() {
+        // Measured live: relays for one channel disagree about the top of the
+        // ladder, and the race is won on speed. A 720p relay must not cost the
+        // viewer 1080p.
+        let capped_relay = "#EXTM3U\n\
+#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720\nhttps://cdn/relay-720.m3u8\n";
+        let out = splice(capped_relay, AUTH_MASTER);
+        assert!(out.contains("https://cdn/relay-720.m3u8"), "{out}");
+        assert!(out.contains("https://cdn/auth-1080.m3u8"), "{out}");
+        assert!(out.contains("https://cdn/auth-1440.m3u8"), "{out}");
+    }
+
+    #[test]
+    fn a_geo_unlocked_tier_keeps_its_relay_routed_url() {
+        // The region-unlock splice upstream has already pointed this tier's
+        // playlist at the quality relay. Rewriting it here would re-block it.
+        let auth = "#EXTM3U\n\
+#EXT-X-STREAM-INF:BANDWIDTH=9000000,RESOLUTION=2560x1440,VIDEO=\"chunked\"\n\
+https://modroom.streamnook.app/quality-media?u=https%3A%2F%2Fcdn%2F1440.m3u8\n";
+        let out = splice(RELAY_MASTER, auth);
+        assert!(
+            out.contains("https://modroom.streamnook.app/quality-media?u=https%3A%2F%2Fcdn%2F1440.m3u8"),
+            "{out}"
+        );
     }
 
     #[test]
