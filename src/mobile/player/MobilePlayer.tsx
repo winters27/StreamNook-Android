@@ -1,7 +1,7 @@
 // Touch-first player surface: the video element plus a tap-driven glass control
 // overlay. No Plyr; hls.js runs via useMobileHlsEngine.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowsOut, Bell, BellSlash, Columns, Eye, Gear, Pause, PictureInPicture, Play, Rows, ShareNetwork, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
+import { ArrowClockwise, ArrowsOut, Bell, BellSlash, Columns, Eye, Gear, Pause, PictureInPicture, Play, Rows, ShareNetwork, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
 import { setPipMuted, shareText } from '../nativeBridge';
 import { toggleChannelMuted } from '../notifyChannels';
 import { useVisibleInterval } from '../../utils/useVisibleInterval';
@@ -67,6 +67,12 @@ export const MobilePlayer: React.FC<{
   // engine sits idle until the stream URL resolves, which is precisely the
   // stretch the logo exists to cover. Unmounted after the fade so the logo's
   // animation loop is not left running invisibly under playback.
+  // Manual restart feedback: the icon spins from the tap until the engine is
+  // past its loading states, so the button visibly "took" even before the
+  // loading logo crossfades in. Render-time adjust to clear (lint-safe).
+  const [restarting, setRestarting] = useState(false);
+  if (restarting && state !== 'loading' && state !== 'idle') setRestarting(false);
+
   const logoWanted = state === 'loading' || state === 'idle';
   const [logoMounted, setLogoMounted] = useState(true);
   // Render-time adjustment (same pattern as the drill-in screens' `last`
@@ -338,6 +344,23 @@ export const MobilePlayer: React.FC<{
                 <PictureInPicture size={21} />
               </button>
             )}
+            {/* The unstick button. A frozen player looks exactly like a paused
+                one from the outside, so this reloads the whole pipeline via the
+                same restart the error screen's Retry uses; today's loading
+                crossfade makes the reload read as one smooth dip through the
+                logo instead of a teardown. */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setRestarting(true);
+                void restartStream();
+                scheduleHide();
+              }}
+              className="sn-touch flex items-center justify-center text-white"
+              aria-label="Restart stream"
+            >
+              <ArrowClockwise size={21} className={restarting ? 'animate-spin' : ''} />
+            </button>
             <button
               onClick={(e) => {
                 e.stopPropagation();
