@@ -124,19 +124,36 @@ async fn fetch_racing(channel: &str, bases: &[String]) -> Result<(String, String
 }
 
 /// Race `preferred` first; if they ALL fail, race the rest of the bundled pool.
-/// One relay going down must not take ad-free playback down with it: as long as
-/// any relay is alive we serve an ad-free master. `preferred` is the user's
-/// override when they set one, and the pivot's untried-bases list when it is
-/// escalating.
-pub async fn fetch_with_fallback(channel: &str, preferred: &[String]) -> Result<(String, String)> {
+/// One bundled relay going down must not take ad-free playback down with it.
+///
+/// `avoid` is the pivot's list of bases already known to be serving this stream
+/// ads: they are excluded from the fallback too, otherwise an escalation lands
+/// straight back on the relay it is escaping and the viewer gets a forced player
+/// reload every cooldown for the length of the ad break.
+///
+/// `allow_bundled_fallback` is false when `preferred` is the user's own relay
+/// list. Someone who typed in a specific relay chose it, and quietly sending
+/// their channel name and playback traffic to twelve third-party community
+/// relays because theirs hiccuped is not a fallback, it is a surprise. They get
+/// the normal no-relay outcome instead: the direct stream, ads and all.
+pub async fn fetch_with_fallback(
+    channel: &str,
+    preferred: &[String],
+    avoid: &[String],
+    allow_bundled_fallback: bool,
+) -> Result<(String, String)> {
     let err = match fetch_racing(channel, preferred).await {
         Ok(win) => return Ok(win),
         Err(e) => e,
     };
-    let tried: HashSet<&str> = preferred.iter().map(|s| s.trim_end_matches('/')).collect();
+    if !allow_bundled_fallback {
+        return Err(err);
+    }
+    let mut skip: HashSet<&str> = preferred.iter().map(|s| s.trim_end_matches('/')).collect();
+    skip.extend(avoid.iter().map(|s| s.trim_end_matches('/')));
     let rest: Vec<String> = proxies::bundled()
         .into_iter()
-        .filter(|u| !tried.contains(u.as_str()))
+        .filter(|u| !skip.contains(u.as_str()))
         .collect();
     if rest.is_empty() {
         return Err(err);
@@ -171,6 +188,13 @@ fn stream_inf_height(inf: &str) -> Option<u32> {
         (Some(a), Some(b)) => Some(a.max(b)),
         (a, b) => a.or(b),
     }
+}
+
+/// Every video height a master offers, highest first. For logging.
+pub fn sorted_heights(master: &str) -> Vec<u32> {
+    let mut v: Vec<u32> = heights(master).into_iter().collect();
+    v.sort_unstable_by(|a, b| b.cmp(a));
+    v
 }
 
 /// Every video height a master offers.
@@ -222,7 +246,10 @@ fn missing_tier_blocks(master: &str, have: &HashSet<u32>) -> Vec<String> {
                 block.push_str(inf);
                 block.push('\n');
                 block.push_str(lines[j].trim());
-                out.push(block);
+                // Give the grafted rendition its own group so its label cannot
+                // overwrite, or be overwritten by, a relay rendition that shares
+                // the name Twitch gives every source tier.
+                out.push(retag_group(&block, &format!("sn-{h}")));
             }
         }
         i = j + 1;
@@ -245,10 +272,93 @@ fn missing_tier_blocks(master: &str, have: &HashSet<u32>) -> Vec<String> {
 /// A grafted tier is the viewer's own stream, so it can carry ads that the
 /// relay's tiers would not. The playlist filter strips those as they are
 /// served, which is the same defense that covers a relay leaking an ad.
+/// Rewrite a grafted block's rendition group so it cannot collide with the
+/// relay master's.
+///
+/// Twitch names the source rendition `chunked` whatever its height is, so a
+/// relay capped at 720p and the viewer's 1440p master both declare
+/// `GROUP-ID="chunked"`. The resolver builds its label map as
+/// `group id -> name`, last write wins, so appending the grafted block verbatim
+/// relabels the relay's 720p tier as "1440p60" and the viewer silently gets
+/// 720p from a menu entry that says 1440p.
+fn retag_group(block: &str, group: &str) -> String {
+    let mut out = String::with_capacity(block.len() + 16);
+    for (i, line) in block.lines().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&replace_quoted_attr(
+            &replace_quoted_attr(line, "GROUP-ID", group),
+            "VIDEO",
+            group,
+        ));
+    }
+    out
+}
+
+/// Replace `KEY="..."` in a tag line, leaving the line alone when it has no
+/// such attribute.
+fn replace_quoted_attr(line: &str, key: &str, value: &str) -> String {
+    let needle = format!("{}=\"", key);
+    let Some(pos) = line.find(&needle) else {
+        return line.to_string();
+    };
+    let rest = &line[pos + needle.len()..];
+    let Some(end) = rest.find('"') else {
+        return line.to_string();
+    };
+    format!("{}{}=\"{}\"{}", &line[..pos], key, value, &rest[end + 1..])
+}
+
+/// Strip the source marker off a master's own renditions.
+///
+/// `source_index` in the resolver returns the FIRST rendition tagged
+/// `GROUP-ID="chunked"` (or `IVS-VARIANT-SOURCE="source"`), and the relay master
+/// is the base of the spliced output, so its tiers always come first. Left
+/// alone, "best" therefore resolves to the relay's own top tier and every
+/// grafted tier above it is dead weight. With no rendition claiming to be the
+/// source, the resolver falls through to picking the highest one, which is what
+/// the viewer asked for.
+fn demote_source(master: &str) -> String {
+    master
+        .lines()
+        .map(|line| {
+            if line.contains("GROUP-ID=\"chunked\"") || line.contains("VIDEO=\"chunked\"") {
+                retag_group(line, "sn-relay")
+            } else if line.contains("IVS-VARIANT-SOURCE=\"source\"") {
+                replace_quoted_attr(line, "IVS-VARIANT-SOURCE", "alt")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub fn splice(relay_master: &str, auth_master: &str) -> String {
     let have = heights(relay_master);
-    let mut out = relay_master.trim_end().to_string();
-    for block in missing_tier_blocks(auth_master, &have) {
+    let blocks = missing_tier_blocks(auth_master, &have);
+    if blocks.is_empty() {
+        return relay_master.to_string();
+    }
+    let relay_top = have.iter().copied().max().unwrap_or(0);
+    let graft_top = blocks
+        .iter()
+        .filter_map(|b| b.lines().find(|l| l.starts_with("#EXT-X-STREAM-INF:")))
+        .filter_map(stream_inf_height)
+        .max()
+        .unwrap_or(0);
+
+    // Only take the source marker away from the relay when something grafted
+    // actually outranks it; otherwise the relay's own top tier is still the
+    // right answer for "best" and must keep serving it ad-free.
+    let mut out = if graft_top > relay_top {
+        demote_source(relay_master).trim_end().to_string()
+    } else {
+        relay_master.trim_end().to_string()
+    };
+
+    for block in blocks {
         // Log the real RESOLUTION/CODECS of each grafted variant: this is the
         // proof that a tier labeled "1440p60" really points at a 2560x1440
         // variant from the authenticated master, not a relabeled lower tier.
@@ -325,6 +435,68 @@ https://cdn/relay-1080.m3u8\n";
         assert!(out.contains("https://cdn/relay-720.m3u8"), "{out}");
         assert!(out.contains("https://cdn/auth-1080.m3u8"), "{out}");
         assert!(out.contains("https://cdn/auth-1440.m3u8"), "{out}");
+    }
+
+    /// A relay in the legacy layout: it tags its own top tier as the source,
+    /// exactly like the viewer's master does, which is what makes the two
+    /// collide.
+    const LEGACY_CAPPED_RELAY: &str = "#EXTM3U\n\
+#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID=\"chunked\",NAME=\"720p60\"\n\
+#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720,CODECS=\"avc1.4D402A\",VIDEO=\"chunked\"\n\
+https://cdn/relay-720.m3u8\n\
+#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID=\"480p30\",NAME=\"480p\"\n\
+#EXT-X-STREAM-INF:BANDWIDTH=1400000,RESOLUTION=852x480,CODECS=\"avc1.4D401F\",VIDEO=\"480p30\"\n\
+https://cdn/relay-480.m3u8\n";
+
+    #[test]
+    fn a_grafted_tier_never_relabels_the_relays_own() {
+        // Twitch calls every source rendition "chunked" whatever its height, so
+        // appending the viewer's block verbatim used to rename the relay's 720p
+        // tier to "1440p60" through the resolver's group-to-name map.
+        let spliced = splice(LEGACY_CAPPED_RELAY, AUTH_MASTER);
+        let variants = crate::services::twitch_resolver::parse_master(&spliced);
+        let by_url = |u: &str| {
+            variants
+                .iter()
+                .find(|v| v.url == u)
+                .unwrap_or_else(|| panic!("{u} missing from {spliced}"))
+                .clone()
+        };
+        assert_eq!(by_url("https://cdn/relay-720.m3u8").name, "720p60");
+        assert_eq!(by_url("https://cdn/auth-1440.m3u8").name, "1440p60");
+        assert_eq!(by_url("https://cdn/relay-480.m3u8").name, "480p");
+    }
+
+    #[test]
+    fn best_resolves_to_the_grafted_tier_when_it_outranks_the_relay() {
+        // The end of the chain, which is the only thing that actually matters:
+        // grafting the block is pointless if "best" still picks the relay's own
+        // top tier, and it did, because the relay's renditions come first and
+        // the resolver takes the FIRST one marked as the source.
+        let spliced = splice(LEGACY_CAPPED_RELAY, AUTH_MASTER);
+        let variants = crate::services::twitch_resolver::parse_master(&spliced);
+        let (idx, _) = crate::services::twitch_resolver::select_variant(&variants, "best")
+            .expect("best resolves");
+        assert_eq!(
+            variants[idx].url, "https://cdn/auth-1440.m3u8",
+            "best picked {:?} out of {spliced}",
+            variants[idx]
+        );
+        assert_eq!(variants[idx].height, Some(1440));
+    }
+
+    #[test]
+    fn the_relay_keeps_the_source_marker_when_nothing_grafted_outranks_it() {
+        // Only a mid tier is missing, so the relay's own top tier is still the
+        // right answer for "best" and must keep serving it ad-free.
+        let auth_mid_only = "#EXTM3U\n\
+#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=640x360\nhttps://cdn/auth-360.m3u8\n";
+        let spliced = splice(LEGACY_CAPPED_RELAY, auth_mid_only);
+        assert!(spliced.contains("GROUP-ID=\"chunked\""), "{spliced}");
+        let variants = crate::services::twitch_resolver::parse_master(&spliced);
+        let (idx, _) = crate::services::twitch_resolver::select_variant(&variants, "best")
+            .expect("best resolves");
+        assert_eq!(variants[idx].url, "https://cdn/relay-720.m3u8");
     }
 
     #[test]

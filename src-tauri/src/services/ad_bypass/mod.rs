@@ -36,9 +36,12 @@
 //! regardless of the experimental setting. The two cannot both own the
 //! playlist, so `LlOrigin::start` returns inactive while `active()` is true.
 
-// Android builds only. `test` rides along so the stripper's unit tests can run
-// on a host toolchain; that is a test-only compile, never part of a desktop app.
-#![cfg(any(target_os = "android", test))]
+// Android builds only. The unit tests run against the Android target too (built
+// with `cargo test --target aarch64-linux-android` and executed on the device),
+// so there is no reason to let this compile into a desktop test build and every
+// reason not to: a desktop `cargo test` is the one place a supposedly frozen
+// build could still break.
+#![cfg(target_os = "android")]
 
 pub mod filter;
 pub mod master;
@@ -51,8 +54,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::models::settings::VideoPlayerSettings;
 use crate::services::twitch_auth_service::TwitchAuthService;
 use crate::services::twitch_resolver::{self as tr, ResolvedLive};
-
-pub use filter::FilterOutcome;
+use master::sorted_heights;
 
 /// The user's setting, mirrored where the relay can read it. The relay's
 /// playlist handler runs far from any Tauri `State`, so the authoritative value
@@ -108,8 +110,9 @@ pub async fn resolve_master(
         return None;
     }
 
-    let configured = configured_bases(settings);
-    let resolved = resolve_through_relay(channel, quality, core, &configured).await;
+    let (configured, user_supplied) = configured_bases(settings);
+    let resolved =
+        resolve_through_relay(channel, quality, core, &configured, &[], !user_supplied).await;
     let Some((resolved, base)) = resolved else {
         stand_down();
         return None;
@@ -124,20 +127,21 @@ pub async fn resolve_master(
         channel.to_string(),
         quality.to_string(),
         configured,
+        user_supplied,
         base,
         auth,
     );
     Some(resolved)
 }
 
-/// The relay bases to prefer, in order: the user's override when they set one,
-/// otherwise the bundled pool.
-fn configured_bases(settings: &VideoPlayerSettings) -> Vec<String> {
+/// The relay bases to prefer, and whether they came from the user rather than
+/// the bundled pool (which decides whether falling back to the pool is allowed).
+fn configured_bases(settings: &VideoPlayerSettings) -> (Vec<String>, bool) {
     let custom = proxies::parse_bases(&settings.ad_bypass_proxies);
     if custom.is_empty() {
-        proxies::bundled()
+        (proxies::bundled(), false)
     } else {
-        custom
+        (custom, true)
     }
 }
 
@@ -150,21 +154,45 @@ pub(crate) async fn resolve_through_relay(
     quality: &str,
     core: Option<&ResolvedLive>,
     preferred: &[String],
+    avoid: &[String],
+    allow_bundled_fallback: bool,
 ) -> Option<(ResolvedLive, String)> {
-    let (base, relay_master) = match master::fetch_with_fallback(channel, preferred).await {
-        Ok(win) => win,
-        Err(e) => {
-            debug!("[AdBypass] {} no relay answered ({})", channel, e);
-            return None;
-        }
-    };
+    let (base, relay_master) =
+        match master::fetch_with_fallback(channel, preferred, avoid, allow_bundled_fallback).await {
+            Ok(win) => win,
+            Err(e) => {
+                debug!("[AdBypass] {} no relay answered ({})", channel, e);
+                return None;
+            }
+        };
 
     // The core result already holds the viewer's authenticated master, so the
     // splice costs nothing extra. Logged out (or a failed core resolve) simply
-    // means there are no above-1080p tiers to graft.
+    // means there are no tiers to graft.
+    //
+    // Both ladders are logged because "why am I not being offered 1440p" is
+    // otherwise unanswerable from a shipped build: it says in one line whether a
+    // missing tier was never in the viewer's own master (an entitlement or
+    // region-unlock question, upstream of here) or was there and did not survive
+    // the splice.
     let full_master = match core {
-        Some(c) => master::splice(&relay_master, &c.master),
-        None => relay_master,
+        Some(c) => {
+            info!(
+                "[AdBypass] {} ladders: relay={:?} viewer={:?}",
+                channel,
+                sorted_heights(&relay_master),
+                sorted_heights(&c.master)
+            );
+            master::splice(&relay_master, &c.master)
+        }
+        None => {
+            info!(
+                "[AdBypass] {} ladders: relay={:?} viewer=<no core resolution>",
+                channel,
+                sorted_heights(&relay_master)
+            );
+            relay_master
+        }
     };
     let region = proxies::region_for_base(&base);
 
@@ -197,11 +225,19 @@ fn stand_down() {
 /// entitled stream is worth removing too. The escalation only fires for a relayed
 /// stream, since that is the only one with somewhere else to go.
 pub fn filter_and_escalate(playlist: &str) -> String {
-    if !enabled() {
+    // Only a media playlist is in scope. The relay routes every non-`.ts` body
+    // through here, which includes CMAF segments that happen to decode as UTF-8
+    // and any error page a CDN answers 200 with. Letting those through would
+    // also let them reset the escalation debounce, which is counted in polls.
+    if !enabled() || !playlist.contains("#EXTINF:") {
         return playlist.to_string();
     }
     let (filtered, outcome) = filter::filter_ad_segments(playlist);
-    pivot::maybe_trigger(outcome.all_ads());
+    // Escalation is only meaningful for a stream that is actually on a relay;
+    // an entitled or direct stream has nowhere else to go.
+    if active() {
+        pivot::maybe_trigger(outcome.all_ads());
+    }
     if outcome.dropped == 0 {
         return playlist.to_string();
     }

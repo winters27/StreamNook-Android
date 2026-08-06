@@ -159,6 +159,10 @@ const AdFreeSettings: React.FC = () => {
                   fastest one that answers wins. Enter your own addresses, one per line, only if you
                   run or trust a specific relay.
                 </p>
+                <p className="text-[12.5px] text-textSecondary leading-relaxed mb-2.5">
+                  Your own list is used on its own. If none of them answer, the stream plays
+                  directly from Twitch with ads rather than falling back to the bundled relays.
+                </p>
                 <textarea
                   value={relays}
                   onChange={(e) => void patch({ ad_bypass_proxies: e.target.value })}

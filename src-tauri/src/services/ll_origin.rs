@@ -2040,6 +2040,14 @@ pub fn is_active() -> bool {
 /// player gets two URL schemes for the same media sequence and the refresh check
 /// fails. Stable for the session, unlike the per-poll `is_active()`.
 pub fn engine_disabled() -> bool {
+    // Ad-free playback makes `start` decline above, so no origin can serve a
+    // `seg/` playlist for this stream no matter where the kill switch sits. Say
+    // so, or the viewer who has the experimental setting on loses the stable
+    // projection as well as the origin and ends up worse off than with it off.
+    #[cfg(target_os = "android")]
+    if crate::services::ad_bypass::active() {
+        return true;
+    }
     DISABLED.load(Ordering::Relaxed)
 }
 

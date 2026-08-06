@@ -37,15 +37,30 @@ fn is_ad_daterange(line: &str) -> bool {
     line.contains("twitch-stitched-ad") || line.contains("stitched-ad-")
 }
 
+/// True when a match at `pos` starts a whole attribute rather than the tail of a
+/// longer one. Without this, looking up `DURATION` finds `PLANNED-DURATION`,
+/// which is a real attribute on Twitch's ad dateranges, and the ad window ends
+/// up computed from the wrong number.
+fn at_attr_boundary(line: &str, pos: usize) -> bool {
+    match line[..pos].chars().next_back() {
+        None => true,
+        Some(c) => c == ',' || c == ':' || c == ' ',
+    }
+}
+
 /// Pull an attribute value out of an HLS tag line (quoted or unquoted form).
 fn tag_attr(line: &str, key: &str) -> Option<String> {
     let quoted = format!("{}=\"", key);
-    if let Some(pos) = line.find(&quoted) {
+    if let Some(pos) = line.match_indices(&quoted).find_map(|(p, _)| {
+        at_attr_boundary(line, p).then_some(p)
+    }) {
         let rest = &line[pos + quoted.len()..];
         return rest.find('"').map(|end| rest[..end].to_string());
     }
     let bare = format!("{}=", key);
-    let pos = line.find(&bare)?;
+    let pos = line
+        .match_indices(&bare)
+        .find_map(|(p, _)| at_attr_boundary(line, p).then_some(p))?;
     let rest = &line[pos + bare.len()..];
     let end = rest.find(',').unwrap_or(rest.len());
     Some(rest[..end].to_string())
@@ -151,9 +166,19 @@ pub fn filter_ad_segments(playlist: &str) -> (String, FilterOutcome) {
             pending.push(raw.to_string());
             continue;
         }
-        if t.starts_with("#EXT-X-BYTERANGE") || t.starts_with("#EXT-X-KEY") || t.starts_with("#EXT-X-MAP")
-        {
+        if t.starts_with("#EXT-X-BYTERANGE") {
             pending.push(raw.to_string());
+            continue;
+        }
+        // `#EXT-X-MAP` and `#EXT-X-KEY` are NOT per-segment: each applies to every
+        // segment that follows until the next one of its kind. Buffering them with
+        // a segment means dropping an ad takes the initialization segment with it,
+        // and then nothing after it can be decoded at all. That turns a cosmetic ad
+        // leak into a dead stream, and it is reachable: the tiers grafted from the
+        // viewer's own master are the CMAF ones, which are exactly the tiers that
+        // carry `#EXT-X-MAP`.
+        if t.starts_with("#EXT-X-MAP") || t.starts_with("#EXT-X-KEY") {
+            out.push(raw.to_string());
             continue;
         }
         if t.starts_with('#') {
@@ -187,15 +212,34 @@ pub fn filter_ad_segments(playlist: &str) -> (String, FilterOutcome) {
 
     if leading_dropped > 0 {
         if let (Some(idx), Some(val)) = (mediaseq_idx, mediaseq_val) {
-            out[idx] = format!("#EXT-X-MEDIA-SEQUENCE:{}", val + leading_dropped as u64);
+            // Saturating, not wrapping: the value is parsed from relay-supplied
+            // text, and a wrapped sequence number would poison the projection map
+            // (or panic outright in a debug build, inside the request handler).
+            out[idx] = format!(
+                "#EXT-X-MEDIA-SEQUENCE:{}",
+                val.saturating_add(leading_dropped as u64)
+            );
         }
     }
+    // Twitch's live playlists carry no `#EXT-X-DISCONTINUITY-SEQUENCE` at all
+    // (checked against the live edge on 2026-08-06), so only patching an existing
+    // header would never once fire in production. When the tag that opens an ad
+    // pod is dropped off the front of the window the header has to be INSERTED,
+    // or every surviving segment reads one discontinuity lower than it should.
     if leading_disc_dropped > 0 {
-        if let (Some(idx), Some(val)) = (discseq_idx, discseq_val) {
-            out[idx] = format!(
-                "#EXT-X-DISCONTINUITY-SEQUENCE:{}",
-                val + leading_disc_dropped as u64
-            );
+        let bumped = format!(
+            "#EXT-X-DISCONTINUITY-SEQUENCE:{}",
+            discseq_val.unwrap_or(0).saturating_add(leading_disc_dropped as u64)
+        );
+        match discseq_idx {
+            Some(idx) => out[idx] = bumped,
+            // Insert right after the media sequence so the two headers stay
+            // together. `mediaseq_idx` is still valid: the patch above only
+            // replaced a line, it did not move any.
+            None => {
+                let at = mediaseq_idx.map(|i| i + 1).unwrap_or_else(|| out.len().min(1));
+                out.insert(at, bumped);
+            }
         }
     }
 
@@ -285,6 +329,36 @@ mod tests {
     }
 
     #[test]
+    fn a_dropped_leading_discontinuity_creates_the_header_when_upstream_has_none() {
+        // This is the shape Twitch actually serves: no
+        // #EXT-X-DISCONTINUITY-SEQUENCE anywhere. Patching alone would be a
+        // no-op and the surviving segment would read one discontinuity low.
+        let pl = "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:100\n\
+#EXT-X-DISCONTINUITY\n#EXTINF:2.0,Amazon|1\nhttps://cdn/ad0.ts\n\
+#EXTINF:2.0,live\nhttps://cdn/real0.ts\n";
+        let (out, o) = filter_ad_segments(pl);
+        assert_eq!((o.dropped, o.real), (1, 1));
+        assert!(out.contains("#EXT-X-DISCONTINUITY-SEQUENCE:1"), "{out}");
+        // Directly after the media sequence, so the two headers stay together
+        // and both still precede the first segment.
+        let lines: Vec<&str> = out.lines().collect();
+        let ms = lines
+            .iter()
+            .position(|l| l.starts_with("#EXT-X-MEDIA-SEQUENCE:"))
+            .unwrap();
+        assert_eq!(lines[ms + 1], "#EXT-X-DISCONTINUITY-SEQUENCE:1", "{out}");
+    }
+
+    #[test]
+    fn an_ad_free_playlist_never_grows_a_discontinuity_header() {
+        let pl = "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:100\n\
+#EXT-X-DISCONTINUITY\n#EXTINF:2.0,live\nhttps://cdn/a.ts\n";
+        let (out, o) = filter_ad_segments(pl);
+        assert_eq!(o.dropped, 0);
+        assert!(!out.contains("#EXT-X-DISCONTINUITY-SEQUENCE"), "{out}");
+    }
+
+    #[test]
     fn mid_playlist_ad_discontinuity_leaves_the_header_alone() {
         // Nothing rolled off the front, so the first segment's cc is unchanged
         // and the header must not move.
@@ -304,6 +378,43 @@ mod tests {
 #EXTINF:2.0,Amazon|2\nhttps://cdn/ad1.ts\n";
         let (_, o) = filter_ad_segments(pl);
         assert!(o.all_ads());
+    }
+
+    #[test]
+    fn the_init_segment_survives_dropping_the_ad_next_to_it() {
+        // #EXT-X-MAP applies to every segment after it, not just the next one.
+        // Losing it with a dropped ad leaves the rest of the window undecodable,
+        // which is worse than the ad. Reachable on the CMAF tiers grafted from
+        // the viewer's own master.
+        let pl = "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:10\n\
+#EXT-X-MAP:URI=\"https://cdn/init.mp4\"\n\
+#EXTINF:2.0,Amazon|1\nhttps://cdn/ad0.m4s\n\
+#EXTINF:2.0,live\nhttps://cdn/real0.m4s\n";
+        let (out, o) = filter_ad_segments(pl);
+        assert_eq!((o.dropped, o.real), (1, 1));
+        assert!(out.contains("#EXT-X-MAP:URI=\"https://cdn/init.mp4\""), "{out}");
+        assert!(!out.contains("ad0.m4s"), "{out}");
+        assert!(out.contains("real0.m4s"), "{out}");
+    }
+
+    #[test]
+    fn the_decryption_key_survives_dropping_the_ad_next_to_it() {
+        let pl = "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:10\n\
+#EXT-X-KEY:METHOD=AES-128,URI=\"https://cdn/key.bin\"\n\
+#EXTINF:2.0,Amazon|1\nhttps://cdn/ad0.ts\n\
+#EXTINF:2.0,live\nhttps://cdn/real0.ts\n";
+        let (out, _) = filter_ad_segments(pl);
+        assert!(out.contains("#EXT-X-KEY:METHOD=AES-128"), "{out}");
+    }
+
+    #[test]
+    fn planned_duration_does_not_masquerade_as_duration() {
+        // PLANNED-DURATION is a real attribute on Twitch's ad dateranges, and a
+        // substring search for "DURATION=" finds it first, which would compute
+        // the ad window from the wrong number.
+        let line = "#EXT-X-DATERANGE:ID=\"x\",PLANNED-DURATION=30.0,DURATION=4.0";
+        assert_eq!(tag_attr(line, "DURATION").as_deref(), Some("4.0"));
+        assert_eq!(tag_attr(line, "PLANNED-DURATION").as_deref(), Some("30.0"));
     }
 
     #[test]
