@@ -99,6 +99,23 @@ pub async fn resolve_master(
     settings: &VideoPlayerSettings,
     auth: TwitchAuthService,
 ) -> Option<ResolvedLive> {
+    // What Twitch offered this viewer and what it held back, logged on EVERY
+    // live resolve including the entitled one. This is the only spot on a
+    // shipped build's log that has the viewer's own master in hand: the
+    // region-unlock path inside `fetch_auth_master` reports failure at `debug!`
+    // and success not at all, so without this a missing 1440p tier is
+    // indistinguishable from an unlock that ran and failed.
+    if let Some(c) = core {
+        info!(
+            "[AdBypass] {} viewer ladder={:?} withheld={:?} (mode={}, entitled={})",
+            channel,
+            sorted_heights(&c.master),
+            master::withheld_reasons(&c.master),
+            c.status.mode,
+            c.status.entitled
+        );
+    }
+
     ENABLED.store(settings.ad_bypass_enabled, Ordering::Relaxed);
     if !settings.ad_bypass_enabled {
         stand_down();
@@ -170,30 +187,18 @@ pub(crate) async fn resolve_through_relay(
     // splice costs nothing extra. Logged out (or a failed core resolve) simply
     // means there are no tiers to graft.
     //
-    // Both ladders are logged because "why am I not being offered 1440p" is
-    // otherwise unanswerable from a shipped build: it says in one line whether a
-    // missing tier was never in the viewer's own master (an entitlement or
-    // region-unlock question, upstream of here) or was there and did not survive
-    // the splice.
+    // The relay's own ladder, to sit beside the viewer ladder logged at resolve
+    // time. Together they say whether a missing tier was never in the viewer's
+    // master or was there and did not survive the splice.
+    info!(
+        "[AdBypass] {} relay ladder={:?} via {}",
+        channel,
+        sorted_heights(&relay_master),
+        base
+    );
     let full_master = match core {
-        Some(c) => {
-            info!(
-                "[AdBypass] {} ladders: relay={:?} viewer={:?} withheld={:?}",
-                channel,
-                sorted_heights(&relay_master),
-                sorted_heights(&c.master),
-                master::withheld_reasons(&c.master)
-            );
-            master::splice(&relay_master, &c.master)
-        }
-        None => {
-            info!(
-                "[AdBypass] {} ladders: relay={:?} viewer=<no core resolution>",
-                channel,
-                sorted_heights(&relay_master)
-            );
-            relay_master
-        }
+        Some(c) => master::splice(&relay_master, &c.master),
+        None => relay_master,
     };
     let region = proxies::region_for_base(&base);
 
