@@ -61,6 +61,23 @@ export const MobilePlayer: React.FC<{
   const [nowMs, setNowMs] = useState(() => Date.now());
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // The loading logo fades out over the first playing frames instead of
+  // vanishing on the exact tick the state flips — that hard swap was half of
+  // the "logo snaps into the video" jank. `idle` counts as loading because the
+  // engine sits idle until the stream URL resolves, which is precisely the
+  // stretch the logo exists to cover. Unmounted after the fade so the logo's
+  // animation loop is not left running invisibly under playback.
+  const logoWanted = state === 'loading' || state === 'idle';
+  const [logoMounted, setLogoMounted] = useState(true);
+  // Render-time adjustment (same pattern as the drill-in screens' `last`
+  // retention): re-mount instantly when loading returns, no effect round trip.
+  if (logoWanted && !logoMounted) setLogoMounted(true);
+  useEffect(() => {
+    if (logoWanted) return;
+    const t = setTimeout(() => setLogoMounted(false), 340);
+    return () => clearTimeout(t);
+  }, [logoWanted]);
+
   // Uptime ticks while the overlay chrome exists at all.
   //
   // useVisibleInterval rather than a bare setInterval, because a WebView timer
@@ -152,8 +169,12 @@ export const MobilePlayer: React.FC<{
         poster="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
       />
 
-      {state === 'loading' && (
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+      {logoMounted && (
+        <div
+          className={`absolute inset-0 flex items-center justify-center pointer-events-none transition-opacity duration-300 ${
+            logoWanted ? 'opacity-100' : 'opacity-0'
+          }`}
+        >
           <PenroseMarch size={compact ? 44 : 84} />
         </div>
       )}

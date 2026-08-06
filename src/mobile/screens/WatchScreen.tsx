@@ -16,7 +16,7 @@
 //     single activity IS the PiP window.
 // Nothing in the UI calls system PiP directly. It is what leaving the app does.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { motion } from 'framer-motion';
+import { AnimatePresence, motion } from 'framer-motion';
 import { X } from 'phosphor-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
@@ -44,7 +44,6 @@ import { PinnedBanner } from '../watch/PinnedBanner';
 import HypeTrainBanner from '../../components/HypeTrainBanner';
 import PollOverlay from '../../components/PollOverlay';
 import PredictionOverlay from '../../components/PredictionOverlay';
-import LoadingWidget from '../../components/LoadingWidget';
 import {
   consumePipClosed,
   isInPip,
@@ -447,15 +446,13 @@ export const WatchScreen: React.FC = () => {
     setShrink(0);
   }, []);
 
-  if (!streamUrl && !isLoading) return null;
-
-  if (isLoading && !streamUrl) {
-    return (
-      <div className="absolute inset-0 z-40 bg-background flex items-center justify-center">
-        <LoadingWidget fullScreen={false} useFunnyMessages={true} />
-      </div>
-    );
-  }
+  // One visibility flag for the whole layer. There used to be a separate
+  // full-screen loading return here (a giant centered logo) that was swapped
+  // wholesale for the player tree the moment the URL landed — the "big logo
+  // snaps into the player" jank. Now the SAME tree renders from the first
+  // loading frame: the player band shows the logo at band size, chat mounts
+  // beneath, and the URL arriving changes nothing structural.
+  const show = !!streamUrl || isLoading;
 
   // ONE TREE FOR EVERY MODE. This used to be three separate `return`s (PiP,
   // landscape, portrait) and that was the reason rotating or entering PiP
@@ -565,7 +562,10 @@ export const WatchScreen: React.FC = () => {
         : 'flex-1 min-h-0 relative flex flex-col';
 
   return (
+    <AnimatePresence>
+    {show && (
     <motion.div
+      key="watch-layer"
       // In system PiP the OS hands the WHOLE ACTIVITY to its window, so whatever
       // full-screen panel happened to be open paints inside it. SettingsScreen
       // and CosmeticsScreen are `z-50` and mount AFTER this layer in MobileApp,
@@ -578,8 +578,14 @@ export const WatchScreen: React.FC = () => {
       style={{
         backgroundColor: pip || sideBySide ? '#000' : 'var(--color-background)',
       }}
-      initial={false}
-      animate={layerGeometry}
+      // The layer rises in on open and drops away on close instead of popping.
+      // `y` is a transform, so it composes with the top/left geometry without
+      // disturbing layout or the drag interpolation; the spread seeds the
+      // geometry at its current-mode rect so a stream opened while the previous
+      // one sat in mini still enters at the right place and size.
+      initial={{ ...layerGeometry, opacity: 0, y: 40 }}
+      animate={{ ...layerGeometry, opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 40, transition: { duration: 0.18, ease: 'easeIn' } }}
       transition={dragging ? { duration: 0 } : SPRING}
     >
       <div
@@ -656,8 +662,11 @@ export const WatchScreen: React.FC = () => {
             <>
               {/* Swallow player taps so the whole box reads as one control. */}
               <div className="absolute inset-0 z-10" />
+              {/* The visible circle stays 28px; the BUTTON is 44px, Android's
+                  minimum comfortable target. The old 28px hit box was why
+                  closing the mini player took two or three tries. */}
               <button
-                className="absolute top-1 right-1 z-20 w-7 h-7 rounded-full bg-black/60 flex items-center justify-center text-white"
+                className="absolute top-0 right-0 z-20 w-11 h-11 flex items-center justify-center"
                 aria-label="Close stream"
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
@@ -665,7 +674,9 @@ export const WatchScreen: React.FC = () => {
                   void exitStream();
                 }}
               >
-                <X size={14} weight="bold" />
+                <span className="w-7 h-7 rounded-full bg-black/60 flex items-center justify-center text-white">
+                  <X size={14} weight="bold" />
+                </span>
               </button>
             </>
           )}
@@ -778,5 +789,7 @@ export const WatchScreen: React.FC = () => {
       </div>
 
     </motion.div>
+    )}
+    </AnimatePresence>
   );
 };
