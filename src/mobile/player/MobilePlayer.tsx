@@ -67,6 +67,23 @@ export const MobilePlayer: React.FC<{
   // engine sits idle until the stream URL resolves, which is precisely the
   // stretch the logo exists to cover. Unmounted after the fade so the logo's
   // animation loop is not left running invisibly under playback.
+  // Low Latency takes effect at the origin probe that runs when a stream
+  // STARTS, so flipping it mid-stream changed nothing until the next open.
+  // Desktop restarts the stream on the flip (VideoPlayer.tsx); mobile shares
+  // that settings panel but had no equivalent, so the toggle looked inert.
+  // Ref-compared rather than first-run-flagged for the same reason desktop
+  // does it: the restart remounts this component, and a flag would let the
+  // remount read as another toggle and loop.
+  const lowLatency = useAppStore((s) => s.settings.video_player?.experimental_low_latency);
+  const prevLowLatency = useRef(lowLatency);
+  useEffect(() => {
+    if (prevLowLatency.current === lowLatency) return;
+    prevLowLatency.current = lowLatency;
+    // The settings panel already pushed the flag to the backend; this only has
+    // to re-run the origin probe that reads it.
+    if (currentStream) void restartStream();
+  }, [lowLatency, currentStream, restartStream]);
+
   // Manual restart feedback: the icon spins from the tap until the reload has
   // been THROUGH loading and out the other side. A simple "clear when not
   // loading" wiped the flag on the very render the tap caused — the engine
