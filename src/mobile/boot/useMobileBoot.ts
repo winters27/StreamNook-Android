@@ -39,6 +39,7 @@ import {
   syncBackgroundChecks,
 } from '../notifications';
 import { isChannelMuted } from '../notifyChannels';
+import { consumePendingChannel } from '../nativeBridge';
 import { Logger } from '../../utils/logger';
 
 export function useMobileBoot(): void {
@@ -229,6 +230,51 @@ export function useMobileBoot(): void {
       // Keep the background poll in step with the settings on every launch, so
       // scheduled work can never outlive the preference that asked for it.
       syncBackgroundChecks(notifyPrefs());
+
+      // Tell the background poll the foreground path is alive.
+      //
+      // Both run in the same process, so with the process cached but the WebView
+      // gone the Rust poll is still emitting into nothing while the worker also
+      // fires. The worker stands down while these pings are recent, which is
+      // what keeps exactly one of them delivering. Timers are throttled in the
+      // background, and that is the point: pings stopping IS the handover.
+      const ping = () => {
+        void invoke('notify_hot_ping').catch(() => {});
+      };
+      ping();
+      const pingTimer = window.setInterval(ping, 60_000);
+      const onPingVisibility = () => {
+        if (document.visibilityState === 'visible') ping();
+      };
+      document.addEventListener('visibilitychange', onPingVisibility);
+      cleanupFunctions.push(() => {
+        window.clearInterval(pingTimer);
+        document.removeEventListener('visibilitychange', onPingVisibility);
+      });
+
+      // Open a channel handed over from outside the app: a tapped notification,
+      // or a streamnook:// link the app was cold-started with.
+      //
+      // The cold-start drain covers a pre-existing gap as well as the new one.
+      // `take_pending_watch_link` has only ever been consumed by App.tsx, the
+      // DESKTOP shell, so deep links have not opened anything on the phone.
+      const openChannel = (login: string) => {
+        const clean = login.trim().toLowerCase();
+        if (!clean) return;
+        void useAppStore.getState().startStream(clean);
+      };
+      (window as Window & { __SN_OPEN_CHANNEL__?: (login: string) => void }).__SN_OPEN_CHANNEL__ =
+        openChannel;
+      const tapped = consumePendingChannel();
+      if (tapped) {
+        openChannel(tapped);
+      } else {
+        void invoke<string | null>('take_pending_watch_link')
+          .then((link) => {
+            if (link) openChannel(link);
+          })
+          .catch(() => {});
+      }
 
       await addListener<{
         streamer_name: string;

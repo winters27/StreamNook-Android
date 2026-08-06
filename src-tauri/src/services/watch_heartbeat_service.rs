@@ -154,17 +154,25 @@ impl WatchHeartbeatService {
                     target.broadcast_id = Some(broadcast_id);
                     target.game_id = game_id;
                     target.game_name = game_name;
+                    target.broadcast_checked_at = Some(Instant::now());
                 }
                 Ok(None) => {
                     // Channel is not live (offline, VOD, or ended). Nothing
                     // to report; re-check on the next stale window.
                     target.broadcast_id = None;
+                    target.broadcast_checked_at = Some(Instant::now());
                 }
                 Err(e) => {
-                    debug!("[Heartbeat] stream info fetch failed: {e}");
+                    // Deliberately does NOT stamp broadcast_checked_at. Doing
+                    // so treats "could not ask" as "asked, and the answer is
+                    // still good", which pins a stale broadcast id for another
+                    // full refresh window and lets a repeatedly-failing lookup
+                    // extend that window indefinitely. On a phone connection
+                    // this is a likely branch, not an exotic one. Leaving the
+                    // mark alone retries on the next tick instead.
+                    debug!("[Heartbeat] stream info fetch failed, retrying next tick: {e}");
                 }
             }
-            target.broadcast_checked_at = Some(Instant::now());
             // Write back the refreshed snapshot unless the target moved on.
             let mut current = self.target.write().await;
             match current.as_mut() {

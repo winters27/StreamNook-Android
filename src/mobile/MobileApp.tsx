@@ -10,6 +10,7 @@ import { applyNativeInsetsOnce } from './nativeInsets';
 import { useThemeBoot } from '../boot/useThemeBoot';
 import { useMobileBoot } from './boot/useMobileBoot';
 import { useKeyboardInsets } from './ui/useKeyboardInsets';
+import { useCurrentStreamStats } from '../utils/useCurrentStreamStats';
 import { installBackHandler, useMobileNavStore } from './navStore';
 import { installLifecycle } from './lifecycle';
 import { MobileTabBar } from './MobileTabBar';
@@ -39,6 +40,9 @@ const MobileApp: React.FC = () => {
   useThemeBoot();
   useMobileBoot();
   useKeyboardInsets();
+  // Shared with the desktop shell: the watched stream's viewer count is written
+  // once at playback start and never refreshed without this.
+  useCurrentStreamStats();
 
   const isBooting = useAppStore((s) => s.isBooting);
   const isAuthenticated = useAppStore((s) => s.isAuthenticated);

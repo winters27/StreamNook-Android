@@ -777,6 +777,8 @@ pub fn run() {
             twitch_login_plugin::close_mobile_login,
             #[cfg(target_os = "android")]
             twitch_login_plugin::get_mobile_login_cookies,
+            #[cfg(target_os = "android")]
+            android_notify::notify_hot_ping,
             #[cfg(desktop)]
             ensure_main_window,
             #[cfg(desktop)]

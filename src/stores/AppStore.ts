@@ -1743,8 +1743,17 @@ export const useAppStore = create<AppState>((set, get) => ({
             channelName
           });
           Logger.debug('Started drops monitoring for', channelName);
-          
+
           invoke('register_active_channel', { channelId }).catch(() => {});
+        } else {
+          // No broadcaster id, so the watch heartbeat cannot be retargeted.
+          // Silently skipping leaves it aimed at the PREVIOUS channel, which
+          // then keeps collecting watch minutes for a stream nobody is on.
+          // Stopping is the honest outcome: this session earns nothing, which
+          // it was going to regardless, but no other channel is credited for
+          // it either. Reachable when the get_channel_info fallback throws.
+          Logger.warn(`[Stream] No broadcaster id for ${channelName}; drops and points monitoring off for this session`);
+          await invoke('stop_drops_monitoring').catch(() => {});
         }
       } catch (e) {
         Logger.warn('Could not start drops monitoring:', e);

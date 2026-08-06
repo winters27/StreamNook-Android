@@ -25,4 +25,18 @@ object NotifyBridge {
 
   /** Returns a fixed string when the library loaded and JNI is wired up. */
   external fun ping(): String
+
+  /**
+   * Checks for followed channels that have gone live, returning a JSON array of
+   * notifications to post (`[]` when there is nothing to do, including the case
+   * where the app is open and its own listener will handle it).
+   *
+   * Blocking: it makes network calls on the calling thread, so only call it from
+   * a worker's coroutine, never the main thread.
+   *
+   * @param baseDir `Context.getDataDir()`. Rust verifies this rather than
+   *   trusting it, since it has to match whatever Tauri's `app_data_dir()`
+   *   resolves to and the two disagreeing fails silently.
+   */
+  external fun pollOnce(baseDir: String): String
 }

@@ -20,6 +20,7 @@ interface SNBridge {
   requestIgnoreBatteryOptimizations?(): void;
   scheduleBackgroundChecks?(intervalMinutes: number): void;
   cancelBackgroundChecks?(): void;
+  consumePendingChannel?(): string;
 }
 
 function bridge(): SNBridge | undefined {
@@ -238,5 +239,21 @@ export function cancelBackgroundChecks(): void {
     bridge()?.cancelBackgroundChecks?.();
   } catch {
     /* bridge absent */
+  }
+}
+
+/**
+ * Channel login from a tapped notification, or null.
+ *
+ * Reading it clears it natively, same contract as consumePipClosed. Drained on
+ * mount because a tap that cold-starts the app has no WebView to be pushed to;
+ * the warm case arrives through `window.__SN_OPEN_CHANNEL__` instead.
+ */
+export function consumePendingChannel(): string | null {
+  try {
+    const channel = bridge()?.consumePendingChannel?.();
+    return channel && channel.length > 0 ? channel : null;
+  } catch {
+    return null;
   }
 }

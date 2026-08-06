@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowsOut, Bell, BellSlash, Columns, Eye, Gear, Pause, PictureInPicture, Play, Rows, ShareNetwork, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
 import { setPipMuted, shareText } from '../nativeBridge';
 import { toggleChannelMuted } from '../notifyChannels';
+import { useVisibleInterval } from '../../utils/useVisibleInterval';
 import { buildShareUrl } from '../../utils/shareLink';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileHlsEngine } from './useMobileHlsEngine';
@@ -61,11 +62,18 @@ export const MobilePlayer: React.FC<{
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Uptime ticks while the overlay chrome exists at all.
-  useEffect(() => {
+  //
+  // useVisibleInterval rather than a bare setInterval, because a WebView timer
+  // is throttled or frozen outright while the app is backgrounded: the clock
+  // silently falls behind and then reads stale for up to a full period after
+  // you come back, which is exactly when someone looks at it. This hook skips
+  // ticks while hidden and fires immediately on becoming visible, so resuming
+  // shows the real uptime rather than the one from whenever the app was last
+  // awake.
+  useVisibleInterval(() => {
     if (compact) return;
-    const t = setInterval(() => setNowMs(Date.now()), 30_000);
-    return () => clearInterval(t);
-  }, [compact]);
+    setNowMs(Date.now());
+  }, 30_000);
 
   const scheduleHide = useCallback(() => {
     if (hideTimer.current) clearTimeout(hideTimer.current);

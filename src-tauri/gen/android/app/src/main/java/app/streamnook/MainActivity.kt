@@ -60,6 +60,11 @@ class MainActivity : TauriActivity() {
   // by the web shell on its way back to the foreground.
   @Volatile private var pipClosedPending: Boolean = false
 
+  // Channel login from a tapped notification, waiting for the web shell to pick
+  // it up. Needed for the cold case: the tap starts the activity, and there is
+  // no WebView to hand it to for some time afterwards.
+  @Volatile private var pendingChannel: String? = null
+
   // Fired by the PiP window's mute action. Private to the app; the receiver is
   // registered in code and explicitly NOT exported.
   private val muteReceiver = object : BroadcastReceiver() {
@@ -372,11 +377,56 @@ class MainActivity : TauriActivity() {
     fun cancelBackgroundChecks() {
       NotifyScheduler.cancel(this@MainActivity)
     }
+
+    /**
+     * Channel login from a tapped notification, or "" if there is none.
+     *
+     * Reading it clears it, the same contract as consumePipClosed. The web shell
+     * drains this on mount, which is what covers the cold case: the tap launches
+     * the activity and the WebView only exists a good while later, so pushing
+     * would have nothing to push to.
+     */
+    @JavascriptInterface
+    fun consumePendingChannel(): String {
+      val channel = pendingChannel
+      pendingChannel = null
+      return channel ?: ""
+    }
+  }
+
+  /**
+   * A notification tap on a warm app arrives here rather than through onCreate.
+   *
+   * `super` first, and it is not optional: WryActivity forwards to
+   * `Rust.onNewIntent` and TauriActivity forwards to `PluginManager`, which is
+   * how the deep-link plugin sees `streamnook://` links. Skipping it would
+   * silently break those.
+   */
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    val channel = intent.getStringExtra(NotifyWorker.EXTRA_CHANNEL) ?: return
+    if (channel.isEmpty()) return
+    pendingChannel = channel
+    // The shell is already up in this path, so hand it over rather than waiting
+    // for something to drain it. The bridge stays the fallback if no handler is
+    // registered yet.
+    runOnUiThread {
+      webView?.evaluateJavascript(
+        "window.__SN_OPEN_CHANNEL__ && window.__SN_OPEN_CHANNEL__(${JSONObject.quote(channel)})",
+        null,
+      )
+    }
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+
+    // Cold start from a notification tap. Stashed for the shell to drain once
+    // it mounts; there is no WebView to talk to at this point.
+    intent?.getStringExtra(NotifyWorker.EXTRA_CHANNEL)?.takeIf { it.isNotEmpty() }?.let {
+      pendingChannel = it
+    }
 
     // targetSdk is 36, so the export flag is mandatory. NOT_EXPORTED keeps the
     // mute intent reachable only by our own PendingIntent.

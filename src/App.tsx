@@ -21,6 +21,7 @@ import PublicProfileOverlay from './components/PublicProfileOverlay';
 import CommandPalette from './components/CommandPalette';
 import { useCommandPaletteHotkey } from './hooks/useCommandPaletteHotkey';
 import { useKeybindings } from './keybindings';
+import { useCurrentStreamStats } from './utils/useCurrentStreamStats';
 import { startSnippetSync } from './stores/snippetStore';
 import PluginUiHost from './plugins-ui/PluginUiHost';
 import PluginUpdatesChecker from './components/plugins/PluginUpdatesChecker';
@@ -95,6 +96,10 @@ const DEFAULT_CHAT_HEIGHT = 200; // For 'bottom' placement
 function App() {
   useCommandPaletteHotkey();
   useKeybindings();
+  // Viewer count is written once when playback starts and never updated after,
+  // so without this it shows whatever it was the instant the stream opened, for
+  // as long as you watch.
+  useCurrentStreamStats();
   useEffect(() => {
     // Subscribe to snippet-store updates from MultiChat popouts so changes
     // made over there propagate here without reload.
