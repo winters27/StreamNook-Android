@@ -136,7 +136,26 @@ export const WatchScreen: React.FC = () => {
     moved: boolean;
   } | null>(null);
 
-  const mini = playerMode === 'mini';
+  // One visibility flag for the whole layer (computed here because the mode
+  // derivation below needs it; consumed by the AnimatePresence at the bottom).
+  const show = !!streamUrl || isLoading;
+
+  // A FRESH open always enters full, from the very first painted frame. The
+  // mode outlives a close (a stream closed from its mini box leaves 'mini' in
+  // the nav store), and the "newly started stream opens full" sync below is an
+  // effect that waits for the chat channel to resolve — so without this the
+  // layer MOUNTED as the mini box, showed the loading logo in it, then
+  // animated up to full: tapping a stream card is not a request for a mini
+  // box. A ref plus render-time derivation, so no wrong first frame exists to
+  // animate away from.
+  const wasShowing = useRef(false);
+  const freshOpen = show && !wasShowing.current;
+  useEffect(() => {
+    wasShowing.current = show;
+    if (freshOpen) setPlayerMode('full');
+  }, [show, freshOpen, setPlayerMode]);
+
+  const mini = (freshOpen ? 'full' : playerMode) === 'mini';
   const watching = !!streamUrl && streamUrl !== 'offline';
   const channelId = currentStream?.user_id;
 
@@ -446,13 +465,13 @@ export const WatchScreen: React.FC = () => {
     setShrink(0);
   }, []);
 
-  // One visibility flag for the whole layer. There used to be a separate
-  // full-screen loading return here (a giant centered logo) that was swapped
-  // wholesale for the player tree the moment the URL landed — the "big logo
-  // snaps into the player" jank. Now the SAME tree renders from the first
-  // loading frame: the player band shows the logo at band size, chat mounts
-  // beneath, and the URL arriving changes nothing structural.
-  const show = !!streamUrl || isLoading;
+  // NOTE: `show` is computed near the top of the component (the mode
+  // derivation needs it). There used to be a separate full-screen loading
+  // return here (a giant centered logo) that was swapped wholesale for the
+  // player tree the moment the URL landed — the "big logo snaps into the
+  // player" jank. Now the SAME tree renders from the first loading frame: the
+  // player band shows the logo at band size, chat mounts beneath, and the URL
+  // arriving changes nothing structural.
 
   // ONE TREE FOR EVERY MODE. This used to be three separate `return`s (PiP,
   // landscape, portrait) and that was the reason rotating or entering PiP
