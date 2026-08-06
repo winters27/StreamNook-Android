@@ -67,11 +67,26 @@ export const MobilePlayer: React.FC<{
   // engine sits idle until the stream URL resolves, which is precisely the
   // stretch the logo exists to cover. Unmounted after the fade so the logo's
   // animation loop is not left running invisibly under playback.
-  // Manual restart feedback: the icon spins from the tap until the engine is
-  // past its loading states, so the button visibly "took" even before the
-  // loading logo crossfades in. Render-time adjust to clear (lint-safe).
-  const [restarting, setRestarting] = useState(false);
-  if (restarting && state !== 'loading' && state !== 'idle') setRestarting(false);
+  // Manual restart feedback: the icon spins from the tap until the reload has
+  // been THROUGH loading and out the other side. A simple "clear when not
+  // loading" wiped the flag on the very render the tap caused — the engine
+  // still reported playing for that instant, so the spin never drew and only
+  // a second tap (landing after the state flipped) ever showed it. The phase
+  // must observe loading before the exit condition may clear it.
+  const [restartPhase, setRestartPhase] = useState<'none' | 'kicked' | 'loading'>('none');
+  if (restartPhase === 'kicked' && (state === 'loading' || state === 'idle')) {
+    setRestartPhase('loading');
+  } else if (restartPhase === 'loading' && state !== 'loading' && state !== 'idle') {
+    setRestartPhase('none');
+  }
+  const restarting = restartPhase !== 'none';
+  // If the restart dies before the engine ever reports loading (a failed
+  // invoke), don't spin forever.
+  useEffect(() => {
+    if (restartPhase !== 'kicked') return;
+    const t = setTimeout(() => setRestartPhase((p) => (p === 'kicked' ? 'none' : p)), 5000);
+    return () => clearTimeout(t);
+  }, [restartPhase]);
 
   const logoWanted = state === 'loading' || state === 'idle';
   const [logoMounted, setLogoMounted] = useState(true);
@@ -352,7 +367,7 @@ export const MobilePlayer: React.FC<{
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                setRestarting(true);
+                setRestartPhase('kicked');
                 void restartStream();
                 scheduleHide();
               }}
