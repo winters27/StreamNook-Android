@@ -11,6 +11,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion';
 import { ArrowSquareOut, CalendarBlank, CaretRight, CheckCircle, Gift, MagnifyingGlass, Warning, X } from 'phosphor-react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileNavStore } from '../navStore';
 import { PullToRefresh } from '../ui/PullToRefresh';
@@ -191,6 +192,23 @@ function parseAdded(raw: string | null | undefined): number {
   return Number.isNaN(ms) ? 0 : ms;
 }
 
+// A pushed badge has no scraped date_added yet, but its relay enrichment
+// carries the campaign window; the window opening is an honest "how new is
+// this" stand-in, and without it a fresh badge sorts as if it were ancient.
+function enrichmentStartMs(meta: CachedBadgeMeta | undefined): number {
+  const raw = meta?.data?.enrichment?.['starts_utc'];
+  if (typeof raw !== 'string') return 0;
+  const ms = new Date(raw).getTime();
+  return Number.isNaN(ms) ? 0 : ms;
+}
+
+// Version ids are numeric strings in practice; compare them as numbers so
+// "10" beats "9", falling back to string order for anything exotic.
+function versionRank(id: string): number {
+  const n = parseInt(id, 10);
+  return Number.isNaN(n) ? 0 : n;
+}
+
 // Split a badge blurb into its parts so each gets its own treatment instead of
 // one wall of text: the earn prose, the event window line, and any
 // eligibility caveat (the "Prime subs don't count" class of parenthetical).
@@ -357,16 +375,19 @@ export const RewardsScreen: React.FC = () => {
       }
 
       const build = (metaMap: Record<string, CachedBadgeMeta>): GlobalBadge[] => {
-        const seen = new Set<string>();
-        const out: GlobalBadge[] = [];
+        // Keyed by title. The same badge genuinely repeats across sets (keep
+        // the first), but a REVISION arrives as a higher version id in the
+        // SAME set with the same title, and it must replace the original:
+        // first-wins here is how the gallery kept rendering a retired
+        // revision's window ("Ended") for a badge that had just relaunched,
+        // and why pull-to-refresh appeared to do nothing.
+        const byTitle = new Map<string, GlobalBadge>();
         for (const set of global?.data ?? []) {
           for (const v of set.versions ?? []) {
             const image = v.image_url_4x || v.image_url_2x;
             if (!v.title || !image || !set.set_id || !v.id) continue;
-            if (seen.has(v.title)) continue; // same badge repeats across sets
-            seen.add(v.title);
             const cached = metaMap[`metadata:${set.set_id}-v${v.id}`];
-            out.push({
+            const entry: GlobalBadge = {
               key: `${set.set_id}-${v.id}`,
               setId: set.set_id,
               versionId: v.id,
@@ -375,16 +396,24 @@ export const RewardsScreen: React.FC = () => {
               image,
               position:
                 typeof cached?.position === 'number' ? cached.position : Number.MAX_SAFE_INTEGER,
-              addedMs: parseAdded(cached?.data?.date_added),
+              addedMs: parseAdded(cached?.data?.date_added) || enrichmentStartMs(cached),
               usage: parseUsage(cached?.data?.usage_stats),
               status: deriveBadgeStatus(cached?.data?.more_info, cached?.data?.enrichment),
               dateInfo: formatBadgeDateInfo(cached?.data?.more_info),
               moreInfo: cached?.data?.more_info ?? '',
               infoUrl: cached?.data?.info_url ?? '',
-            });
+            };
+            const prev = byTitle.get(v.title);
+            if (
+              !prev ||
+              (prev.setId === entry.setId &&
+                versionRank(entry.versionId) > versionRank(prev.versionId))
+            ) {
+              byTitle.set(v.title, entry);
+            }
           }
         }
-        return out;
+        return [...byTitle.values()];
       };
 
       setGlobalBadges(build(meta));
@@ -436,6 +465,19 @@ export const RewardsScreen: React.FC = () => {
   useEffect(() => {
     if (tab === 'badges' && globalBadges.length === 0) void loadBadges();
   }, [tab, globalBadges.length, loadBadges]);
+
+  // Relay pushed a badge (or corrected one): the Rust side has already merged
+  // the global cache and stored the enrichment, so re-reading surfaces the new
+  // tile with its real window. Desktop's BadgesOverlay has had this listener
+  // all along; without it the phone's gallery only ever changed on remount.
+  useEffect(() => {
+    const unlisten = listen('badge-metadata-amended', () => {
+      void loadBadges();
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, [loadBadges]);
 
   const connect = async () => {
     setConnecting(true);
@@ -498,16 +540,25 @@ export const RewardsScreen: React.FC = () => {
   const sortedBadges = useMemo(() => {
     const withPos = globalBadges.filter((b) => b.position !== Number.MAX_SAFE_INTEGER).length;
     const usePositions = withPos >= globalBadges.length * 0.9 && globalBadges.length > 0;
-    const byNewest = (a: GlobalBadge, b: GlobalBadge) =>
-      (usePositions ? a.position - b.position : b.addedMs - a.addedMs) || a.key.localeCompare(b.key);
+    // Desktop rule, kept faithfully: positions only order badges that BOTH
+    // have one. A badge without a position while positions are in broad use is
+    // one the ranker has not seen yet, i.e. brand new, and comparing it by
+    // position sent it to the very bottom of Newest; dates place it honestly.
+    const byNewest = (a: GlobalBadge, b: GlobalBadge) => {
+      if (
+        usePositions &&
+        a.position !== Number.MAX_SAFE_INTEGER &&
+        b.position !== Number.MAX_SAFE_INTEGER
+      ) {
+        return a.position - b.position || a.key.localeCompare(b.key);
+      }
+      return b.addedMs - a.addedMs || a.key.localeCompare(b.key);
+    };
 
     return [...globalBadges].sort((a, b) => {
       switch (badgeSort) {
         case 'oldest':
-          return (
-            (usePositions ? b.position - a.position : a.addedMs - b.addedMs) ||
-            a.key.localeCompare(b.key)
-          );
+          return byNewest(b, a);
         case 'available': {
           const rank = (x: GlobalBadge) => (x.status === 'available' ? 1 : 0);
           return rank(b) - rank(a) || byNewest(a, b);
