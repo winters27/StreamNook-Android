@@ -241,6 +241,19 @@ export function useMobileBoot(): void {
       // scheduled work can never outlive the preference that asked for it.
       syncBackgroundChecks(notifyPrefs());
 
+      // Instant push: upload the FCM token + follow list to the notify server.
+      // Fire and forget; "no token yet" and network failures are both normal
+      // (the poll lane delivers regardless), and re-running every launch is
+      // what keeps the server's follow list current.
+      {
+        const prefs = notifyPrefs();
+        if (prefs?.enabled !== false && prefs?.push_notifications !== false) {
+          void invoke<string>('push_register')
+            .then((r) => Logger.debug('[MobileBoot] push:', r))
+            .catch((err) => Logger.debug('[MobileBoot] push register skipped:', err));
+        }
+      }
+
       // Open a channel handed over from outside the app: a tapped notification,
       // or a streamnook:// link the app was cold-started with.
       //

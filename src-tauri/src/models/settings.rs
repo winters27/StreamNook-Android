@@ -339,6 +339,9 @@ pub struct LiveNotificationSettings {
     pub background_checks: bool,
     #[serde(default = "default_background_interval")]
     pub background_interval_minutes: u32,
+    // Android push (FCM) registration. Desktop never reads it.
+    #[serde(default = "default_true")]
+    pub push_notifications: bool,
     // Channels excluded from live alerts, by login. Empty means every followed
     // channel notifies, which is the behaviour everyone already has, so an
     // upgrade changes nothing until someone opts a channel out.
@@ -385,6 +388,7 @@ impl Default for LiveNotificationSettings {
             toast_edge_offset: 72,
             background_checks: true,
             background_interval_minutes: 15,
+            push_notifications: true,
             muted_live_channels: Vec::new(),
         }
     }

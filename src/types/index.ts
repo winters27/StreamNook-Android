@@ -514,6 +514,8 @@ export interface LiveNotificationSettings {
   // closed. Desktop never reads them.
   background_checks?: boolean;
   background_interval_minutes?: number;
+  // Android instant push (FCM) registration. Desktop never reads it.
+  push_notifications?: boolean;
   // Channel logins excluded from live alerts. Empty means everything you follow
   // notifies, so an upgrade changes nothing until a channel is opted out.
   muted_live_channels?: string[];

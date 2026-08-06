@@ -434,6 +434,17 @@ class MainActivity : TauriActivity() {
       pendingChannel = it
     }
 
+    // Push token, fetched once per launch so `push_register` always has the
+    // current one on disk (onNewToken only fires on rotation). Guarded: on a
+    // device without Play services, or a build without google-services.json,
+    // this throws and push simply stays dormant behind the poll lane.
+    try {
+      com.google.firebase.messaging.FirebaseMessaging.getInstance().token
+        .addOnSuccessListener { token -> SNMessagingService.writeToken(this, token) }
+    } catch (e: Throwable) {
+      android.util.Log.i(NotifyRenderer.TAG, "push unavailable: ${e.message}")
+    }
+
     // targetSdk is 36, so the export flag is mandatory. NOT_EXPORTED keeps the
     // mute intent reachable only by our own PendingIntent.
     ContextCompat.registerReceiver(

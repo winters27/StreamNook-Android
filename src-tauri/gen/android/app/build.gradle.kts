@@ -120,9 +120,23 @@ dependencies {
     // (ExistingPeriodicWorkPolicy.UPDATE landed in 2.8.0). Revisit if the
     // project's Kotlin plugin is ever bumped past 2.0.
     implementation("androidx.work:work-runtime:2.10.5")
+    // Push receiver (FCM). Same Kotlin-metadata trap as WorkManager above:
+    // 24.x is built against a stdlib the 1.9.25 plugin can read; check before
+    // bumping to 25.x. The dependency is unconditional but inert without the
+    // google-services plugin below: FirebaseApp never initializes, every call
+    // site catches, and delivery falls back to the WorkManager poll.
+    implementation("com.google.firebase:firebase-messaging:24.1.0")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.4")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")
 }
 
 apply(from = "tauri.build.gradle.kts")
+
+// Same shape as the release keystore above: the config file is machine-local
+// (google-services.json is committed, but a stripped clone or a fork without a
+// Firebase project must still build), so the plugin only applies when it can
+// possibly work. Without it push stays dormant and the poll lane delivers.
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}

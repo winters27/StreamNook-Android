@@ -12,6 +12,7 @@
 // being told everything is fine while they receive nothing, so all three are
 // read here and each one names its own fix.
 import React, { useCallback, useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { ArrowSquareOut, BatteryCharging, BellSimple, CaretRight, Warning } from 'phosphor-react';
 import { useAppStore } from '../../stores/AppStore';
 import { NotifiedChannelsSheet } from './NotifiedChannelsSheet';
@@ -149,6 +150,13 @@ const MobileNotificationsSettings: React.FC = () => {
       };
       await updateSettings({ ...settings, live_notifications: next });
       syncBackgroundChecks(next);
+      // Push registration follows the same switches: registered while the
+      // master and push toggles are both on, dropped from the server otherwise.
+      if (next.enabled !== false && next.push_notifications !== false) {
+        void invoke('push_register').catch(() => {});
+      } else {
+        void invoke('push_unregister').catch(() => {});
+      }
     },
     [settings, updateSettings],
   );
@@ -324,6 +332,22 @@ const MobileNotificationsSettings: React.FC = () => {
                   </button>
                 </div>
               )}
+
+              <div className="flex items-center gap-3 p-3.5">
+                <div className="flex-1 min-w-0">
+                  <div className="text-[14px] text-textPrimary">Instant alerts</div>
+                  <div className="text-[12px] text-textMuted leading-snug mt-0.5">
+                    Pushed the moment a channel goes live. When off, alerts arrive on the
+                    scheduled check below.
+                  </div>
+                </div>
+                <Toggle
+                  on={prefs.push_notifications !== false}
+                  onChange={() =>
+                    void patch({ push_notifications: prefs.push_notifications === false })
+                  }
+                />
+              </div>
 
               {/* No separate background toggle: the periodic check IS the
                   delivery pipeline, app open or closed, so the master switch

@@ -28,8 +28,7 @@ object NotifyBridge {
 
   /**
    * Checks for followed channels that have gone live, returning a JSON array of
-   * notifications to post (`[]` when there is nothing to do, including the case
-   * where the app is open and its own listener will handle it).
+   * notifications to post (`[]` when there is nothing to do).
    *
    * Blocking: it makes network calls on the calling thread, so only call it from
    * a worker's coroutine, never the main thread.
@@ -39,4 +38,20 @@ object NotifyBridge {
    *   resolves to and the two disagreeing fails silently.
    */
   external fun pollOnce(baseDir: String): String
+
+  /**
+   * Atomic "may I show this broadcast?" for the push lane: evaluates the
+   * notification settings and mute list, then checks-and-records the
+   * (channel, startedAt) pair in the same state file the poll dedupes against,
+   * under one lock. True exactly once per broadcast across every lane.
+   *
+   * Fast (settings + state file IO, no network), but still not for the main
+   * thread.
+   */
+  external fun claimShow(
+    baseDir: String,
+    channelId: String,
+    startedAt: String,
+    login: String,
+  ): Boolean
 }
