@@ -2,12 +2,15 @@
 // tab; this screen renders one tab's panel with a back header. Reuses the
 // existing desktop panel components in a phone-shaped container.
 import React, { Suspense, lazy } from 'react';
-import { ArrowLeft, Bell, Database, HelpCircle, MessageSquare, Palette, PlayCircle, Sparkles } from 'lucide-react';
+import { ArrowLeft, Bell, Database, HelpCircle, MessageSquare, Palette, PlayCircle, ShieldCheck, Sparkles } from 'lucide-react';
 import { useMobileNavStore } from '../navStore';
 import { DrillInScreen } from '../ui/DrillInScreen';
 
 const PANELS: Record<string, React.LazyExoticComponent<React.ComponentType>> = {
   Player: lazy(() => import('../../components/settings/PlayerSettings')),
+  // Phone-only: the desktop app resolves playback through its plugin seam, so
+  // these settings have no desktop panel to live in.
+  'Ad-free': lazy(() => import('./AdFreeSettings')),
   Chat: lazy(() => import('../../components/settings/ChatSettings')),
   Theme: lazy(() => import('../../components/settings/ThemeSettings')),
   // Mobile gets its own notifications panel: the desktop one configures
@@ -30,6 +33,12 @@ export const SETTINGS_ROWS: {
   description: string;
 }[] = [
   { id: 'Player', label: 'Player', icon: PlayCircle, description: 'Video quality, latency, and behavior' },
+  {
+    id: 'Ad-free',
+    label: 'Ad-free',
+    icon: ShieldCheck,
+    description: 'How streams are served and which relays are used',
+  },
   { id: 'Chat', label: 'Chat', icon: MessageSquare, description: 'Chat design and behavior' },
   { id: 'Theme', label: 'Theme', icon: Palette, description: 'Color theme, glass, and fonts' },
   {
