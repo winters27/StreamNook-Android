@@ -91,6 +91,17 @@ pub struct VideoPlayerSettings {
     /// and governor target. Default 2.5.
     #[serde(default = "default_ll_target_latency")]
     pub ll_target_latency: f32,
+    /// Ad-free live playback (Android). Routes the playlist through a public
+    /// relay and strips ad segments out of what the player is served. On by
+    /// default, matching the behavior the phone app shipped with through 7.8.6.
+    /// Read only by the Android build; desktop resolves through its plugin
+    /// seam and ignores this.
+    #[serde(default = "default_true")]
+    pub ad_bypass_enabled: bool,
+    /// Relay bases to prefer, comma or newline separated. Empty means the
+    /// bundled pool, which is what almost everyone should use.
+    #[serde(default)]
+    pub ad_bypass_proxies: String,
 }
 
 fn default_ll_target_latency() -> f32 {
@@ -110,6 +121,8 @@ impl Default for VideoPlayerSettings {
             audio_boost: AudioBoostSettings::default(),
             experimental_low_latency: false,
             ll_target_latency: 6.0,
+            ad_bypass_enabled: true,
+            ad_bypass_proxies: String::new(),
         }
     }
 }
