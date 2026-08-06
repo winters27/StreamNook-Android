@@ -146,16 +146,25 @@ export const WatchScreen: React.FC = () => {
   // effect that waits for the chat channel to resolve — so without this the
   // layer MOUNTED as the mini box, showed the loading logo in it, then
   // animated up to full: tapping a stream card is not a request for a mini
-  // box. A ref plus render-time derivation, so no wrong first frame exists to
-  // animate away from.
-  const wasShowing = useRef(false);
-  const freshOpen = show && !wasShowing.current;
+  // box. Render-time state adjustment (the drill-in screens' pattern), and
+  // `forceFull` holds until the nav store has actually caught up, so no
+  // committed frame ever derives mini from the stale mode.
+  const [prevShow, setPrevShow] = useState(false);
+  const [forceFull, setForceFull] = useState(false);
+  if (show && !prevShow) {
+    setPrevShow(true);
+    setForceFull(true);
+  } else if (!show && prevShow) {
+    setPrevShow(false);
+    setForceFull(false);
+  } else if (forceFull && playerMode === 'full') {
+    setForceFull(false);
+  }
   useEffect(() => {
-    wasShowing.current = show;
-    if (freshOpen) setPlayerMode('full');
-  }, [show, freshOpen, setPlayerMode]);
+    if (forceFull) setPlayerMode('full');
+  }, [forceFull, setPlayerMode]);
 
-  const mini = (freshOpen ? 'full' : playerMode) === 'mini';
+  const mini = !forceFull && playerMode === 'mini';
   const watching = !!streamUrl && streamUrl !== 'offline';
   const channelId = currentStream?.user_id;
 
