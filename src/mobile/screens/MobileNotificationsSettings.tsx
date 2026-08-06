@@ -60,12 +60,12 @@ const TOGGLES: {
   // the toggle offered control over something that could never happen. The
   // setting itself still exists and desktop still uses it; it just is not
   // advertised here.
-  {
-    key: 'show_channel_points_notifications',
-    channel: NOTIFY_CHANNEL.points,
-    label: 'Channel points',
-    description: 'Bonus chests collected while the app is in the background',
-  },
+  //
+  // No Channel points row either. The composer's "+N" float covers the app
+  // being open, and a backgrounded WebView cannot poll, so the only state the
+  // old notification could actually fire in was picture-in-picture, where it
+  // flooded the shade. The OS channel id stays reserved in case the Rust watch
+  // heartbeat ever reports credits itself.
 ];
 
 const INTERVALS = [15, 30, 60];
@@ -298,7 +298,7 @@ const MobileNotificationsSettings: React.FC = () => {
           </div>
 
           <div>
-            <SectionLabel>While StreamNook is closed</SectionLabel>
+            <SectionLabel>Background checking</SectionLabel>
             <div className="glass-panel divide-y divide-borderSubtle">
               {/* Battery first, deliberately. Android withholds network from
                   background work entirely once an app it considers unused drops
@@ -325,47 +325,34 @@ const MobileNotificationsSettings: React.FC = () => {
                 </div>
               )}
 
-              <div className="flex items-center gap-3 p-3.5">
-                <div className="flex-1 min-w-0">
-                  <div className="text-[14px] text-textPrimary">Check in the background</div>
-                  <div className="text-[12px] text-textMuted leading-snug mt-0.5">
-                    Look for channels going live and new badges even when StreamNook is not open.
-                  </div>
+              {/* No separate background toggle: the periodic check IS the
+                  delivery pipeline, app open or closed, so the master switch
+                  above is the only honest control. A second toggle here meant
+                  "notifications on" could silently deliver nothing. */}
+              <div className="p-3.5">
+                <div className="text-[14px] text-textPrimary mb-0.5">How often to check</div>
+                <div className="text-[12px] text-textMuted leading-snug mb-2.5">
+                  Checking less often uses less battery. Android may still wait longer than this.
                 </div>
-                <Toggle
-                  on={prefs.background_checks !== false}
-                  onChange={() =>
-                    void patch({ background_checks: prefs.background_checks === false })
-                  }
-                />
+                <div className="flex gap-2">
+                  {INTERVALS.map((m) => {
+                    const active = (prefs.background_interval_minutes ?? 15) === m;
+                    return (
+                      <button
+                        key={m}
+                        onClick={() => void patch({ background_interval_minutes: m })}
+                        className={`flex-1 sn-touch rounded-lg py-2 text-[13px] transition-colors ${
+                          active
+                            ? 'bg-accent text-white font-semibold'
+                            : 'bg-surface text-textSecondary'
+                        }`}
+                      >
+                        {m} min
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-
-              {prefs.background_checks !== false && (
-                <div className="p-3.5">
-                  <div className="text-[14px] text-textPrimary mb-0.5">How often</div>
-                  <div className="text-[12px] text-textMuted leading-snug mb-2.5">
-                    Checking less often uses less battery. Android may still wait longer than this.
-                  </div>
-                  <div className="flex gap-2">
-                    {INTERVALS.map((m) => {
-                      const active = (prefs.background_interval_minutes ?? 15) === m;
-                      return (
-                        <button
-                          key={m}
-                          onClick={() => void patch({ background_interval_minutes: m })}
-                          className={`flex-1 sn-touch rounded-lg py-2 text-[13px] transition-colors ${
-                            active
-                              ? 'bg-accent text-white font-semibold'
-                              : 'bg-surface text-textSecondary'
-                          }`}
-                        >
-                          {m} min
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
             </div>
           </div>
         </>

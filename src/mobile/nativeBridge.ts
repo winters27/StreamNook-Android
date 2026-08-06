@@ -20,6 +20,7 @@ interface SNBridge {
   requestIgnoreBatteryOptimizations?(): void;
   scheduleBackgroundChecks?(intervalMinutes: number): void;
   cancelBackgroundChecks?(): void;
+  runNotifyCheckNow?(): void;
   consumePendingChannel?(): string;
 }
 
@@ -237,6 +238,15 @@ export function scheduleBackgroundChecks(intervalMinutes: number): void {
 export function cancelBackgroundChecks(): void {
   try {
     bridge()?.cancelBackgroundChecks?.();
+  } catch {
+    /* bridge absent */
+  }
+}
+
+/** One immediate notification poll; the periodic slot may be minutes away. */
+export function runNotifyCheckNow(): void {
+  try {
+    bridge()?.runNotifyCheckNow?.();
   } catch {
     /* bridge absent */
   }

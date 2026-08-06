@@ -17,7 +17,7 @@
 // value while hidden; the audio is not.
 import { refreshEntitlementRegistries } from '../services/supabaseService';
 import { refreshFollowingIfStale } from './followRefresh';
-import { isInPip } from './nativeBridge';
+import { isInPip, runNotifyCheckNow } from './nativeBridge';
 import { setBackgrounded } from './backgroundGate';
 import { Logger } from '../utils/logger';
 
@@ -26,6 +26,13 @@ let installed = false;
 // When the app went into the background, so returning knows how long it was
 // gone. See the chat rebuild in onVisible for why the duration matters.
 let hiddenSince = 0;
+
+// Foreground returns also kick one immediate notification poll (the periodic
+// slot can be most of its interval away, and the user is looking at the phone
+// right now), throttled so rapid app-switching and PiP exits do not each cost
+// a network round trip.
+const NOTIFY_KICK_MIN_GAP_MS = 5 * 60 * 1000;
+let lastNotifyKick = 0;
 
 // How long away before chat is assumed dead on return.
 //
@@ -67,6 +74,11 @@ async function onHidden(): Promise<void> {
 
 async function onVisible(): Promise<void> {
   setBackgrounded(false);
+  const now = Date.now();
+  if (now - lastNotifyKick >= NOTIFY_KICK_MIN_GAP_MS) {
+    lastNotifyKick = now;
+    runNotifyCheckNow();
+  }
   try {
     const { startBadgeFeed } = await import('../services/badgeSocketService');
     startBadgeFeed();

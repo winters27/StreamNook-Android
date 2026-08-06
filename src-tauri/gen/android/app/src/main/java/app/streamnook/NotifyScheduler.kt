@@ -3,7 +3,9 @@ package app.streamnook
 import android.content.Context
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import java.util.concurrent.TimeUnit
@@ -46,5 +48,31 @@ object NotifyScheduler {
 
   fun cancel(context: Context) {
     WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
+  }
+
+  /**
+   * One immediate run of the same worker, for the moment the app comes back to
+   * the foreground: the periodic slot may be most of its interval away, and the
+   * user is looking at the phone right now.
+   *
+   * Same worker, same state file, so it structurally cannot double-post. KEEP
+   * coalesces a burst of resumes into one pending run. Plain work rather than
+   * expedited on purpose: pre-Android-12 expedited work runs as a foreground
+   * service and throws without a getForegroundInfo implementation, while a
+   * plain one-shot in the Active bucket starts within seconds anyway.
+   */
+  fun runOnce(context: Context) {
+    val request = OneTimeWorkRequestBuilder<NotifyWorker>()
+      .setConstraints(
+        Constraints.Builder()
+          .setRequiredNetworkType(NetworkType.CONNECTED)
+          .build()
+      )
+      .build()
+    WorkManager.getInstance(context).enqueueUniqueWork(
+      "${WORK_NAME}_now",
+      ExistingWorkPolicy.KEEP,
+      request,
+    )
   }
 }

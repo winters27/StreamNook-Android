@@ -378,6 +378,12 @@ class MainActivity : TauriActivity() {
       NotifyScheduler.cancel(this@MainActivity)
     }
 
+    /** One immediate poll, fired when the app returns to the foreground. */
+    @JavascriptInterface
+    fun runNotifyCheckNow() {
+      NotifyScheduler.runOnce(this@MainActivity)
+    }
+
     /**
      * Channel login from a tapped notification, or "" if there is none.
      *

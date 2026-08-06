@@ -510,7 +510,6 @@ pub fn run() {
             // its `ad-pivot` reload event to the player.
             services::stream_server::set_app_handle(app_handle.clone());
             services::providers::set_app_handle(app_handle.clone());
-            let live_notif_service = live_notification_service.clone();
 
             // Start the shared 7TV EventAPI WebSocket client (live emote set
             // updates, and later cosmetics). It idle-connects and subscribes
@@ -608,7 +607,9 @@ pub fn run() {
                 watch_heartbeat,
             };
 
-            // Clone the app_state before managing it
+            // Clone the app_state before managing it (only the desktop live
+            // notification spawn below consumes it)
+            #[cfg(not(target_os = "android"))]
             let app_state_for_live_notif = app_state.clone();
 
             // Manage AppState directly, not wrapped in Arc
@@ -631,14 +632,20 @@ pub fn run() {
                     .await;
             });
 
-            // Start live notification service
-            let live_app_handle = app_handle.clone();
-            let app_state_for_live_notif_clone = app_state_for_live_notif.clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = live_notif_service.start(live_app_handle, app_state_for_live_notif_clone).await {
-                    error!("Failed to start live notification service: {}", e);
-                }
-            });
+            // Start live notification service. Desktop only: on Android the
+            // WorkManager worker (android_notify.rs) is the single delivery
+            // lane, and this unthrottled 60s poll is exactly the background
+            // churn it replaces.
+            #[cfg(not(target_os = "android"))]
+            {
+                let live_notif_service = live_notification_service.clone();
+                let live_app_handle = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = live_notif_service.start(live_app_handle, app_state_for_live_notif).await {
+                        error!("Failed to start live notification service: {}", e);
+                    }
+                });
+            }
 
             // Badge-drop detection now lives server-side on the Penrose bot and
             // is delivered to the app over the badge WebSocket feed (started on
@@ -777,8 +784,6 @@ pub fn run() {
             twitch_login_plugin::close_mobile_login,
             #[cfg(target_os = "android")]
             twitch_login_plugin::get_mobile_login_cookies,
-            #[cfg(target_os = "android")]
-            android_notify::notify_hot_ping,
             #[cfg(desktop)]
             ensure_main_window,
             #[cfg(desktop)]

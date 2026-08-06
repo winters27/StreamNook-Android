@@ -198,6 +198,27 @@ export interface SystemNotification {
   icon?: string;
   /** Which OS category this belongs to. Omit only for one-off diagnostics. */
   channelId?: NotifyChannelId;
+  /**
+   * Stable notification id. Omitted, the plugin picks a RANDOM id, so a repeat
+   * of the same news stacks a duplicate row; with a stable id it replaces.
+   * Derive it with `stableNotifyId` from the same key the background worker
+   * hashes for its ids.
+   */
+  id?: number;
+}
+
+/**
+ * Java `String.hashCode` over UTF-16 units. Matching Java is the point: the
+ * background worker ids its notifications with `channelId.hashCode()` in
+ * Kotlin, so hashing the same key here lands both lanes on the same id and a
+ * cross-lane repeat degrades to a replace instead of a duplicate.
+ */
+export function stableNotifyId(key: string): number {
+  let h = 0;
+  for (let i = 0; i < key.length; i++) {
+    h = (Math.imul(h, 31) + key.charCodeAt(i)) | 0;
+  }
+  return h;
 }
 
 /**
@@ -208,8 +229,11 @@ export interface SystemNotification {
  * calling this more often than necessary is free.
  */
 export function syncBackgroundChecks(prefs: Partial<LiveNotificationSettings> | undefined): void {
-  const wanted = prefs?.enabled !== false && prefs?.background_checks !== false;
-  if (wanted) {
+  // The worker is the single delivery lane, so the master switch is the only
+  // thing that turns it off. (`background_checks` is retired: with one lane,
+  // "notifications on but background checks off" would silently mean no
+  // notifications at all while the UI implied otherwise.)
+  if (prefs?.enabled !== false) {
     scheduleBackgroundChecks(prefs?.background_interval_minutes ?? 15);
   } else {
     cancelBackgroundChecks();
@@ -220,6 +244,7 @@ export async function postSystemNotification(n: SystemNotification): Promise<voi
   try {
     await invoke('plugin:notification|notify', {
       options: {
+        id: n.id,
         title: n.title,
         body: n.body,
         largeBody: n.largeBody,

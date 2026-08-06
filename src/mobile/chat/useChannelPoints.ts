@@ -26,7 +26,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
-import { NOTIFY_CHANNEL, postSystemNotification } from '../notifications';
 import { Logger } from '../../utils/logger';
 import { isBackgrounded } from '../backgroundGate';
 
@@ -89,28 +88,19 @@ export function useChannelPoints(
   const refresh = useCallback(() => setNonce((n) => n + 1), []);
   const clearGain = useCallback(() => setGain(null), []);
 
-  // Single choke point for every credit, from either source, so the float and
-  // the notification cannot disagree about what was earned.
+  // Single choke point for every credit, from either source, so a chest can
+  // never be reported twice.
   //
-  // The notification fires only while the app is hidden: with it open the
-  // composer already shows the balance and floats the amount, so a shade entry
-  // would be the same news twice. It is also best-effort by nature, since this
-  // is a foreground poll and Android throttles or freezes WebView timers in the
-  // background. Reliable background points alerts would need the Rust watch
-  // heartbeat to report credits itself.
+  // Float only, no system notification. The old hidden-only notification could
+  // in practice fire ONLY in picture-in-picture (the one state that is
+  // `hidden` while this poll still runs), where it flooded the shade with a
+  // "+N" every poll. Foreground has the float, and a truly backgrounded shell
+  // never reaches this code; honest background points alerts would need the
+  // Rust watch heartbeat to report credits itself.
   const noteGain = useCallback((amount: number) => {
     if (amount <= 0) return;
     gainSeq.current += 1;
     setGain({ id: gainSeq.current, amount });
-    if (
-      document.visibilityState === 'hidden' &&
-      useAppStore.getState().settings.live_notifications?.show_channel_points_notifications !== false
-    ) {
-      void postSystemNotification({
-        title: `+${amount.toLocaleString()} channel points`,
-        channelId: NOTIFY_CHANNEL.points,
-      });
-    }
   }, []);
 
   // Collecting the chest. The command returns the exact credited amount with
@@ -235,7 +225,16 @@ export function useChannelPoints(
     if (!fresh?.claimId || !channelId || !channelLogin) return;
     void (async () => {
       const earned = await claim(fresh.claimId!, channelId, channelLogin);
-      if (earned > 0) noteGain(earned);
+      if (earned > 0) {
+        noteGain(earned);
+        // Same baseline bump as the auto path: refresh() re-reads the balance,
+        // and without moving the baseline past the claim first, that read sees
+        // the claimed amount as a fresh delta and floats it a second time.
+        const base = lastBalance.current;
+        if (base && base.login === channelLogin) {
+          lastBalance.current = { login: channelLogin, balance: base.balance + earned };
+        }
+      }
       refresh();
     })();
   }, [fresh?.claimId, channelId, channelLogin, claim, noteGain, refresh]);

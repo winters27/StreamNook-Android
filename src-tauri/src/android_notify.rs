@@ -28,12 +28,6 @@ use crate::services::app_paths;
 use crate::services::cache_service;
 use crate::services::twitch_service::TwitchService;
 
-/// How recently the foreground path must have checked in for this poll to stand
-/// down. The web shell pings every 60s while its WebView is alive, so anything
-/// inside two minutes means the in-app listener is live and would post the same
-/// notification.
-const HOT_LANE_WINDOW_SECS: i64 = 120;
-
 /// Notified channels are remembered this long. Long enough that a channel which
 /// drops off the followed-live list and returns is not announced twice, short
 /// enough that the file cannot grow without bound.
@@ -251,41 +245,6 @@ fn read_settings() -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null)
 }
 
-/// The heartbeat lives in its own file, deliberately.
-///
-/// It shares nothing with `notify_state.json` because the two have different
-/// writers: the foreground shell pings every 60s while the worker owns the
-/// `shown` map. Keeping the timestamp in the same file means a read-modify-write
-/// from each side, and a ping landing between the worker's read and its write
-/// would silently drop every entry the worker had just recorded — which shows up
-/// as duplicate notifications, a long way from the cause. Separate files make
-/// the race structurally impossible rather than unlikely.
-fn ping_path() -> Option<PathBuf> {
-    cache_service::get_app_data_dir()
-        .ok()
-        .map(|d| d.join("notify_ping"))
-}
-
-fn read_hot_ping() -> i64 {
-    ping_path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| s.trim().parse::<i64>().ok())
-        .unwrap_or(0)
-}
-
-/// Record that the foreground path is alive, so the worker stands down.
-///
-/// Called from the web shell on an interval and on visibility change. The
-/// worker runs in the app's own process, so with the process cached but the
-/// WebView gone the Rust poll is still running and emitting into nothing while
-/// the worker also fires; this is what keeps exactly one of them delivering.
-#[tauri::command]
-pub fn notify_hot_ping() {
-    if let Some(path) = ping_path() {
-        let _ = std::fs::write(path, now_secs().to_string());
-    }
-}
-
 /// Liveness probe, called from `app.streamnook.NotifyBridge.ping`.
 ///
 /// Kept after the spike it was written for: it isolates "the library loaded and
@@ -344,6 +303,9 @@ pub extern "system" fn Java_app_streamnook_NotifyBridge_pollOnce<'local>(
         // never completed a first run, so there is nothing to poll for anyway.
         return empty(&mut env);
     };
+    // The heartbeat file is retired (this worker no longer stands down for a
+    // running app); clear any leftover from builds that wrote it.
+    let _ = std::fs::remove_file(base.join("StreamNook").join("notify_ping"));
     // OnceLock, first write wins. Harmless whether or not the app already set
     // it, since both sides end up at the same directory.
     app_paths::set_base(base);
@@ -502,13 +464,11 @@ fn notif_flag(settings: &serde_json::Value, name: &str) -> bool {
 /// categories get added later.
 async fn collect_all() -> Vec<OutItem> {
     let settings = read_settings();
-    if !notif_flag(&settings, "enabled") || !notif_flag(&settings, "background_checks") {
-        return Vec::new();
-    }
-    if now_secs() - read_hot_ping() < HOT_LANE_WINDOW_SECS {
-        // The app is open and its own listeners will post these. Checked before
-        // any state file is read, so this path touches nothing the foreground
-        // side could be writing.
+    // The single master switch. This worker is the only delivery lane whether
+    // the app is open or not, so there is deliberately no "app is awake, stand
+    // down" check anymore: the started_at dedupe below is what prevents a
+    // double, not lane arbitration.
+    if !notif_flag(&settings, "enabled") {
         return Vec::new();
     }
 

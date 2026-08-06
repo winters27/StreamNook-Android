@@ -36,9 +36,9 @@ import {
   ensureNotificationPermission,
   getNotificationPermission,
   postSystemNotification,
+  stableNotifyId,
   syncBackgroundChecks,
 } from '../notifications';
-import { isChannelMuted } from '../notifyChannels';
 import { consumePendingChannel } from '../nativeBridge';
 import { Logger } from '../../utils/logger';
 
@@ -55,6 +55,16 @@ export function useMobileBoot(): void {
       } catch (e) {
         Logger.warn(`[MobileBoot] Failed to set up listener for ${event}:`, e);
       }
+    };
+
+    // Same unmount discipline for everything that is not a Tauri listener.
+    // initialize() awaits between registrations, so a cleanup pushed after the
+    // effect tore down would land in an array nobody iterates again; running it
+    // immediately instead is what stops a dead effect leaking timers and
+    // subscriptions.
+    const addCleanup = (fn: () => void) => {
+      if (isMounted) cleanupFunctions.push(fn);
+      else fn();
     };
 
     const initialize = async () => {
@@ -231,27 +241,6 @@ export function useMobileBoot(): void {
       // scheduled work can never outlive the preference that asked for it.
       syncBackgroundChecks(notifyPrefs());
 
-      // Tell the background poll the foreground path is alive.
-      //
-      // Both run in the same process, so with the process cached but the WebView
-      // gone the Rust poll is still emitting into nothing while the worker also
-      // fires. The worker stands down while these pings are recent, which is
-      // what keeps exactly one of them delivering. Timers are throttled in the
-      // background, and that is the point: pings stopping IS the handover.
-      const ping = () => {
-        void invoke('notify_hot_ping').catch(() => {});
-      };
-      ping();
-      const pingTimer = window.setInterval(ping, 60_000);
-      const onPingVisibility = () => {
-        if (document.visibilityState === 'visible') ping();
-      };
-      document.addEventListener('visibilitychange', onPingVisibility);
-      cleanupFunctions.push(() => {
-        window.clearInterval(pingTimer);
-        document.removeEventListener('visibilitychange', onPingVisibility);
-      });
-
       // Open a channel handed over from outside the app: a tapped notification,
       // or a streamnook:// link the app was cold-started with.
       //
@@ -276,39 +265,30 @@ export function useMobileBoot(): void {
           .catch(() => {});
       }
 
-      await addListener<{
-        streamer_name: string;
-        streamer_login?: string;
-        game_name?: string;
-        stream_title?: string;
-        streamer_avatar?: string;
-        is_test?: boolean;
-      }>('streamer-went-live', (event) => {
-        const n = event.payload;
-        if (notifyPrefs()?.show_live_notifications === false) return;
-        // Per-channel opt-out. Checked here as well as in the background poll,
-        // since either can be the one that sees a channel go live.
-        if (n.streamer_login && isChannelMuted(n.streamer_login)) return;
-        // No avatar. The plugin resolves both of its icon fields as drawable
-        // RESOURCE NAMES, so the streamer avatar URL that used to be passed
-        // here resolved to nothing and was silently dropped. Showing a remote
-        // image needs a NotificationCompat call that fetches the bitmap, which
-        // only the background worker does.
-        void postSystemNotification({
-          title: `${n.streamer_name} is live`,
-          body: n.stream_title || (n.game_name ? `Playing ${n.game_name}` : undefined),
-          channelId: NOTIFY_CHANNEL.live,
-        });
-      });
+      // No `streamer-went-live` listener here anymore, on purpose. The
+      // WorkManager poll (android_notify.rs) is the ONLY live-alert lane, app
+      // open or closed: it has the persistent started_at dedupe and the stable
+      // notification ids this listener never had, and the Rust 60s poll that
+      // fed this event no longer runs on Android at all.
 
       // Badges arrive as an ARRAY, since the scanner can surface several at
-      // once. One notification each; there are rarely more than a couple.
+      // once. One notification each; there are rarely more than a couple. The
+      // id is the same key the background worker hashes, so however many lanes
+      // see a badge, the shade holds one row for it.
       await addListener<
-        Array<{ badge_name: string; badge_image_url?: string; badge_description?: string }>
+        Array<{
+          badge_set_id?: string;
+          badge_version?: string;
+          badge_name: string;
+          badge_image_url?: string;
+          badge_description?: string;
+        }>
       >('badge-notification', (event) => {
-        if (notifyPrefs()?.show_badge_notifications === false) return;
+        const prefs = notifyPrefs();
+        if (prefs?.enabled === false || prefs?.show_badge_notifications === false) return;
         for (const badge of event.payload ?? []) {
           void postSystemNotification({
+            id: stableNotifyId(`badge:${badge.badge_set_id}-v${badge.badge_version}`),
             title: `New badge: ${badge.badge_name}`,
             body: badge.badge_description,
             channelId: NOTIFY_CHANNEL.badges,
@@ -317,7 +297,8 @@ export function useMobileBoot(): void {
       });
 
       await addListener<{ drop_name?: string; campaign_name?: string }>('drop-ready', (event) => {
-        if (notifyPrefs()?.show_drops_notifications === false) return;
+        const prefs = notifyPrefs();
+        if (prefs?.enabled === false || prefs?.show_drops_notifications === false) return;
         const d = event.payload;
         void postSystemNotification({
           title: 'Drop ready to claim',
@@ -329,7 +310,8 @@ export function useMobileBoot(): void {
       await addListener<{ benefit_name?: string; campaign_name?: string }>(
         'drop-claimed',
         (event) => {
-          if (notifyPrefs()?.show_drops_notifications === false) return;
+          const prefs = notifyPrefs();
+          if (prefs?.enabled === false || prefs?.show_drops_notifications === false) return;
           const d = event.payload;
           void postSystemNotification({
             title: 'Drop claimed',
@@ -353,7 +335,7 @@ export function useMobileBoot(): void {
             presenceAuthed ? presenceUser?.display_name : undefined,
             undefined,
           );
-          if (cleanupPresence) cleanupFunctions.push(cleanupPresence);
+          if (cleanupPresence) addCleanup(cleanupPresence);
         } catch (e) {
           Logger.warn('[MobileBoot] presence failed:', e);
         }
@@ -361,7 +343,7 @@ export function useMobileBoot(): void {
         const cleanupRegistry = subscribeToStreamNookRegistry();
         const cleanupCosmetics = subscribeToCosmeticsRegistry();
         const cleanupAtmospheres = subscribeToAtmospheresRegistry();
-        cleanupFunctions.push(() => {
+        addCleanup(() => {
           cleanupRegistry?.();
           cleanupCosmetics?.();
           cleanupAtmospheres?.();
@@ -376,15 +358,18 @@ export function useMobileBoot(): void {
           refreshEntitlementRegistries();
         };
         document.addEventListener('visibilitychange', onVisible);
-        cleanupFunctions.push(() =>
+        addCleanup(() =>
           document.removeEventListener('visibilitychange', onVisible),
         );
       }
     };
     void initialize();
 
-    // Periodic auth recheck: keeps tokens fresh across long sessions.
+    // Periodic auth recheck: keeps tokens fresh across long sessions. Skipped
+    // while hidden; a backgrounded shell has nothing to do with a fresh token,
+    // and the next visible tick (or the boot check on relaunch) covers it.
     const authInterval = setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
       void useAppStore.getState().checkAuthStatus();
     }, 5 * 60 * 1000);
     cleanupFunctions.push(() => clearInterval(authInterval));
