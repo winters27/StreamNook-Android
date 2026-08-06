@@ -135,6 +135,51 @@ function enqueueCosmeticUpdate(userId: string, paint: any, seventvBadge: any) {
   scheduleStoreFlush();
 }
 
+// ── Mobile fast-path upsert coalescer ────────────────────────────────────────
+// The addUser fast path fires on essentially EVERY chat message once a user's
+// cosmetics resolve, and it used to clone `users` AND `usernameToId` each time:
+// at the 1500-user mobile cap in a busy chat that is thousands of 3000-entry
+// map copies a minute, all on the same thread that answers taps. That is the
+// mechanism behind "the longer you watch, the less the app responds — but
+// scrolling still works": scrolling is compositor-side, tap handling is JS.
+//
+// A microtask coalescer (like the cosmetic one above) cannot help here because
+// each IRC message arrives in its own task; this one batches on a short timer
+// instead. Everything the fast path writes is freshness metadata (lastSeen,
+// current color), so a quarter-second of staleness is invisible, and the flush
+// is skip-if-missing so it can never resurrect a user that eviction or a
+// channel switch removed between enqueue and flush.
+const pendingUserUpserts = new Map<string, ChatUser>();
+let userUpsertTimer: ReturnType<typeof setTimeout> | null = null;
+const USER_UPSERT_FLUSH_MS = 250;
+
+function flushUserUpserts() {
+  userUpsertTimer = null;
+  if (pendingUserUpserts.size === 0) return;
+  const batch = new Map(pendingUserUpserts);
+  pendingUserUpserts.clear();
+  useChatUserStore.setState((state) => {
+    const newUsers = new Map(state.users);
+    const newUsernameToId = new Map(state.usernameToId);
+    let touched = false;
+    for (const [uid, u] of batch) {
+      const current = newUsers.get(uid);
+      if (!current) continue; // evicted or channel-switched away; slow path re-adds
+      newUsers.set(uid, { ...current, ...u });
+      newUsernameToId.set(u.username.toLowerCase(), uid);
+      touched = true;
+    }
+    return touched ? { users: newUsers, usernameToId: newUsernameToId } : state;
+  });
+}
+
+function enqueueUserUpsert(userId: string, user: ChatUser) {
+  pendingUserUpserts.set(userId, user);
+  if (userUpsertTimer === null) {
+    userUpsertTimer = setTimeout(flushUserUpserts, USER_UPSERT_FLUSH_MS);
+  }
+}
+
 // ── StreamNook third-party badge loadout ─────────────────────────────────────
 // Same once-per-user, read-synchronously contract as the 7TV cosmetics above,
 // but sourced from the Identity API's resolved bundle (the member's curated
@@ -529,6 +574,16 @@ export const useChatUserStore = create<ChatUserStore>((set, get) => ({
       existingUser !== undefined &&
       (existingUser.paint !== undefined || existingUser.seventvBadge !== undefined);
     if (cosmeticsResolved) {
+      if (IS_MOBILE) {
+        // See the coalescer above: one batched clone per quarter second instead
+        // of two full map clones per message.
+        enqueueUserUpsert(user.userId, {
+          ...existingUser!,
+          ...user,
+          lastSeen: Date.now(),
+        });
+        return;
+      }
       set((state) => {
         const newUsers = new Map(state.users);
         const newUsernameToId = new Map(state.usernameToId);
@@ -650,6 +705,9 @@ export const useChatUserStore = create<ChatUserStore>((set, get) => ({
     // so drop the resolved-guard too: a chatter reappearing in the next channel
     // re-resolves cleanly instead of being skipped with no badges.
     thirdPartyNonMemberResolved.clear();
+    // Upserts queued for the channel being left would only be skipped at flush
+    // time anyway (their users are gone); clearing saves the no-op pass.
+    pendingUserUpserts.clear();
     // The atmosphere / Cologne theme cache deliberately PERSISTS across channels:
     // a member's wash paints instantly when they reappear instead of re-fetching
     // every switch. It is kept fresh by the live theme bridge below (a push on any
