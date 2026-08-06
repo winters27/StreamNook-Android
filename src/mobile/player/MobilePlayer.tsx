@@ -164,9 +164,12 @@ export const MobilePlayer: React.FC<{
         playsInline
         autoPlay
         // A <video> with no poster gets Android WebView's own grey play-triangle
-        // placeholder until the first frame decodes. A 1x1 transparent poster
+        // placeholder until the first frame decodes. A transparent poster
         // suppresses it, so what shows before playback is our logo below.
-        poster="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+        // 16x9, not 1x1: pre-metadata the element takes its intrinsic ratio
+        // from the poster, and a square one made the loading band render
+        // square before lurching to 16:9 at first frame (see playerBandClass).
+        poster="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 9' width='16' height='9'/%3E"
       />
 
       {logoMounted && (

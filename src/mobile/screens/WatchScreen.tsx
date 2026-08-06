@@ -544,7 +544,12 @@ export const WatchScreen: React.FC = () => {
           //
           // z-10, below the chat header's z-20: the pinned card and drop bar
           // float ON the cast rather than being washed by it.
-          `w-full relative shrink-0 z-10 border-b border-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] shadow-[0_3px_8px_-2px_color-mix(in_srgb,var(--color-accent)_10%,transparent),0_8px_18px_-8px_color-mix(in_srgb,var(--color-accent)_6%,transparent)] ${
+          // min-h-0 is load-bearing: without it the flex item's min-height:auto
+          // lets the CONTENT overrule aspect-video. The video's 1x1 placeholder
+          // poster gives it a SQUARE intrinsic ratio until metadata arrives, so
+          // the loading band rendered w-full x w-full and then lurched down to
+          // 16:9 on the first frame (measured on device: 361px -> 204px).
+          `w-full relative shrink-0 min-h-0 z-10 border-b border-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] shadow-[0_3px_8px_-2px_color-mix(in_srgb,var(--color-accent)_10%,transparent),0_8px_18px_-8px_color-mix(in_srgb,var(--color-accent)_6%,transparent)] ${
             resizable ? '' : 'aspect-video'
           }`;
 
@@ -662,11 +667,14 @@ export const WatchScreen: React.FC = () => {
             <>
               {/* Swallow player taps so the whole box reads as one control. */}
               <div className="absolute inset-0 z-10" />
-              {/* The visible circle stays 28px; the BUTTON is 44px, Android's
-                  minimum comfortable target. The old 28px hit box was why
-                  closing the mini player took two or three tries. */}
+              {/* The ENTIRE top-right quadrant of the mini box closes. A
+                  corner-hugging circle on a small floating box fails twice
+                  over: half the finger pad spills outside the box (the layer
+                  clips, so those taps hit whatever is underneath), and the rest
+                  competes with the expand surface. 56px is the box's full
+                  height-half, and the 32px circle just marks where it lives. */}
               <button
-                className="absolute top-0 right-0 z-20 w-11 h-11 flex items-center justify-center"
+                className="absolute top-0 right-0 z-20 w-14 h-14 flex items-start justify-end p-1.5"
                 aria-label="Close stream"
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
@@ -674,8 +682,8 @@ export const WatchScreen: React.FC = () => {
                   void exitStream();
                 }}
               >
-                <span className="w-7 h-7 rounded-full bg-black/60 flex items-center justify-center text-white">
-                  <X size={14} weight="bold" />
+                <span className="w-8 h-8 rounded-full bg-black/60 flex items-center justify-center text-white">
+                  <X size={16} weight="bold" />
                 </span>
               </button>
             </>
