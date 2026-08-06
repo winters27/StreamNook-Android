@@ -8,7 +8,7 @@
 //!
 //! Guardrails carried over from 7.8.6: fire only on a debounced confirmation
 //! (one unlucky poll is not an ad window), and hold a cooldown afterwards so a
-//! slow connection can't be thrashed. Only a relayed stream ever arms this —
+//! slow connection can't be thrashed. Only a relayed stream ever arms this:
 //! an entitled or direct stream has nowhere else to go.
 
 use log::{error, info, warn};

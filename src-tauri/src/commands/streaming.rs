@@ -225,16 +225,37 @@ pub async fn start_stream(
 
     // A resolution-owning plugin takes the non-entitled case when installed;
     // otherwise (or when it declines or fails) the core resolution serves.
-    let r = match resolve_via_plugin(
+    let resolved = resolve_via_plugin(
         &state,
         crate::services::stream_server::SOLO_STREAM_ID,
         &channel,
         &quality,
         &core,
     )
-    .await
-    {
-        Some(plugin_resolved) => plugin_resolved,
+    .await;
+
+    // Android can't host a resolution plugin (it would be a spawned native
+    // process), so ad-free playback occupies the same seam in-core. It obeys
+    // the same contract: it declines the entitled case and any failure, and
+    // declining means the core resolution serves.
+    #[cfg(target_os = "android")]
+    let resolved = match resolved {
+        Some(r) => Some(r),
+        None => {
+            let video = { state.settings.lock().unwrap().video_player.clone() };
+            crate::services::ad_bypass::resolve_master(
+                &channel,
+                &quality,
+                core.as_ref().ok(),
+                &video,
+                state.twitch_auth.clone(),
+            )
+            .await
+        }
+    };
+
+    let r = match resolved {
+        Some(resolved) => resolved,
         None => core.map_err(|e| e.to_string())?,
     };
 

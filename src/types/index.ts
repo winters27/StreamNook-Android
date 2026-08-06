@@ -49,6 +49,11 @@ export interface VideoPlayerSettings {
   song_id?: SongIdSettings;
   experimental_low_latency?: boolean;
   ll_target_latency?: number;
+  /** Ad-free live playback. Android only; the desktop app resolves through its
+   *  plugin seam and ignores both of these. */
+  ad_bypass_enabled?: boolean;
+  /** Relay bases to prefer, comma or newline separated. Empty = bundled pool. */
+  ad_bypass_proxies?: string;
 }
 
 export interface CacheSettings {

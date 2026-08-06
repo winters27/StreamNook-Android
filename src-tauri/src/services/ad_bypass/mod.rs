@@ -16,18 +16,18 @@
 //!
 //! # Shape
 //!
-//! - `proxies` — the bundled relay pool and the user's override.
-//! - `master` — race the pool, validate the answer, splice the above-1080p
+//! - `proxies`: the bundled relay pool and the user's override.
+//! - `master`: race the pool, validate the answer, splice the above-1080p
 //!   tiers back in from the viewer's own authenticated master.
-//! - `filter` — strip ad segments out of every served media playlist.
-//! - `pivot` — when a whole window is ads, re-resolve through another region.
+//! - `filter`: strip ad segments out of every served media playlist.
+//! - `pivot`: when a whole window is ads, re-resolve through another region.
 //!
 //! # The two seams it occupies
 //!
 //! Resolve happens once per stream, in `commands::streaming`, in the same place
 //! a resolution-owning plugin would be asked. Serving happens on every playlist
 //! poll, in `stream_server`, strictly before `hls_projection::stabilize` (which
-//! records segment URLs — feeding it ad segments would poison the projection).
+//! records segment URLs, so feeding it ad segments would poison it).
 //!
 //! # Low latency
 //!
@@ -85,7 +85,7 @@ pub fn active() -> bool {
 ///
 /// Mirrors the `playback.resolve` plugin contract exactly, because it sits in
 /// the same seam: `core` is the core resolver's own result, and returning
-/// `None` means "the core resolution serves". It declines in four cases — the
+/// `None` means "the core resolution serves". It declines in four cases: the
 /// feature is off, the viewer is entitled (already ad-free, and routing them
 /// through a relay would cost them their above-1080p tiers), every relay
 /// failed, or the relay's master turned out to be unusable. An ad-bearing
@@ -193,8 +193,8 @@ fn stand_down() {
 ///
 /// Returns the playlist to serve: the original text byte-for-byte whenever the
 /// feature is off or nothing was dropped, so an ad-free poll is untouched.
-/// Filtering runs whether or not a relay is in use — a leaked ad on an entitled
-/// stream is worth removing too — while the escalation only fires for a relayed
+/// Filtering runs whether or not a relay is in use, because a leaked ad on an
+/// entitled stream is worth removing too. The escalation only fires for a relayed
 /// stream, since that is the only one with somewhere else to go.
 pub fn filter_and_escalate(playlist: &str) -> String {
     if !enabled() {

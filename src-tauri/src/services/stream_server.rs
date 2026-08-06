@@ -416,6 +416,10 @@ impl StreamServer {
         if !request_path.ends_with(".ts") {
             if let Ok(text) = std::str::from_utf8(&bytes) {
                 detect_ads_in_playlist(text);
+                #[cfg(target_os = "android")]
+                let filtered = crate::services::ad_bypass::filter_and_escalate(text);
+                #[cfg(target_os = "android")]
+                let text = filtered.as_str();
                 // Lower the over-declared TARGETDURATION, then (LIVE only) pin every
                 // segment URL stable across refreshes so Twitch re-signing a path
                 // can't trip hls.js into replaying a segment. Gated two ways: a
