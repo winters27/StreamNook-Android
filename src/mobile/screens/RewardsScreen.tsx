@@ -739,7 +739,14 @@ export const RewardsScreen: React.FC = () => {
                         </span>
                       ) : (
                         <span className="text-[9.5px] text-textMuted leading-none">
-                          {badge.dateInfo ? 'ENDED' : ''}
+                          {/* Only a KNOWN-over window says so. A null status is
+                              "no window known" (permanent badges, and live ones
+                              whose dates the relay has not confirmed yet), and
+                              claiming ENDED there is a confident lie: the Hulk
+                              badge launched with "duration unconfirmed" prose
+                              and spent a day marked ended before it started.
+                              The detail sheet has always gated on expired. */}
+                          {badge.status === 'expired' ? 'ENDED' : ''}
                         </span>
                       )}
                     </button>
