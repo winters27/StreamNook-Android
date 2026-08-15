@@ -133,7 +133,7 @@ jni = "0.21"
 # GPU-side via CopySubresourceRegion into a staging texture sized
 # exactly to the card — no full-monitor readback, no third-party binary.
 [target.'cfg(windows)'.dependencies]
-webview2-com = "0.38"
+webview2-com = "0.39"
 windows = { version = "0.62", features = [
     "Win32_System_Com",
     "Win32_Foundation",
