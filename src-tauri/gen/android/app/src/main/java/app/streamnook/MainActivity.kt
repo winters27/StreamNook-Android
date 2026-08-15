@@ -9,6 +9,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.drawable.Icon
 import android.net.Uri
@@ -20,6 +21,7 @@ import android.util.Rational
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -46,6 +48,12 @@ class MainActivity : TauriActivity() {
   // Whether a stream is playing, so leaving the app enters system
   // picture-in-picture. Pushed from JS.
   @Volatile private var pipEligible: Boolean = false
+
+  // Whether the system bars should be drawn with LIGHT content (a white clock),
+  // which is what a dark theme background under them needs. Pushed from JS on
+  // every palette change and re-asserted anywhere the window can lose the flag.
+  // Seeded true because StreamNook boots dark.
+  @Volatile private var barsLightContent: Boolean = true
 
   // Mirrors the <video> mute state, so the PiP window's action shows the right
   // icon and label. Pushed from JS on every mute change, from either control.
@@ -156,19 +164,63 @@ class MainActivity : TauriActivity() {
     }
   }
 
+  /**
+   * Push the wanted bar icon colour onto the window.
+   *
+   * Note the inversion: the platform flag is named for the BACKGROUND it is
+   * compensating for, so `isAppearanceLightStatusBars = true` means a LIGHT bar
+   * background and therefore DARK icons. Reading it as "light icons" is what
+   * produced the black clock this exists to fix.
+   *
+   * Must be called on the UI thread.
+   */
+  private fun applyBarAppearance() {
+    val controller = WindowCompat.getInsetsController(window, window.decorView)
+    controller.isAppearanceLightStatusBars = !barsLightContent
+    controller.isAppearanceLightNavigationBars = !barsLightContent
+  }
+
   inner class InsetsBridge {
     @JavascriptInterface
     fun get(): String = insetsJson
+
+    /**
+     * Icon colour for the system bars, chosen by the active StreamNook theme.
+     *
+     * `light` means light CONTENT, i.e. the background under the bars is dark.
+     * The app draws behind the bars, so this is not something the platform can
+     * work out: its own guess comes from the phone's night-mode setting, which
+     * says nothing about which theme is loaded.
+     */
+    @JavascriptInterface
+    fun setBarsLightContent(light: Boolean) {
+      barsLightContent = light
+      runOnUiThread { applyBarAppearance() }
+    }
 
     /** Hide/show the system bars (immersive playback, e.g. landscape watch). */
     @JavascriptInterface
     fun setImmersive(immersive: Boolean) {
       runOnUiThread {
         val controller = WindowCompat.getInsetsController(window, window.decorView)
-        controller.systemBarsBehavior =
-          WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        if (immersive) controller.hide(WindowInsetsCompat.Type.systemBars())
-        else controller.show(WindowInsetsCompat.Type.systemBars())
+        if (immersive) {
+          // Only meaningful while the bars are hidden: it is what lets a swipe
+          // bring them back temporarily instead of permanently.
+          controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+          controller.hide(WindowInsetsCompat.Type.systemBars())
+        } else {
+          controller.show(WindowInsetsCompat.Type.systemBars())
+          // Reset it. This used to be assigned on BOTH paths, which left the
+          // transient behaviour latched on the window for the life of the
+          // process: one landscape stream, and every later show of the bars
+          // could still come back as a scrim-backed transient overlay rather
+          // than bars laid out against our content.
+          controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
+          // Re-assert the icon colour: showing the bars can drop the appearance
+          // flags, and nothing else re-runs enableEdgeToEdge (see onCreate).
+          applyBarAppearance()
+        }
       }
     }
 
@@ -425,7 +477,23 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
-    enableEdgeToEdge()
+    // Explicit styles, NOT the bare `enableEdgeToEdge()` default.
+    //
+    // The default is SystemBarStyle.auto, whose detector reads the PHONE's
+    // night-mode setting and sets the bar icon colour from it. StreamNook's
+    // chrome does not track the system setting - it tracks the chosen theme -
+    // so on a phone in light mode that painted a black clock and a black
+    // battery icon over StreamNook's dark background, unreadable. `dark` here
+    // names the BACKGROUND being drawn behind the bars, so it means light icons.
+    //
+    // This is only the seed for the frames before a palette loads; the shell
+    // corrects it per theme through the setBarsLightContent bridge. It matters
+    // because nothing re-runs this: configChanges covers orientation, uiMode,
+    // density and screen size, so the activity is never recreated.
+    enableEdgeToEdge(
+      statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+      navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+    )
     super.onCreate(savedInstanceState)
 
     // Cold start from a notification tap. Stashed for the shell to drain once
@@ -509,6 +577,9 @@ class MainActivity : TauriActivity() {
     super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
     // See onPause: keep the WebView live so the window keeps drawing and playing.
     if (isInPictureInPictureMode) webView?.onResume()
+    // A PiP window has no system bars, so coming back out re-lays them out
+    // without carrying the appearance flags over. Nothing else restores them.
+    if (!isInPictureInPictureMode) applyBarAppearance()
     // Tell the web shell so it strips down to the bare player while pipped.
     val flag = if (isInPictureInPictureMode) "true" else "false"
     webView?.evaluateJavascript(
@@ -535,6 +606,20 @@ class MainActivity : TauriActivity() {
       // This flag is read synchronously on the way back in and cannot be lost.
       pipClosedPending = true
     }
+  }
+
+  /**
+   * The activity is never recreated - configChanges covers orientation, uiMode,
+   * density, locale and screen size - so a rotation, a fold, or the system
+   * flipping to light mode arrives here instead of through a fresh onCreate.
+   *
+   * Re-assert the bar appearance, because the platform is free to re-resolve
+   * the theme's own light/dark attributes on a uiMode change and ours is
+   * derived from the StreamNook palette, not from the configuration.
+   */
+  override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+    super.onConfigurationChanged(newConfig)
+    applyBarAppearance()
   }
 
   /**

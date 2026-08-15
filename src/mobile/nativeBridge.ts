@@ -3,6 +3,7 @@
 interface SNBridge {
   get?(): string;
   setImmersive?(immersive: boolean): void;
+  setBarsLightContent?(light: boolean): void;
   setKeepScreenOn?(on: boolean): void;
   setPipEligible?(eligible: boolean): void;
   enterPip?(): void;
@@ -31,6 +32,16 @@ function bridge(): SNBridge | undefined {
 export function setImmersive(immersive: boolean): void {
   try {
     bridge()?.setImmersive?.(immersive);
+  } catch {
+    /* bridge absent */
+  }
+}
+
+/** Icon colour for the system bars. `light` means light CONTENT (a white clock),
+ *  which is what a dark theme background needs. */
+export function setBarsLightContent(light: boolean): void {
+  try {
+    bridge()?.setBarsLightContent?.(light);
   } catch {
     /* bridge absent */
   }

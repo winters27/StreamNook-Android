@@ -58,6 +58,11 @@ if (IS_MOBILE) {
   // env(safe-area-inset-*) reads 0 in this WebView, so without this pull the
   // UI draws under the status bar and camera cutout on every boot.
   void import('./mobile/nativeInsets').then((m) => m.applyNativeInsetsOnce());
+  // Keep the status/navigation bar icon colour on the StreamNook theme rather
+  // than on the phone's night-mode setting, which is what the platform would
+  // otherwise guess from. Safe to land after the first theme apply: it reads the
+  // live palette on install as well as listening for changes.
+  void import('./mobile/systemBars').then((m) => m.installSystemBarAppearance());
 }
 
 import { Logger } from './utils/logger';
