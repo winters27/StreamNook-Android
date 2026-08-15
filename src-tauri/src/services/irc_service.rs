@@ -56,6 +56,12 @@ static USER_BADGES_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::n
 static USER_COLOR_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
 static ROOM_STATE_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
 static CHANNEL_EMOTES: OnceLock<Mutex<HashMap<String, EmoteSet>>> = OnceLock::new();
+// Per-channel cheermote sets from Helix `bits/cheermotes?broadcaster_id=`,
+// which returns Twitch's globals PLUS the channel's own `channel_custom`
+// prefixes — the only source of custom cheer art, so a static prefix list can
+// never render them. Arc so parse_text_segment snapshots without cloning tier
+// data per message; evicted with the other per-channel caches on PART/stop.
+static CHANNEL_CHEERMOTES: OnceLock<Mutex<HashMap<String, Arc<CheermoteSet>>>> = OnceLock::new();
 // Per-channel consumer claims, keyed by window label (lowercase channel ->
 // set of window labels). A window's chat store claims via `start_chat` /
 // `join_chat_channel` and releases via `leave_chat_channel`; the IRC JOIN /
@@ -137,6 +143,21 @@ fn get_room_state_cache() -> &'static Mutex<HashMap<String, String>> {
 
 fn get_channel_emotes() -> &'static Mutex<HashMap<String, EmoteSet>> {
     CHANNEL_EMOTES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// One cheermote tier from Helix: bits threshold, hex color, animated dark art.
+#[derive(Debug, Clone)]
+pub struct CheermoteTier {
+    pub min_bits: u32,
+    pub color: String,
+    pub url: String,
+}
+
+/// Lowercase prefix -> tiers ascending by `min_bits`.
+pub type CheermoteSet = HashMap<String, Vec<CheermoteTier>>;
+
+fn get_channel_cheermotes() -> &'static Mutex<HashMap<String, Arc<CheermoteSet>>> {
+    CHANNEL_CHEERMOTES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn get_ws_port() -> &'static Mutex<Option<u16>> {
@@ -308,6 +329,7 @@ impl IrcService {
         get_user_badges_cache().lock().await.clear();
         get_room_state_cache().lock().await.clear();
         get_channel_emotes().lock().await.clear();
+        get_channel_cheermotes().lock().await.clear();
         // Seed the consumer claims: this is the first window to ask for the
         // initial channel; the IRC JOIN is performed implicitly by
         // run_irc_connection below, so we just account for it here. Ensure-only
@@ -1057,6 +1079,107 @@ impl IrcService {
         }
     }
 
+    /// Fetch the channel's cheermote set (Twitch globals + its `channel_custom`
+    /// prefixes) from Helix and cache it. Session-cached: a hit is a no-op, a
+    /// PART evicts, so a re-JOIN refreshes. On any failure nothing is cached
+    /// and parse_cheermote falls back to its static global list.
+    async fn fetch_and_store_cheermotes(key: String, broadcaster_id: String) {
+        if get_channel_cheermotes().lock().await.contains_key(&key) {
+            return;
+        }
+        let token = match TwitchService::get_token().await {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let client = crate::services::http::client().clone();
+        let url = format!(
+            "https://api.twitch.tv/helix/bits/cheermotes?broadcaster_id={}",
+            broadcaster_id
+        );
+        let response = match client
+            .get(&url)
+            .header("Client-Id", env!("TWITCH_APP_CLIENT_ID"))
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => r,
+            Ok(r) => {
+                error!(
+                    "[IRC Chat] Cheermote fetch for {} returned {}",
+                    key,
+                    r.status()
+                );
+                return;
+            }
+            Err(e) => {
+                error!("[IRC Chat] Cheermote fetch for {} failed: {}", key, e);
+                return;
+            }
+        };
+        let json: serde_json::Value = match response.json().await {
+            Ok(j) => j,
+            Err(e) => {
+                error!("[IRC Chat] Cheermote response for {} unreadable: {}", key, e);
+                return;
+            }
+        };
+        let set = Self::cheermote_set_from_helix(&json);
+        if set.is_empty() {
+            return;
+        }
+        debug!(
+            "[IRC Chat] Cached {} cheermote prefixes for {}",
+            set.len(),
+            key
+        );
+        get_channel_cheermotes().lock().await.insert(key, Arc::new(set));
+    }
+
+    /// Convert a raw Helix `bits/cheermotes` response into the parse map.
+    /// Chat renders cheermotes at ~28px, so the 2x dark animated image is
+    /// preferred (1x fallback); a tier with no animated art at all falls back
+    /// to its static image rather than dropping. Tiers a viewer can't cheer
+    /// (`can_cheer: false`) are kept: they still RENDER when someone with
+    /// access used them.
+    fn cheermote_set_from_helix(json: &serde_json::Value) -> CheermoteSet {
+        let mut set: CheermoteSet = HashMap::new();
+        let Some(data) = json.get("data").and_then(|d| d.as_array()) else {
+            return set;
+        };
+        for entry in data {
+            let Some(prefix) = entry.get("prefix").and_then(|p| p.as_str()) else {
+                continue;
+            };
+            let Some(tiers) = entry.get("tiers").and_then(|t| t.as_array()) else {
+                continue;
+            };
+            let mut parsed: Vec<CheermoteTier> = tiers
+                .iter()
+                .filter_map(|t| {
+                    let min_bits = t.get("min_bits").and_then(|m| m.as_u64())? as u32;
+                    let color = t.get("color").and_then(|c| c.as_str())?.to_string();
+                    let dark = t.get("images")?.get("dark")?;
+                    let url = [("animated", "2"), ("animated", "1"), ("static", "2"), ("static", "1")]
+                        .iter()
+                        .find_map(|(kind, size)| dark.get(kind)?.get(size)?.as_str())?
+                        .to_string();
+                    Some(CheermoteTier {
+                        min_bits,
+                        color,
+                        url,
+                    })
+                })
+                .collect();
+            if parsed.is_empty() {
+                continue;
+            }
+            parsed.sort_by_key(|t| t.min_bits);
+            set.insert(prefix.to_lowercase(), parsed);
+        }
+        set
+    }
+
     fn extract_tag_value(message: &str, tag_name: &str) -> Option<String> {
         if !message.starts_with('@') {
             return None;
@@ -1537,6 +1660,7 @@ impl IrcService {
         // If the user re-JOINs later, fetch_and_store_emotes runs again and
         // USERSTATE/ROOMSTATE refill from the next IRC frames.
         get_channel_emotes().lock().await.remove(key);
+        get_channel_cheermotes().lock().await.remove(key);
         get_user_badges_cache().lock().await.remove(key);
         get_user_color_cache().lock().await.remove(key);
         get_room_state_cache().lock().await.remove(key);
@@ -1569,6 +1693,18 @@ impl IrcService {
         match TwitchService::get_user_by_login(channel_name).await {
             Ok(user) => {
                 let key = channel_name.to_lowercase();
+
+                // Cheermotes ride the same join: Helix `bits/cheermotes` with
+                // this broadcaster id is the only source of the channel's own
+                // custom prefixes. Spawned so a slow Helix call can't delay the
+                // emote path; the fetch no-ops if the channel is already cached.
+                {
+                    let cheer_key = key.clone();
+                    let broadcaster_id = user.id.clone();
+                    tokio::spawn(async move {
+                        Self::fetch_and_store_cheermotes(cheer_key, broadcaster_id).await;
+                    });
+                }
 
                 // Disk-first: seed the chat parse map from the saved per-channel
                 // dictionary so chat recognizes this channel's emotes instantly,
@@ -1877,6 +2013,12 @@ impl IrcService {
                 .unwrap_or_default()
         };
 
+        // This channel's fetched cheermote set (globals + channel_custom). Arc
+        // snapshot so the per-word matcher never touches the lock; None falls
+        // back to parse_cheermote's static global-prefix list.
+        let cheermotes: Option<Arc<CheermoteSet>> =
+            get_channel_cheermotes().lock().await.get(channel).cloned();
+
         // Get this channel's emotes (returns None if the channel hasn't been
         // fetched, e.g. just-JOINed; first messages may then render without
         // third-party emotes until fetch_and_store_emotes lands).
@@ -1933,7 +2075,7 @@ impl IrcService {
                     url,
                 });
             } else if let Some((prefix, bits, tier, color, cheermote_url)) =
-                Self::parse_cheermote(word)
+                Self::parse_cheermote(word, cheermotes.as_deref())
             {
                 // Found a cheermote pattern (e.g., Cheer500, Party1000)
                 segments.push(MessageSegment::Cheermote {
@@ -1984,11 +2126,70 @@ impl IrcService {
         segments
     }
 
-    /// Parse a potential cheermote pattern (e.g., Cheer500, Party1000)
-    /// Returns Some((prefix, bits, tier, color, url)) if valid, None otherwise
-    fn parse_cheermote(word: &str) -> Option<(String, u32, String, String, String)> {
-        // Known cheermote prefixes on Twitch
-        // Only these specific prefixes should be treated as cheermotes
+    /// Parse a potential cheermote word (`<prefix><bits>`, e.g. Cheer500,
+    /// mathox1Cheer100). Twitch prefixes are ALPHANUMERIC and the digits can
+    /// sit anywhere in them — a channel's own prefix comes from its name, and
+    /// the globals include `4Head` — so matching is the LONGEST known prefix
+    /// whose remainder is all digits, never a letters-then-digits split.
+    /// Longest matters because real prefixes nest: `cheerwhal` extends `cheer`,
+    /// and a short match would leave `whal100` as the amount.
+    ///
+    /// `channel_set` is the per-channel map fetched from Helix (globals + the
+    /// channel's `channel_custom` prefixes, tier art and colors included).
+    /// Without it only the static global list below can match.
+    /// Returns Some((prefix, bits, tier, color, url)) if valid, None otherwise.
+    fn parse_cheermote(
+        word: &str,
+        channel_set: Option<&CheermoteSet>,
+    ) -> Option<(String, u32, String, String, String)> {
+        // Cheap reject: a cheermote word ends in a digit and contains a letter.
+        if !word.ends_with(|c: char| c.is_ascii_digit())
+            || !word.chars().any(|c| c.is_ascii_alphabetic())
+        {
+            return None;
+        }
+
+        // Case-insensitive prefix matching
+        let word_lower = word.to_lowercase();
+
+        if let Some(set) = channel_set {
+            let mut best: Option<(&str, &Vec<CheermoteTier>)> = None;
+            for (prefix, tiers) in set {
+                if !word_lower.starts_with(prefix.as_str()) {
+                    continue;
+                }
+                let rest = &word_lower[prefix.len()..];
+                if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit()) {
+                    continue;
+                }
+                if best.is_none_or(|(b, _)| prefix.len() > b.len()) {
+                    best = Some((prefix, tiers));
+                }
+            }
+            let (prefix, tiers) = best?;
+            let bits: u32 = word_lower[prefix.len()..].parse().ok()?;
+            if bits == 0 {
+                return None;
+            }
+            // Highest tier whose threshold the amount clears; below the lowest
+            // threshold (shouldn't happen: globals start at 1) use the first.
+            let tier = tiers
+                .iter()
+                .rev()
+                .find(|t| t.min_bits <= bits)
+                .or_else(|| tiers.first())?;
+            return Some((
+                prefix.to_string(),
+                bits,
+                tier.min_bits.to_string(),
+                tier.color.clone(),
+                tier.url.clone(),
+            ));
+        }
+
+        // Fallback while the Helix fetch hasn't landed (or failed): Twitch's
+        // global prefixes with the classic CDN art pattern. Channel customs
+        // cannot match here — their art only exists in the Helix response.
         const CHEERMOTE_PREFIXES: &[&str] = &[
             "cheer",
             "cheerwhal",
@@ -2024,23 +2225,17 @@ impl IrcService {
             "anon",
         ];
 
-        // Case-insensitive prefix matching
-        let word_lower = word.to_lowercase();
-
-        // Find which prefix (if any) matches
+        // Longest matching prefix whose remainder is all digits.
         let matched_prefix = CHEERMOTE_PREFIXES
             .iter()
-            .find(|&&prefix| word_lower.starts_with(prefix))?;
+            .filter(|&&prefix| {
+                word_lower.len() > prefix.len()
+                    && word_lower.starts_with(prefix)
+                    && word_lower[prefix.len()..].chars().all(|c| c.is_ascii_digit())
+            })
+            .max_by_key(|prefix| prefix.len())?;
 
-        // Extract the amount part after the prefix
-        let amount_str = &word_lower[matched_prefix.len()..];
-
-        // Must have only digits after the prefix
-        if amount_str.is_empty() || !amount_str.chars().all(|c| c.is_ascii_digit()) {
-            return None;
-        }
-
-        let bits: u32 = amount_str.parse().ok()?;
+        let bits: u32 = word_lower[matched_prefix.len()..].parse().ok()?;
 
         // Must have at least 1 bit
         if bits == 0 {
@@ -2671,6 +2866,7 @@ impl IrcService {
 
         // Clear all per-channel caches
         get_channel_emotes().lock().await.clear();
+        get_channel_cheermotes().lock().await.clear();
         get_user_badges_cache().lock().await.clear();
         get_room_state_cache().lock().await.clear();
         get_channel_consumers().lock().await.clear();
@@ -2702,6 +2898,7 @@ impl IrcService {
         get_current_channels().lock().await.clear();
         get_shared_chat_rooms().lock().await.clear();
         get_channel_emotes().lock().await.clear();
+        get_channel_cheermotes().lock().await.clear();
         get_user_badges_cache().lock().await.clear();
         get_room_state_cache().lock().await.clear();
         get_channel_consumers().lock().await.clear();
@@ -2805,5 +3002,189 @@ mod tests {
         }
         // "a  b" -> a, space, space, b
         assert_eq!(segs.len(), 4);
+    }
+
+    fn tiers(spec: &[(u32, &str)]) -> Vec<CheermoteTier> {
+        spec.iter()
+            .map(|(min_bits, color)| CheermoteTier {
+                min_bits: *min_bits,
+                color: color.to_string(),
+                url: format!("https://example.test/{}.gif", min_bits),
+            })
+            .collect()
+    }
+
+    // Prefixes nest (`cheerwhal` extends `cheer`), so matching must take the
+    // LONGEST prefix whose remainder is all digits. The old first-match walk
+    // hit `cheer`, left `whal100`, failed the digit check and rendered a
+    // Twitch GLOBAL cheermote as plain text.
+    #[test]
+    fn static_fallback_prefers_longest_prefix() {
+        let (prefix, bits, ..) = IrcService::parse_cheermote("Cheerwhal100", None).unwrap();
+        assert_eq!(prefix, "cheerwhal");
+        assert_eq!(bits, 100);
+    }
+
+    // Digits sit anywhere in real prefixes: `4Head` starts with one.
+    #[test]
+    fn static_fallback_handles_digit_leading_prefix() {
+        let (prefix, bits, ..) = IrcService::parse_cheermote("4Head500", None).unwrap();
+        assert_eq!(prefix, "4head");
+        assert_eq!(bits, 500);
+    }
+
+    // A channel's own custom prefix (from the Helix channel_custom entries)
+    // must resolve with art and color taken from the fetched tiers, picking
+    // the highest tier whose threshold the amount clears.
+    #[test]
+    fn channel_custom_prefix_resolves_with_fetched_tiers() {
+        let mut set: CheermoteSet = HashMap::new();
+        set.insert(
+            "mathox1cheer".to_string(),
+            tiers(&[(1, "#979797"), (100, "#9c3ee8"), (1000, "#1db2a6")]),
+        );
+        let (prefix, bits, tier, color, url) =
+            IrcService::parse_cheermote("mathox1Cheer250", Some(&set)).unwrap();
+        assert_eq!(prefix, "mathox1cheer");
+        assert_eq!(bits, 250);
+        assert_eq!(tier, "100");
+        assert_eq!(color, "#9c3ee8");
+        assert_eq!(url, "https://example.test/100.gif");
+    }
+
+    // Longest-match applies to the fetched map too, and non-cheer words with a
+    // known-prefix start must stay text.
+    #[test]
+    fn channel_set_longest_match_and_rejects() {
+        let mut set: CheermoteSet = HashMap::new();
+        set.insert("cheer".to_string(), tiers(&[(1, "#979797")]));
+        set.insert("cheerwhal".to_string(), tiers(&[(1, "#979797")]));
+        let (prefix, ..) = IrcService::parse_cheermote("cheerwhal5", Some(&set)).unwrap();
+        assert_eq!(prefix, "cheerwhal");
+        assert!(IrcService::parse_cheermote("cheerleader", Some(&set)).is_none());
+        assert!(IrcService::parse_cheermote("cheer0", Some(&set)).is_none());
+        assert!(IrcService::parse_cheermote("cheer", Some(&set)).is_none());
+        assert!(IrcService::parse_cheermote("100", Some(&set)).is_none());
+    }
+
+    // Raw Helix `bits/cheermotes` shape -> parse map: prefixes lowercase,
+    // tiers ascending, 2x dark animated art preferred, static-only tiers kept
+    // via fallback instead of dropped.
+    #[test]
+    fn helix_response_converts_to_parse_map() {
+        let json: serde_json::Value = serde_json::from_str(
+            r##"{"data":[
+                {"prefix":"mathox1Cheer","tiers":[
+                    {"min_bits":100,"id":"100","color":"#9c3ee8","can_cheer":true,
+                     "images":{"dark":{"animated":{"1":"https://cdn.test/m/100/1.gif","2":"https://cdn.test/m/100/2.gif"},
+                               "static":{"1":"https://cdn.test/m/100/1.png"}}}},
+                    {"min_bits":1,"id":"1","color":"#979797","can_cheer":true,
+                     "images":{"dark":{"static":{"1":"https://cdn.test/m/1/1.png","2":"https://cdn.test/m/1/2.png"}}}}
+                ]},
+                {"prefix":"NoArt","tiers":[
+                    {"min_bits":1,"id":"1","color":"#979797","can_cheer":true,"images":{"dark":{}}}
+                ]}
+            ]}"##,
+        )
+        .unwrap();
+        let set = IrcService::cheermote_set_from_helix(&json);
+        let tiers = set.get("mathox1cheer").expect("prefix lowercased");
+        assert_eq!(tiers.len(), 2);
+        assert_eq!(tiers[0].min_bits, 1, "tiers sorted ascending");
+        assert_eq!(tiers[0].url, "https://cdn.test/m/1/2.png", "static fallback");
+        assert_eq!(tiers[1].url, "https://cdn.test/m/100/2.gif", "2x animated");
+        assert!(!set.contains_key("noart"), "art-less prefix dropped");
+    }
+
+    // LIVE sweep against Mathox's real channel (broadcaster 194431028) via the
+    // deployed streamnook.app cheermotes endpoint — the same Helix data the new
+    // Rust fetch pulls, already production-verified. Every real prefix in the
+    // channel (globals + channel_custom) at several amounts must round-trip
+    // through the real parse_cheermote, and the resolved tier must agree with
+    // the endpoint's own tier thresholds. Network: run explicitly with
+    // `cargo test live_mathox -- --ignored`.
+    #[test]
+    #[ignore]
+    fn live_mathox_channel_cheermotes_resolve() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let body: serde_json::Value = rt.block_on(async {
+            crate::services::http::client()
+                .get("https://streamnook.app/api/twitch/cheermotes?room=194431028")
+                .send()
+                .await
+                .expect("endpoint reachable")
+                .json()
+                .await
+                .expect("json body")
+        });
+        let site = body
+            .get("cheermotes")
+            .and_then(|c| c.as_object())
+            .expect("cheermotes map");
+        assert!(!site.is_empty(), "endpoint returned no cheermotes");
+        assert!(
+            site.contains_key("mathox1cheer"),
+            "Mathox's channel_custom prefix missing from live data"
+        );
+
+        // Site shape ({minBits,color,url}) -> the Rust parse map shape.
+        let mut set: CheermoteSet = HashMap::new();
+        for (prefix, tiers) in site {
+            let parsed: Vec<CheermoteTier> = tiers
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| CheermoteTier {
+                    min_bits: t["minBits"].as_u64().unwrap() as u32,
+                    color: t["color"].as_str().unwrap().to_string(),
+                    url: t["url"].as_str().unwrap().to_string(),
+                })
+                .collect();
+            set.insert(prefix.clone(), parsed);
+        }
+
+        let mut words = 0;
+        for (prefix, tiers) in &set {
+            for amount in [1u32, 47, 100, 999, 1000, 5000, 10000, 25000] {
+                // Real chatters type mixed case; build it like one would.
+                let word = format!("{}{}", prefix.to_uppercase(), amount);
+                let (got_prefix, got_bits, _tier, got_color, got_url) =
+                    IrcService::parse_cheermote(&word, Some(&set))
+                        .unwrap_or_else(|| panic!("{word} failed to resolve"));
+                words += 1;
+                // Longest-match may legitimately resolve to a LONGER nested
+                // prefix (cheerwhal over cheer) but never to a shorter one.
+                assert!(
+                    got_prefix.len() >= prefix.len(),
+                    "{word} resolved to shorter prefix {got_prefix}"
+                );
+                // Prefix + amount must reassemble the word exactly.
+                assert_eq!(
+                    format!("{got_prefix}{got_bits}"),
+                    word.to_lowercase(),
+                    "{word} split corrupted"
+                );
+                // Tier agreement with the endpoint's own thresholds.
+                let expect = set[&got_prefix]
+                    .iter()
+                    .rev()
+                    .find(|t| t.min_bits <= amount)
+                    .unwrap_or(&set[&got_prefix][0]);
+                assert_eq!(got_color, expect.color, "{word} wrong tier color");
+                assert_eq!(got_url, expect.url, "{word} wrong tier art");
+                assert!(
+                    got_url.starts_with("https://"),
+                    "{word} art not an absolute URL"
+                );
+            }
+        }
+        println!(
+            "live sweep: {} prefixes x amounts = {} words, all resolved",
+            set.len(),
+            words
+        );
     }
 }
