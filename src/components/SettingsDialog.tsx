@@ -369,11 +369,13 @@ const SettingsDialog = () => {
                     </button>
                   )}
                 </div>
+                {!IS_MOBILE && (
                 <p className="mt-1.5 px-0.5 text-[10.5px] leading-4 text-textMuted">
                   <kbd className="sn-keycap sn-keycap--xs">Ctrl</kbd>{' '}
                   <kbd className="sn-keycap sn-keycap--xs">K</kbd> searches all of this from
                   anywhere
                 </p>
+                )}
               </div>
               <div className="px-4 pb-3">
                 <span className="text-[11px] uppercase tracking-[0.12em] text-textMuted">

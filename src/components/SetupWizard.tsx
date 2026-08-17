@@ -1177,12 +1177,14 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                                 </div>
                             ))}
                         </div>
+                        {!IS_MOBILE && (
                         <div className="mt-6 flex items-center justify-center gap-1.5 text-sm text-textMuted">
                             <span>Press</span>
                             <kbd className="sn-keycap sn-keycap--xs">Ctrl</kbd>
                             <kbd className="sn-keycap sn-keycap--xs">K</kbd>
                             <span>anytime to search everything</span>
                         </div>
+                        )}
                     </>
                 );
             }
