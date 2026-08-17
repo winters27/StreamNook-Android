@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Shield, Users, MessageSquare, Clock, Slash, Hash, Settings, ChevronRight } from 'lucide-react';
+import { Shield, Users, MessageSquare, Clock, Slash, Hash, Settings, ChevronRight, Zap, PinOff, Ban, BarChart3, Trophy } from 'lucide-react';
 import { SevenTVLogo } from '../emotesets/SevenTVLogo';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Tooltip } from '../ui/Tooltip';
@@ -10,6 +10,11 @@ import { useAppStore } from '../../stores/AppStore';
 
 interface ModeratorMenuProps {
   broadcasterId: string;
+  /** Login of the channel this menu acts on. Passed in rather than read from
+   *  the store because a MultiChat pane's channel is not the main window's. */
+  channelLogin: string;
+  /** Whether the viewer owns THIS channel. Same reason. */
+  isBroadcaster: boolean;
   roomState: {
     followersOnly: number;
     slow: number;
@@ -19,12 +24,72 @@ interface ModeratorMenuProps {
   };
 }
 
-const ModeratorMenu: React.FC<ModeratorMenuProps> = ({ broadcasterId, roomState }) => {
+const ModeratorMenu: React.FC<ModeratorMenuProps> = ({
+  broadcasterId,
+  channelLogin,
+  isBroadcaster,
+  roomState,
+}) => {
   const { settings, updateSettings, openSettings, openEmoteSets } = useAppStore();
+  const addToast = useAppStore((s) => s.addToast);
   const [isOpen, setIsOpen] = useState(false);
   const [isConfirmingClear, setIsConfirmingClear] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isPending, setIsPending] = useState(false);
+  const [blockTerm, setBlockTerm] = useState('');
+  // Read once per open rather than subscribed: the engine holds this in a plain
+  // module Map with no store behind it, and the menu is short-lived anyway.
+  const [activeNukeCount, setActiveNukeCount] = useState(0);
+
+  // Poll / prediction controls are broadcaster-only, and that is a limit of
+  // Helix rather than of Twitch: these endpoints require broadcaster_id to
+  // match the token's own user id and take no moderator_id, unlike every other
+  // Helix endpoint moderators can use. Mod View can do it because it goes
+  // through GQL. Showing these to a moderator would only ever produce a 401.
+  const [livePoll, setLivePoll] = useState<{ id: string } | null>(null);
+  const [livePrediction, setLivePrediction] = useState<{ prediction_id: string } | null>(null);
+
+  useEffect(() => {
+    if (!isOpen || !channelLogin) return;
+    let alive = true;
+    void import('../../utils/nukeEngine').then((mod) => {
+      if (alive) setActiveNukeCount(mod.getActiveNukesForChannel(channelLogin).length);
+    });
+    if (isBroadcaster && broadcasterId) {
+      void invoke<{ id: string } | null>('get_active_poll', { broadcasterId })
+        .then((p) => alive && setLivePoll(p))
+        .catch(() => alive && setLivePoll(null));
+      void invoke<{ prediction_id: string } | null>('get_active_prediction', {
+        channelLogin,
+      })
+        .then((p) => alive && setLivePrediction(p))
+        .catch(() => alive && setLivePrediction(null));
+    }
+    return () => {
+      alive = false;
+    };
+  }, [isOpen, channelLogin, isBroadcaster, broadcasterId]);
+
+  // Shared runner for the four poll/prediction end states.
+  const runLiveAction = async (
+    label: string,
+    command: string,
+    payload: Record<string, unknown>,
+    clear: () => void,
+  ) => {
+    if (isPending) return;
+    setIsPending(true);
+    try {
+      await invoke(command, payload);
+      addToast(label, 'success');
+      clear();
+    } catch (err) {
+      Logger.error(`[ModeratorMenu] ${command} failed:`, err);
+      addToast(typeof err === 'string' ? err : 'That did not go through', 'error');
+    } finally {
+      setIsPending(false);
+    }
+  };
 
   // Close when clicking outside
   useEffect(() => {
@@ -197,6 +262,175 @@ const ModeratorMenu: React.FC<ModeratorMenuProps> = ({ broadcasterId, roomState 
                 onClick={() => handleToggleSetting('unique_chat_mode', roomState.r9k)}
                 disabled={isPending}
               />
+            </div>
+
+            <div className="p-1.5 border-t border-white/10 flex flex-col gap-1">
+              <div className="px-2 pt-1 pb-0.5">
+                <span className="text-[10px] font-semibold text-white/40 tracking-wider uppercase">Chat Tools</span>
+              </div>
+
+              {/* Live poll. Broadcaster-only for the reason recorded above.
+                  End keeps the result on screen; Cancel hides it entirely. */}
+              {isBroadcaster && livePoll?.id && (
+                <div className="px-2.5 py-2 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="flex items-center justify-center text-accent flex-shrink-0">
+                      <BarChart3 size={14} />
+                    </div>
+                    <span className="text-sm text-white/70 truncate">Poll running</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    <button
+                      disabled={isPending}
+                      onClick={() =>
+                        runLiveAction('Poll ended', 'end_poll', {
+                          broadcasterId,
+                          pollId: livePoll.id,
+                          status: 'TERMINATED',
+                        }, () => setLivePoll(null))
+                      }
+                      className="px-2 py-1 text-[11px] font-semibold bg-white/10 hover:bg-white/20 text-white/80 rounded transition-colors disabled:opacity-50"
+                    >
+                      End
+                    </button>
+                    <button
+                      disabled={isPending}
+                      onClick={() =>
+                        runLiveAction('Poll cancelled', 'end_poll', {
+                          broadcasterId,
+                          pollId: livePoll.id,
+                          status: 'ARCHIVED',
+                        }, () => setLivePoll(null))
+                      }
+                      className="px-2 py-1 text-[11px] font-semibold bg-red-500/15 hover:bg-red-500/25 text-red-300 rounded transition-colors disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Live prediction. Resolving needs a winning outcome, which is a
+                  choice this menu is too small for — that stays on
+                  /completeprediction and the banner itself. */}
+              {isBroadcaster && livePrediction?.prediction_id && (
+                <div className="px-2.5 py-2 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="flex items-center justify-center text-accent flex-shrink-0">
+                      <Trophy size={14} />
+                    </div>
+                    <span className="text-sm text-white/70 truncate">Prediction running</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    <button
+                      disabled={isPending}
+                      onClick={() =>
+                        runLiveAction('Prediction locked', 'end_prediction', {
+                          broadcasterId,
+                          predictionId: livePrediction.prediction_id,
+                          status: 'LOCKED',
+                          winningOutcomeId: null,
+                        }, () => setLivePrediction(null))
+                      }
+                      className="px-2 py-1 text-[11px] font-semibold bg-white/10 hover:bg-white/20 text-white/80 rounded transition-colors disabled:opacity-50"
+                    >
+                      Lock
+                    </button>
+                    <button
+                      disabled={isPending}
+                      onClick={() =>
+                        runLiveAction('Prediction cancelled, points refunded', 'end_prediction', {
+                          broadcasterId,
+                          predictionId: livePrediction.prediction_id,
+                          status: 'CANCELED',
+                          winningOutcomeId: null,
+                        }, () => setLivePrediction(null))
+                      }
+                      className="px-2 py-1 text-[11px] font-semibold bg-red-500/15 hover:bg-red-500/25 text-red-300 rounded transition-colors disabled:opacity-50"
+                    >
+                      Refund
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Only rendered while a /nuke is still watching new messages, so
+                  the menu doesn't carry a dead row the rest of the time. */}
+              {activeNukeCount > 0 && (
+                <button
+                  onClick={async () => {
+                    const { stopActiveNukes } = await import('../../utils/nukeEngine');
+                    const stopped = stopActiveNukes(channelLogin);
+                    setActiveNukeCount(0);
+                    addToast(`Stopped ${stopped} running nuke window(s)`, 'success');
+                  }}
+                  className="w-full text-left px-2.5 py-2 rounded-md flex items-center justify-between hover:bg-warning/10 transition-colors group"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className="flex items-center justify-center text-warning">
+                      <Zap size={14} />
+                    </div>
+                    <span className="text-sm text-white/70 group-hover:text-white">
+                      Stop running nuke
+                    </span>
+                  </div>
+                  <span className="text-[11px] tabular-nums text-warning">{activeNukeCount}</span>
+                </button>
+              )}
+
+              <button
+                onClick={async () => {
+                  if (isPending || !broadcasterId) return;
+                  setIsPending(true);
+                  try {
+                    await invoke('unpin_chat_message', { broadcasterId });
+                    addToast('Message unpinned', 'success');
+                  } catch (err) {
+                    Logger.error('[ModeratorMenu] Failed to unpin:', err);
+                    addToast(typeof err === 'string' ? err : 'Nothing pinned right now', 'error');
+                  } finally {
+                    setIsPending(false);
+                  }
+                }}
+                disabled={isPending}
+                className="w-full text-left px-2.5 py-2 rounded-md flex items-center gap-2.5 hover:bg-white/5 transition-colors group disabled:opacity-50"
+              >
+                <div className="flex items-center justify-center text-white/40 group-hover:text-accent transition-colors">
+                  <PinOff size={14} />
+                </div>
+                <span className="text-sm text-white/70 group-hover:text-white">Unpin message</span>
+              </button>
+
+              {/* Blocked terms. An inline field rather than a sub-panel: adding
+                  one is the whole interaction, and AutoMod's full list already
+                  lives on Twitch. */}
+              <div className="px-2.5 py-2 flex items-center gap-2.5">
+                <div className="flex items-center justify-center text-white/40 flex-shrink-0">
+                  <Ban size={14} />
+                </div>
+                <input
+                  value={blockTerm}
+                  onChange={(e) => setBlockTerm(e.target.value)}
+                  onKeyDown={async (e) => {
+                    if (e.key !== 'Enter') return;
+                    const phrase = blockTerm.trim();
+                    if (!phrase || isPending || !broadcasterId) return;
+                    setIsPending(true);
+                    try {
+                      await invoke('add_blocked_term', { broadcasterId, text: phrase });
+                      addToast(`Blocked "${phrase}"`, 'success');
+                      setBlockTerm('');
+                    } catch (err) {
+                      Logger.error('[ModeratorMenu] Failed to block term:', err);
+                      addToast(typeof err === 'string' ? err : 'Could not block that', 'error');
+                    } finally {
+                      setIsPending(false);
+                    }
+                  }}
+                  placeholder="Block a phrase, then Enter"
+                  className="flex-1 min-w-0 bg-white/5 hover:bg-white/10 focus:bg-white/10 rounded px-2 py-1 text-[12px] text-white/90 placeholder-white/30 outline-none transition-colors"
+                />
+              </div>
             </div>
 
             <div className="p-1.5 border-t border-white/10 flex flex-col gap-1">

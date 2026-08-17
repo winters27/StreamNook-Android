@@ -772,6 +772,19 @@ export const handleSlashCommand = async (
           return true;
         }
         const raw = argsWithoutCommand.join(' ');
+        // `/nuke stop` cancels any armed future windows on this channel. Checked
+        // before parsing, since "stop" is not a valid pattern/action/window trio.
+        if (raw.trim().toLowerCase() === 'stop') {
+          const { stopActiveNukes } = await import('./nukeEngine');
+          const stopped = stopActiveNukes(broadcasterLogin);
+          addToast(
+            stopped > 0
+              ? `/nuke: stopped ${stopped} active window(s)`
+              : '/nuke: nothing running on this channel',
+            stopped > 0 ? 'success' : 'info',
+          );
+          return true;
+        }
         const parsed = parseNukeArgs(raw);
         if ('error' in parsed) {
           addToast(parsed.error, 'error');
@@ -843,16 +856,188 @@ export const handleSlashCommand = async (
         }));
         return true;
       }
+      // Poll / prediction builder. Opening the composer rather than parsing a
+      // long argument list: the form validates against Twitch's limits and
+      // previews the banner, which a one-liner can't.
+      case 'poll':
+      case 'prediction': {
+        window.dispatchEvent(
+          new CustomEvent('streamnook-open-poll-composer', {
+            detail: { channel: broadcasterLogin, kind: command },
+          }),
+        );
+        return true;
+      }
+      case 'endpoll':
+      case 'cancelpoll': {
+        if (!broadcasterId) {
+          addToast(`/${command}: no active channel`, 'error');
+          return true;
+        }
+        // Helix row shape: { id, title, status, choices: [...] }
+        const active = await invoke<{ id?: string } | null>('get_active_poll', {
+          broadcasterId,
+        }).catch(() => null);
+        if (!active?.id) {
+          addToast('No poll is running right now', 'error');
+          return true;
+        }
+        try {
+          // TERMINATED keeps the result on screen; ARCHIVED hides it entirely.
+          await invoke('end_poll', {
+            broadcasterId,
+            pollId: active.id,
+            status: command === 'endpoll' ? 'TERMINATED' : 'ARCHIVED',
+          });
+          addToast(command === 'endpoll' ? 'Poll ended' : 'Poll cancelled', 'success');
+        } catch (err: unknown) {
+          addToast(typeof err === 'string' ? err : `/${command} failed`, 'error');
+        }
+        return true;
+      }
+      case 'lockprediction':
+      case 'cancelprediction':
+      case 'completeprediction': {
+        if (!broadcasterId) {
+          addToast(`/${command}: no active channel`, 'error');
+          return true;
+        }
+        const active = await invoke<{
+          prediction_id?: string;
+          outcomes?: Array<{ id: string; title: string }>;
+        } | null>('get_active_prediction', { channelLogin: broadcasterLogin }).catch(() => null);
+        if (!active?.prediction_id) {
+          addToast('No prediction is running right now', 'error');
+          return true;
+        }
+        let status = 'LOCKED';
+        let winningOutcomeId: string | null = null;
+        if (command === 'cancelprediction') {
+          status = 'CANCELED';
+        } else if (command === 'completeprediction') {
+          status = 'RESOLVED';
+          // Accept either the outcome's position (1-based, how people say it
+          // out loud) or its title.
+          const arg = argsWithoutCommand.join(' ').trim();
+          const outcomes = active.outcomes ?? [];
+          if (!arg) {
+            addToast('Say which outcome won, by number or title', 'error');
+            return true;
+          }
+          const byIndex = Number(arg);
+          const picked =
+            Number.isInteger(byIndex) && byIndex >= 1 && byIndex <= outcomes.length
+              ? outcomes[byIndex - 1]
+              : outcomes.find((o) => o.title.toLowerCase() === arg.toLowerCase());
+          if (!picked) {
+            addToast(`No outcome matches "${arg}"`, 'error');
+            return true;
+          }
+          winningOutcomeId = picked.id;
+        }
+        try {
+          await invoke('end_prediction', {
+            broadcasterId,
+            predictionId: active.prediction_id,
+            status,
+            winningOutcomeId,
+          });
+          addToast(
+            status === 'LOCKED'
+              ? 'Prediction locked'
+              : status === 'CANCELED'
+                ? 'Prediction cancelled, points refunded'
+                : 'Prediction paid out',
+            'success',
+          );
+        } catch (err: unknown) {
+          addToast(typeof err === 'string' ? err : `/${command} failed`, 'error');
+        }
+        return true;
+      }
+      case 'blockterm':
+      case 'unblockterm': {
+        if (!broadcasterId || !broadcasterLogin) {
+          addToast(`/${command}: no active channel`, 'error');
+          return true;
+        }
+        if (!isUserModeratorOf(broadcasterLogin)) {
+          addToast(`/${command} is a moderator-only command`, 'error');
+          return true;
+        }
+        const phrase = argsWithoutCommand.join(' ').trim();
+        if (!phrase) {
+          addToast(`/${command} needs a phrase`, 'error');
+          return true;
+        }
+        try {
+          if (command === 'blockterm') {
+            await invoke('add_blocked_term', { broadcasterId, text: phrase });
+            addToast(`Blocked "${phrase}"`, 'success');
+          } else {
+            await invoke('remove_blocked_term', { broadcasterId, text: phrase });
+            addToast(`Unblocked "${phrase}"`, 'success');
+          }
+        } catch (err: unknown) {
+          addToast(typeof err === 'string' ? err : `/${command} failed`, 'error');
+        }
+        return true;
+      }
+      case 'pin': {
+        if (!broadcasterId || !broadcasterLogin) {
+          addToast('/pin: no active channel', 'error');
+          return true;
+        }
+        if (!isUserModeratorOf(broadcasterLogin)) {
+          addToast('/pin is a moderator-only command', 'error');
+          return true;
+        }
+        const { resolvePinTarget } = await import('./pinCommand');
+        const resolved = resolvePinTarget(broadcasterLogin, argsWithoutCommand);
+        if ('error' in resolved) {
+          addToast(resolved.error, 'error');
+          return true;
+        }
+        try {
+          await invoke('pin_chat_message', {
+            broadcasterId,
+            messageId: resolved.messageId,
+            durationSeconds: resolved.durationSeconds,
+          });
+          addToast(
+            resolved.durationSeconds
+              ? `Pinned for ${resolved.durationSeconds}s`
+              : 'Message pinned',
+            'success',
+          );
+        } catch (err: unknown) {
+          addToast(typeof err === 'string' ? err : '/pin failed', 'error');
+        }
+        return true;
+      }
+      case 'unpin': {
+        if (!broadcasterId || !broadcasterLogin) {
+          addToast('/unpin: no active channel', 'error');
+          return true;
+        }
+        if (!isUserModeratorOf(broadcasterLogin)) {
+          addToast('/unpin is a moderator-only command', 'error');
+          return true;
+        }
+        try {
+          await invoke('unpin_chat_message', { broadcasterId });
+          addToast('Message unpinned', 'success');
+        } catch (err: unknown) {
+          addToast(typeof err === 'string' ? err : '/unpin failed', 'error');
+        }
+        return true;
+      }
       case 'vote':
       case 'gift':
-      case 'poll':
-      case 'endpoll':
       case 'deletepoll':
-      case 'prediction':
       case 'goal':
       case 'raidbrowser':
       case 'requests':
-      case 'pin':
       case 'sharedchat':
         // These are handled natively by the Twitch web client and cannot be replicated.
         // Let them fall through to IRC as a best-effort attempt.

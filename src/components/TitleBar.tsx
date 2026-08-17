@@ -1,5 +1,5 @@
 import { Window } from '@tauri-apps/api/window';
-import { Gift, User, Settings, Store, Proportions, MessageCircle, Pickaxe, Clock, Tv, Download, LogIn, Sparkles, Check } from 'lucide-react';
+import { Gift, User, Settings, Store, Proportions, MessageCircle, Pickaxe, Clock, Tv, Download, LogIn, Sparkles, Check, Pin, PinOff } from 'lucide-react';
 import { Minus, X, CornersOut, CornersIn, ArrowsOut, ArrowsIn, Medal } from 'phosphor-react';
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
@@ -19,6 +19,7 @@ import { deriveDropProgressDisplay } from '../utils/dropProgressDisplay';
 
 import { Logger } from '../utils/logger';
 import { useVisibleInterval } from '../utils/useVisibleInterval';
+import { handleTitleBarMouseDown } from '../utils/titleBarDrag';
 import { Tooltip } from './ui/Tooltip';
 import { isSemiquincentennialShowDay, openSemiquincentennialShow } from '../services/semiquincentennialEvent';
 import PluginTitleBarButtons from '../plugins-ui/PluginTitleBarButtons';
@@ -46,7 +47,7 @@ const TitleBar = () => {
   // subscribing; state goes through a shallow-compared selector. This was a
   // whole-store subscription, so the title bar re-rendered on every unrelated
   // store tick.
-  const { openSettings, setShowDropsOverlay, setShowMarketplaceOverlay, setShowBadgesOverlay, setShowWhispersOverlay, toggleTheaterMode, toggleWindowFullscreen, addToast } = useAppStore.getState();
+  const { openSettings, setShowDropsOverlay, setShowMarketplaceOverlay, setShowBadgesOverlay, setShowWhispersOverlay, toggleTheaterMode, toggleWindowFullscreen, toggleKeepOnTop, addToast } = useAppStore.getState();
   const { isAuthenticated, currentUser, dropProgressActive, dropProgressComplete, isTheaterMode, isWindowFullscreen, streamUrl, settings, whisperImportState, updateInfo } = useAppStore(
     useShallow((s) => ({
       isAuthenticated: s.isAuthenticated,
@@ -61,6 +62,8 @@ const TitleBar = () => {
       updateInfo: s.updateInfo,
     })),
   );
+  // The pin only renders inside Compact View, so this is the whole story.
+  const keepOnTop = settings?.keep_on_top_in_compact === true;
   // Count of installed plugins with an update available, for the Marketplace badge.
   const pluginUpdateCount = usePluginUpdates((s) => s.ids.length);
   // Update flow: 'idle' → 'installing' (download/extract) → 'installed' (staged;
@@ -470,10 +473,17 @@ const TitleBar = () => {
     setUpdateError(null);
   }, []);
 
+  // Replaces data-tauri-drag-region: a borderless window doesn't get Windows'
+  // restore-on-drag, so dragging while maximized has to unmaximize first.
+  const onTitleBarMouseDown = useCallback(
+    (e: React.MouseEvent<HTMLElement>) => handleTitleBarMouseDown(e, isMaximized),
+    [isMaximized],
+  );
+
   return (
     <>
       <div
-        data-tauri-drag-region
+        onMouseDown={onTitleBarMouseDown}
         className="relative flex items-center justify-between h-[40px] px-3 select-none bg-secondary backdrop-blur-md border-b border-borderSubtle z-50"
       >
         {/* Dynamic Island is rendered at the app root (App.tsx), not here, so it
@@ -803,6 +813,19 @@ const TitleBar = () => {
                 className={`titlebar-icon-btn ${isTheaterMode ? '!text-accent !bg-accent/15' : ''}`}
               >
                 <Proportions size={14} />
+              </button>
+            </Tooltip>
+          )}
+
+          {/* Keep on Top - a Compact View sub-option, so it only appears there */}
+          {isTheaterMode && (
+            <Tooltip content={keepOnTop ? 'Stop keeping on top' : 'Keep on top'} delay={200}>
+              <button
+                onClick={() => void toggleKeepOnTop()}
+                aria-pressed={keepOnTop}
+                className={`titlebar-icon-btn ${keepOnTop ? '!text-accent !bg-accent/15' : ''}`}
+              >
+                {keepOnTop ? <PinOff size={14} /> : <Pin size={14} />}
               </button>
             </Tooltip>
           )}

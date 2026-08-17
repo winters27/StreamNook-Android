@@ -138,6 +138,12 @@ interface MultiNookState {
   setActiveChatChannelId: (id: string | null) => void;
   toggleChatHidden: () => void;
   batchLoadMissingStreams: () => Promise<void>;
+  /** One batched Helix call covering every tile, refreshing the stream title and
+   *  category. Both are ephemeral view data: this never writes to settings. */
+  refreshSlotMetadata: () => Promise<void>;
+  /** One-shot fill of partner/affiliate status for tiles that don't have it yet.
+   *  Stable data helix/streams doesn't return, so it isn't part of the poll. */
+  backfillBroadcasterTypes: () => Promise<void>;
   loadPresetChannels: (channels: MultiNookPresetChannel[], mode: 'replace' | 'append', presetId?: string) => Promise<void>;
   /** Tag the current grid with the preset it was loaded from (null = no equipped preset). Persisted. */
   setActivePresetId: (id: string | null) => Promise<void>;
@@ -202,6 +208,113 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
         }
       }),
     );
+  },
+
+  refreshSlotMetadata: async () => {
+    const logins = Array.from(
+      new Set(get().slots.map((s) => s.channelLogin.toLowerCase())),
+    ).filter(Boolean);
+    if (logins.length === 0) return;
+
+    // Keyed on channelLogin, not channelId: the id is optional on a slot (a
+    // preset carries whatever was cached when it was saved), so a broadcaster_id
+    // batch would silently skip those tiles. The login is the required key.
+    // No chunking needed — the grid is hard-capped at 25, well under Helix's 100.
+    let byLogin: Map<string, { title?: string; game_name?: string }>;
+    try {
+      const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
+      const qs = logins.map((l) => `user_login=${encodeURIComponent(l)}`).join('&');
+      const resp = await fetch(`https://api.twitch.tv/helix/streams?${qs}`, {
+        headers: { 'Client-ID': clientId, Authorization: `Bearer ${token}` },
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      byLogin = new Map(
+        (data.data || []).map((s: { user_login?: string; title?: string; game_name?: string }) => [
+          (s.user_login || '').toLowerCase(),
+          { title: s.title, game_name: s.game_name },
+        ]),
+      );
+    } catch (e) {
+      Logger.warn('[multiNookStore] Failed to refresh slot titles', e);
+      return;
+    }
+
+    // Preserve object identity for every tile that didn't actually change: each
+    // cell is memoized on its slot's reference, so spreading unconditionally
+    // would re-render the whole grid on every poll. That includes the offline
+    // branch — a tile with no title must come back as the *same* object.
+    let changed = false;
+    const next = get().slots.map((s) => {
+      const live = byLogin.get(s.channelLogin.toLowerCase());
+      if (!live) {
+        // Absent from the response means offline. Drop the title (a stale live
+        // title on an offline tile is wrong) but keep the last known category.
+        if (s.title === undefined) return s;
+        changed = true;
+        return { ...s, title: undefined };
+      }
+      const title = live.title || undefined;
+      const gameName = live.game_name || s.gameName;
+      if (s.title === title && s.gameName === gameName) return s;
+      changed = true;
+      return { ...s, title, gameName };
+    });
+    if (changed) {
+      // Deliberately no saveSlots(): every field touched here is ephemeral.
+      set({ slots: next });
+    }
+
+    await get().backfillBroadcasterTypes();
+  },
+
+  backfillBroadcasterTypes: async () => {
+    // Partner/affiliate status is stable, and helix/streams doesn't carry it, so
+    // this is a one-shot fill rather than part of the recurring poll: once every
+    // tile has a value the guard below makes it a no-op. Covers the paths that
+    // never see a helix/users response — chiefly loadPresetChannels, which
+    // deliberately opens a preset with no per-channel round-trip at all.
+    const missing = Array.from(
+      new Set(
+        get()
+          .slots.filter((s) => s.broadcasterType === undefined)
+          .map((s) => s.channelLogin.toLowerCase()),
+      ),
+    ).filter(Boolean);
+    if (missing.length === 0) return;
+
+    let byLogin: Map<string, string>;
+    try {
+      const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
+      const qs = missing.map((l) => `login=${encodeURIComponent(l)}`).join('&');
+      const resp = await fetch(`https://api.twitch.tv/helix/users?${qs}`, {
+        headers: { 'Client-ID': clientId, Authorization: `Bearer ${token}` },
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      byLogin = new Map(
+        (data.data || []).map((u: { login?: string; broadcaster_type?: string }) => [
+          (u.login || '').toLowerCase(),
+          u.broadcaster_type || '',
+        ]),
+      );
+    } catch (e) {
+      Logger.warn('[multiNookStore] Failed to backfill broadcaster types', e);
+      return;
+    }
+
+    // Same identity discipline as above: only the tiles that actually resolved
+    // get a new object, so this never re-renders the whole grid.
+    let changed = false;
+    const next = get().slots.map((s) => {
+      if (s.broadcasterType !== undefined) return s;
+      const type = byLogin.get(s.channelLogin.toLowerCase());
+      if (type === undefined) return s;
+      changed = true;
+      return { ...s, broadcasterType: type };
+    });
+    if (!changed) return;
+    set({ slots: next });
   },
 
   loadPresetChannels: async (channels, mode, presetId) => {
@@ -473,6 +586,8 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
     let resolvedName = '';
     let resolvedImage = '';
     let resolvedGameName = '';
+    let resolvedTitle = '';
+    let resolvedBroadcasterType = '';
     try {
       const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
       const response = await fetch(`https://api.twitch.tv/helix/users?login=${channelLogin}`, {
@@ -487,8 +602,9 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
           resolvedId = data.data[0].id;
           resolvedName = data.data[0].display_name;
           resolvedImage = data.data[0].profile_image_url;
-          
-          // Fetch channel info to get current game category
+          resolvedBroadcasterType = data.data[0].broadcaster_type;
+
+          // Fetch channel info to get the current category and stream title
           try {
             const channelResponse = await fetch(`https://api.twitch.tv/helix/channels?broadcaster_id=${resolvedId}`, {
               headers: {
@@ -500,6 +616,7 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
               const channelData = await channelResponse.json();
               if (channelData.data && channelData.data.length > 0) {
                 resolvedGameName = channelData.data[0].game_name;
+                resolvedTitle = channelData.data[0].title;
               }
             }
           } catch (e) {
@@ -526,6 +643,8 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
       channelName: resolvedName || channelLogin,
       profileImageUrl: resolvedImage || undefined,
       gameName: resolvedGameName || undefined,
+      title: resolvedTitle || undefined,
+      broadcasterType: resolvedBroadcasterType || undefined,
       volume: 0.5,
       muted: slots.length > 0, // Auto-mute if it's not the first one
       isFocused: slots.length === 0, // First slot is focused by default
@@ -836,6 +955,7 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
           const cleaned = { ...s };
           delete cleaned.streamUrl;
           delete cleaned.loadError;
+          delete cleaned.title;
           return cleaned as MultiNookSlot;
         });
         // Seed the chat selection so a restored grid opens with chat loading,
@@ -903,11 +1023,14 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
     const appStore = useAppStore.getState();
     const currentSettings = appStore.settings;
     
-    // Strip ephemeral URLs
+    // Strip ephemeral fields (proxy URL, load state, and the live stream title,
+    // which would be stale the moment the streamer edits it)
     const cleanSlots = get().slots.map(s => {
       const cleaned = { ...s };
       delete cleaned.streamUrl;
       delete cleaned.loadError;
+      delete cleaned.title;
+      delete cleaned.broadcasterType;
       return cleaned as MultiNookSlot;
     });
     

@@ -22,7 +22,17 @@ const TWITCH_GQL_CLIENT_ID: &str = "kimne78kx3ncx6brgo4mv6wki5h1ko";
 const KEYRING_SERVICE: &str = "streamnook_twitch_token";
 const KEYRING_USERNAME: &str = "user"; // Standardized username
 const REDIRECT_URI: &str = "http://localhost:3000/callback";
-const SCOPES: &str = "user:read:follows user:read:email chat:read chat:edit channel:read:redemptions channel:manage:redemptions moderator:read:followers openid user:manage:whispers user:read:whispers user:read:emotes channel:read:hype_train moderator:read:blocked_terms moderator:manage:chat_settings moderator:manage:unban_requests moderator:manage:banned_users moderator:manage:chat_messages moderator:read:warnings moderator:read:moderators moderator:read:vips moderator:read:chatters channel:manage:moderators channel:manage:vips moderator:manage:suspicious_users user:manage:chat_color user:manage:blocked_users user:read:blocked_users moderator:manage:announcements moderator:manage:shoutouts channel:edit:commercial channel:manage:raids channel:manage:broadcast moderation:read user:write:chat clips:edit";
+// Adding ANY scope here invalidates every stored token at once (see the
+// missing-scopes branch in check_token_health, which calls AccountStore::
+// reset_all). That makes a scope change a one-time, whole-user-base re-auth, so
+// new scopes are batched deliberately rather than added one at a time.
+//
+// The 2026-07 batch added, in one event:
+//   channel:manage:polls / channel:manage:predictions — create and resolve them
+//   moderator:manage:blocked_terms — /blockterm and /unblockterm (read-only
+//     moderator:read:blocked_terms was already held)
+//   user:bot — the chat-bot badge on /bot sends
+const SCOPES: &str = "user:read:follows user:read:email chat:read chat:edit channel:read:redemptions channel:manage:redemptions moderator:read:followers openid user:manage:whispers user:read:whispers user:read:emotes channel:read:hype_train moderator:read:blocked_terms moderator:manage:blocked_terms moderator:manage:chat_settings moderator:manage:unban_requests moderator:manage:banned_users moderator:manage:chat_messages moderator:read:warnings moderator:read:moderators moderator:read:vips moderator:read:chatters channel:manage:moderators channel:manage:vips channel:manage:polls channel:manage:predictions moderator:manage:suspicious_users user:manage:chat_color user:manage:blocked_users user:read:blocked_users moderator:manage:announcements moderator:manage:shoutouts channel:edit:commercial channel:manage:raids channel:manage:broadcast moderation:read user:write:chat user:bot clips:edit";
 const TOKEN_FILE_NAME: &str = ".twitch_token";
 
 /// Get the app data directory (works consistently in dev and release)
@@ -3295,7 +3305,7 @@ impl TwitchService {
                                 video {{ id }}
                                 game {{ id name }}
                                 curator {{ id displayName }}
-                                broadcaster {{ id displayName }}
+                                broadcaster {{ id displayName login }}
                             }}
                         }}
                         pageInfo {{ hasNextPage }}
@@ -3357,6 +3367,12 @@ impl TwitchService {
                 embed_url: str_at(node, &["embedURL"]),
                 broadcaster_id: str_at(node, &["broadcaster", "id"]),
                 broadcaster_name: str_at(node, &["broadcaster", "displayName"]),
+                broadcaster_login: node
+                    .get("broadcaster")
+                    .and_then(|b| b.get("login"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_lowercase()),
                 creator_id: str_at(node, &["curator", "id"]),
                 creator_name: str_at(node, &["curator", "displayName"]),
                 video_id: str_at(node, &["video", "id"]),
@@ -4724,6 +4740,252 @@ impl TwitchService {
         }
 
         Ok(())
+    }
+
+    /// Create a poll. Broadcaster-only (`channel:manage:polls`).
+    ///
+    /// `duration` is seconds (Twitch allows 15..1800). Channel-point voting is
+    /// only sent when a cost is set, because Twitch rejects the pair when the
+    /// enable flag is true with a zero cost.
+    pub async fn create_poll(
+        broadcaster_id: &str,
+        title: &str,
+        choices: &[String],
+        duration: u32,
+        points_per_vote: Option<u32>,
+    ) -> Result<serde_json::Value> {
+        let token = Self::get_token().await?;
+        let client = crate::services::http::client().clone();
+
+        let mut payload = serde_json::json!({
+            "broadcaster_id": broadcaster_id,
+            "title": title,
+            "duration": duration,
+            "choices": choices
+                .iter()
+                .map(|c| serde_json::json!({ "title": c }))
+                .collect::<Vec<_>>(),
+        });
+        if let Some(cost) = points_per_vote.filter(|c| *c > 0) {
+            payload["channel_points_voting_enabled"] = serde_json::json!(true);
+            payload["channel_points_per_vote"] = serde_json::json!(cost);
+        }
+
+        Self::helix_json_post("https://api.twitch.tv/helix/polls", &token, payload, "create poll")
+            .await
+    }
+
+    /// Add an AutoMod blocked term. Needs `moderator:manage:blocked_terms`.
+    ///
+    /// Twitch takes the ids as query params and only the phrase in the body.
+    pub async fn add_blocked_term(broadcaster_id: &str, text: &str) -> Result<serde_json::Value> {
+        let token = Self::get_token().await?;
+        let moderator_id = Self::get_user_info().await?.id;
+        let url = format!(
+            "https://api.twitch.tv/helix/moderation/blocked_terms?broadcaster_id={}&moderator_id={}",
+            broadcaster_id, moderator_id
+        );
+        Self::helix_json_post(&url, &token, serde_json::json!({ "text": text }), "add blocked term")
+            .await
+    }
+
+    /// Remove a blocked term by its phrase.
+    ///
+    /// The delete endpoint only takes the term's id, so this looks the phrase up
+    /// first. Matching is case-insensitive because Twitch stores terms lowercased
+    /// but echoes back whatever case they were added in.
+    pub async fn remove_blocked_term(broadcaster_id: &str, text: &str) -> Result<()> {
+        let token = Self::get_token().await?;
+        let moderator_id = Self::get_user_info().await?.id;
+        let client = crate::services::http::client().clone();
+
+        let list_url = format!(
+            "https://api.twitch.tv/helix/moderation/blocked_terms?broadcaster_id={}&moderator_id={}&first=100",
+            broadcaster_id, moderator_id
+        );
+        let listed = client
+            .get(&list_url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+        let value = Self::helix_json_result(listed, "list blocked terms").await?;
+
+        let wanted = text.trim().to_lowercase();
+        let id = value["data"]
+            .as_array()
+            .and_then(|rows| {
+                rows.iter().find(|r| {
+                    r["text"].as_str().map(|t| t.trim().to_lowercase()) == Some(wanted.clone())
+                })
+            })
+            .and_then(|r| r["id"].as_str().map(String::from))
+            .ok_or_else(|| anyhow::anyhow!("\"{}\" is not in the blocked terms list", text.trim()))?;
+
+        let del_url = format!(
+            "https://api.twitch.tv/helix/moderation/blocked_terms?broadcaster_id={}&moderator_id={}&id={}",
+            broadcaster_id, moderator_id, id
+        );
+        let response = client
+            .delete(&del_url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            let body = response.text().await.unwrap_or_default();
+            error!("[TwitchService] Failed to remove blocked term: {}", body);
+            return Err(anyhow::anyhow!("Could not remove that blocked term"));
+        }
+        Ok(())
+    }
+
+    /// The channel's currently-running poll, if any.
+    ///
+    /// Twitch exposes no GQL read for polls (the web client learns them over
+    /// PubSub), which is why the overlay is event-fed. Helix does have one, and
+    /// it became reachable when `channel:manage:polls` was added — so commands
+    /// that need the live poll id no longer have to guess at it.
+    pub async fn get_active_poll(broadcaster_id: &str) -> Result<Option<serde_json::Value>> {
+        let token = Self::get_token().await?;
+        let client = crate::services::http::client().clone();
+        let url = format!(
+            "https://api.twitch.tv/helix/polls?broadcaster_id={}&first=1",
+            broadcaster_id
+        );
+        let response = client
+            .get(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+        let value = Self::helix_json_result(response, "get polls").await?;
+        // Helix returns the most recent poll regardless of state, so an ended
+        // one must not be reported as live.
+        let poll = value["data"].get(0).cloned().filter(|p| {
+            matches!(p["status"].as_str(), Some("ACTIVE"))
+        });
+        Ok(poll)
+    }
+
+    /// End a poll. `status` is TERMINATED (show the result) or ARCHIVED (hide it).
+    pub async fn end_poll(broadcaster_id: &str, poll_id: &str, status: &str) -> Result<serde_json::Value> {
+        let token = Self::get_token().await?;
+        let payload = serde_json::json!({
+            "broadcaster_id": broadcaster_id,
+            "id": poll_id,
+            "status": status,
+        });
+        Self::helix_json_patch("https://api.twitch.tv/helix/polls", &token, payload, "end poll").await
+    }
+
+    /// Create a prediction. Broadcaster-only (`channel:manage:predictions`).
+    ///
+    /// Note the field is `prediction_window`, not `prediction_window_seconds`.
+    pub async fn create_prediction(
+        broadcaster_id: &str,
+        title: &str,
+        outcomes: &[String],
+        window: u32,
+    ) -> Result<serde_json::Value> {
+        let token = Self::get_token().await?;
+        let payload = serde_json::json!({
+            "broadcaster_id": broadcaster_id,
+            "title": title,
+            "prediction_window": window,
+            "outcomes": outcomes
+                .iter()
+                .map(|o| serde_json::json!({ "title": o }))
+                .collect::<Vec<_>>(),
+        });
+        Self::helix_json_post(
+            "https://api.twitch.tv/helix/predictions",
+            &token,
+            payload,
+            "create prediction",
+        )
+        .await
+    }
+
+    /// Lock, resolve or cancel a prediction. `status` is LOCKED, RESOLVED or
+    /// CANCELED; RESOLVED additionally requires the winning outcome id.
+    pub async fn end_prediction(
+        broadcaster_id: &str,
+        prediction_id: &str,
+        status: &str,
+        winning_outcome_id: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let token = Self::get_token().await?;
+        let mut payload = serde_json::json!({
+            "broadcaster_id": broadcaster_id,
+            "id": prediction_id,
+            "status": status,
+        });
+        if let Some(outcome) = winning_outcome_id {
+            payload["winning_outcome_id"] = serde_json::json!(outcome);
+        }
+        Self::helix_json_patch(
+            "https://api.twitch.tv/helix/predictions",
+            &token,
+            payload,
+            "end prediction",
+        )
+        .await
+    }
+
+    /// POST a JSON body to Helix and return the parsed response. Surfaces
+    /// Twitch's own error text, which names the offending field on a 400.
+    async fn helix_json_post(
+        url: &str,
+        token: &str,
+        payload: serde_json::Value,
+        what: &str,
+    ) -> Result<serde_json::Value> {
+        let client = crate::services::http::client().clone();
+        let response = client
+            .post(url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .json(&payload)
+            .send()
+            .await?;
+        Self::helix_json_result(response, what).await
+    }
+
+    async fn helix_json_patch(
+        url: &str,
+        token: &str,
+        payload: serde_json::Value,
+        what: &str,
+    ) -> Result<serde_json::Value> {
+        let client = crate::services::http::client().clone();
+        let response = client
+            .patch(url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .json(&payload)
+            .send()
+            .await?;
+        Self::helix_json_result(response, what).await
+    }
+
+    async fn helix_json_result(
+        response: reqwest::Response,
+        what: &str,
+    ) -> Result<serde_json::Value> {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            error!("[TwitchService] Failed to {}: {} {}", what, status, body);
+            // Twitch puts a human-readable reason in `message`; pass it through
+            // so the composer can show why rather than a generic failure.
+            let reason = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(String::from))
+                .unwrap_or_else(|| format!("HTTP {}", status));
+            return Err(anyhow::anyhow!("{}", reason));
+        }
+        Ok(serde_json::from_str(&body).unwrap_or(serde_json::Value::Null))
     }
 
     /// Start Raid

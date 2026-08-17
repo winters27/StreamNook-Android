@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { Eye, EyeOff, Columns, X, Sparkles, Gauge, Zap } from 'lucide-react';
 import CompactViewSettings from './CompactViewSettings';
-import { SettingsSection, SettingsRow } from './_primitives';
+import { SettingsSection, SettingsRow, SegmentedSelect } from './_primitives';
 import { useAppStore } from '../../stores/AppStore';
-import type { MotionMode } from '../../types';
+import type { MotionMode, CloseToTrayMode } from '../../types';
 
 export type SidebarMode = 'expanded' | 'compact' | 'hidden' | 'disabled';
 
@@ -70,6 +70,20 @@ const InterfaceSettings = () => {
 
     // Full (default) animates everything; Reduced keeps fades but drops
     // movement; Off makes the UI instant and snappy (best on low-end PCs).
+    const closeToTray: CloseToTrayMode = settings.close_to_tray ?? 'with-popouts';
+    const closeToTrayDescription = (() => {
+        switch (closeToTray) {
+            case 'always':
+                return 'Closing the window always leaves StreamNook running in the system tray. Quit it from the tray icon.';
+            case 'never':
+                return 'Closing the window always quits StreamNook, even while MultiChat popouts are open.';
+            default:
+                return 'Closing the window quits StreamNook, unless MultiChat popouts are still open — then it minimizes to the system tray so they keep working.';
+        }
+    })();
+
+    const keepOnTopInCompact = settings.keep_on_top_in_compact === true;
+
     const motionMode: MotionMode = settings.motion_mode ?? 'full';
     const handleMotionModeChange = (mode: MotionMode) => {
         void updateSettings({ ...settings, motion_mode: mode });
@@ -204,6 +218,23 @@ const InterfaceSettings = () => {
                 </SettingsRow>
             </SettingsSection>
 
+            <SettingsSection id="settings-section-window-close" label="Closing the Window">
+                <SettingsRow
+                    title="Close button"
+                    description={closeToTrayDescription}
+                >
+                    <SegmentedSelect<CloseToTrayMode>
+                        value={closeToTray}
+                        onChange={(mode) => void updateSettings({ ...settings, close_to_tray: mode })}
+                        options={[
+                            { value: 'with-popouts', label: 'Only with popouts' },
+                            { value: 'always', label: 'Always minimize' },
+                            { value: 'never', label: 'Always quit' },
+                        ]}
+                    />
+                </SettingsRow>
+            </SettingsSection>
+
             <SettingsSection id="settings-section-settings-window" label="Settings Window">
                 <SettingsRow
                     title="Compact settings window"
@@ -212,6 +243,19 @@ const InterfaceSettings = () => {
                         <Toggle
                             enabled={compactSettingsWindow}
                             onChange={() => handleCompactSettingsWindowChange(!compactSettingsWindow)}
+                        />
+                    }
+                />
+            </SettingsSection>
+
+            <SettingsSection id="settings-section-window-on-top" label="Keep on Top">
+                <SettingsRow
+                    title="Keep on top in Compact View"
+                    description="While Compact View is active, float the small player above other applications so clicking your browser or another window does not bury it. Releases as soon as you leave Compact View."
+                    control={
+                        <Toggle
+                            enabled={keepOnTopInCompact}
+                            onChange={() => void updateSettings({ ...settings, keep_on_top_in_compact: !keepOnTopInCompact })}
                         />
                     }
                 />

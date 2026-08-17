@@ -135,6 +135,17 @@ function build(): BindableCommand[] {
       keywords: 'fullscreen full screen borderless taskbar immersive window maximize theater theatre cinema',
       run: () => app().toggleWindowFullscreen(),
     },
+    {
+      id: 'window.toggleKeepOnTop',
+      label: 'Keep compact player on top',
+      description: 'While in Compact View, float the small player above other apps so clicking your browser does not bury it.',
+      category: 'Application',
+      context: 'global',
+      defaultBindings: ['Ctrl+Shift+A'],
+      keywords: 'always on top pin float above stay in front behind browser buried cover overlay compact mini player',
+      isAvailable: () => app().isTheaterMode,
+      run: () => app().toggleKeepOnTop(),
+    },
 
     // ---------------- Navigation ----------------
     {

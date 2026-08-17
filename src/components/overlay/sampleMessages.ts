@@ -117,6 +117,18 @@ const e = (content: string, id: string): MessageSegment => ({
   emote_url: TWITCH_EMOTE(id),
 });
 
+// A cheermote (bits) segment, as the live tokenizers emit one. `prefix` is
+// lowercased there, and a channel's own prefix can contain digits.
+const cm = (content: string, prefix: string, bits: number, tier: string, color: string): MessageSegment => ({
+  type: 'cheermote',
+  content,
+  prefix,
+  bits,
+  tier,
+  color,
+  cheermote_url: `https://d3aqoihi2n8ty8.cloudfront.net/actions/cheer/dark/animated/${tier}/2.gif`,
+});
+
 // Shared empty scaffolding so each sample stays terse.
 const base = (
   id: string,
@@ -326,8 +338,12 @@ export const SAMPLE_MESSAGES: OverlayMessage[] = [
     },
   ),
   // A watch streak is a MILESTONE, not a subscription — distinct icon + wording.
-  base('m12', 'twitch', 'streaker', 'Streaker', '#ffd166', [],
+  // The tags mirror the real USERNOTICE so the fire glyph, the app's phrasing,
+  // and the +points chip all preview; the viewer's share message is the body.
+  base('m12', 'twitch', 'streaker', 'Streaker', '#ffd166',
+    [t('still no idea what game this is')],
     {
+      tags: { 'msg-id': 'viewermilestone', 'msg-param-category': 'watch-streak', 'msg-param-value': '20', 'msg-param-copoReward': '450' },
       metadata: {
         is_action: false, is_mentioned: false, is_first_message: false, is_from_shared_chat: false,
         formatted_timestamp: '9:46 PM',
@@ -384,6 +400,32 @@ export const SAMPLE_MESSAGES: OverlayMessage[] = [
   base('m15', 'kick', 'kicker', 'Kicker', '#53fc18', [t('touching grass is a myth spread by big outdoor'), e('Kappa', '25')]),
   base('m16', 'youtube', 'ytchat', 'YT Chat', '#ff8a8a', [t('commenting so the algorithm blesses this stream')]),
   base('m17', 'twitch', 'poggers', 'Poggers', '#c792ea', [e('PogChamp', '305954156'), t('W play, framing this and putting it on my wall')]),
+  // A gigantified emote (bits power-up): the last emote renders at 4x below the
+  // line, so the Giant emotes toggle previews.
+  base('m28', 'twitch', 'gigachadd', 'GigaChadd', '#ff7f50',
+    [t('this moment deserves the big one'), e('PogChamp', '305954156')],
+    { tags: { 'msg-id': 'gigantified-emote-message' } },
+  ),
+  // Emote-only gigantify: with Inline placement the 4x emote lands right after the
+  // name, which is the layout the placement control exists to offer.
+  base('m29', 'twitch', 'bigmood', 'BigMood', '#8b5cf6',
+    [e('PogChamp', '305954156')],
+    { tags: { 'msg-id': 'gigantified-emote-message' } },
+  ),
+  // A bits cheer. It is an ordinary chat message carrying a bit count, NOT a
+  // USERNOTICE, which is why the Bits messages control exists: 'message' renders this
+  // row inline, 'event' promotes it to the cheer card. The channel-prefix cheermote is
+  // deliberate — those are the ones that used to fall through as plain text.
+  base('m30', 'twitch', 'bitsbaron', 'BitsBaron', '#f6c445',
+    [cm('mathox1Cheer100', 'mathox1cheer', 100, '100', '#9c3ee8'), t('take my money, this play was unreal')],
+    {
+      metadata: {
+        is_action: false, is_mentioned: false, is_first_message: false, is_from_shared_chat: false,
+        formatted_timestamp: '9:47 PM',
+        bits_amount: 100,
+      },
+    },
+  ),
   base('m18', 'tiktok', 'ttchat', 'TT Chat', '#00f2ea', [t('showed up, said hi, immediately leaving')]),
 ];
 

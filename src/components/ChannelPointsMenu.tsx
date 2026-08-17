@@ -5,6 +5,7 @@ import { ChannelReward, RedemptionResult, UnlockedEmote } from '../types';
 
 import { Logger } from '../utils/logger';
 import { ChannelPointsIcon } from './ChannelPointsIcon';
+import { Tooltip } from './ui/Tooltip';
 
 interface ChannelPointsMenuProps {
   channelLogin: string;  // Username for fetching rewards
@@ -13,7 +14,9 @@ interface ChannelPointsMenuProps {
   customPointsName?: string | null;
   customPointsIconUrl?: string | null;
   onClose: () => void;
-  onBalanceUpdate: () => void;
+  // Awaited when the user refreshes by hand, so the balance can show a pending
+  // state for exactly as long as the fetch actually takes.
+  onBalanceUpdate: () => void | Promise<void>;
   onEmotesChange?: () => void; // Callback to refresh emotes after unlocking
 }
 
@@ -31,7 +34,20 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [redeemingId, setRedeemingId] = useState<string | null>(null);
+  // The balance already refreshes on a timer and on earn/spend events. This is
+  // the escape hatch for when it still looks stale.
+  const [isRefreshingBalance, setIsRefreshingBalance] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  const handleRefreshBalance = async () => {
+    if (isRefreshingBalance) return;
+    setIsRefreshingBalance(true);
+    try {
+      await onBalanceUpdate();
+    } finally {
+      setIsRefreshingBalance(false);
+    }
+  };
 
   // Highlighted message input modal state
   const [showHighlightModal, setShowHighlightModal] = useState(false);
@@ -430,20 +446,31 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
           <span className="text-sm font-medium text-textSecondary">
             {customPointsName || 'Channel Points'}
           </span>
-          <div className="flex items-center gap-1.5">
-            {customPointsIconUrl ? (
-              <img 
-                src={customPointsIconUrl} 
-                alt="" 
-                className="w-4 h-4"
-              />
-            ) : (
-              <ChannelPointsIcon size={16} className="text-accent-neon" />
-            )}
-            <span className="text-base font-bold text-accent-neon">
-              {currentBalance?.toLocaleString() ?? '--'}
-            </span>
-          </div>
+          <Tooltip content="Click to refresh" side="top">
+            <button
+              type="button"
+              onClick={handleRefreshBalance}
+              disabled={isRefreshingBalance}
+              aria-label={`Refresh ${customPointsName || 'channel points'} balance`}
+              className="flex items-center gap-1.5 rounded-md px-1.5 py-0.5 -mr-1.5 transition-colors hover:bg-surface-hover disabled:opacity-60"
+            >
+              {customPointsIconUrl ? (
+                <img
+                  src={customPointsIconUrl}
+                  alt=""
+                  className={`w-4 h-4 ${isRefreshingBalance ? 'animate-spin' : ''}`}
+                />
+              ) : (
+                <ChannelPointsIcon
+                  size={16}
+                  className={`text-accent-neon ${isRefreshingBalance ? 'animate-spin' : ''}`}
+                />
+              )}
+              <span className="text-base font-bold text-accent-neon">
+                {currentBalance?.toLocaleString() ?? '--'}
+              </span>
+            </button>
+          </Tooltip>
         </div>
       </div>
 

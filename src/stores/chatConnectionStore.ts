@@ -31,6 +31,8 @@ import { IS_MOBILE } from '../utils/platform';
 import { useAppStore } from './AppStore';
 import { useGiftBombStore, type GiftRecipient } from './giftBombStore';
 import { giftBombOriginOf, isGiftBombAnnouncement, isGiftBombChild } from '../utils/giftBombCollapse';
+import { useMessageRepeatStore, type RepeatParticipant } from './messageRepeatStore';
+import { normalizeForRepeat, isPrivilegedChatter } from '../utils/messageRepeat';
 import type { SongMatch } from '../utils/songId';
 
 // Hard caps borrowed from the prior single-channel hook. Keeping them as
@@ -217,6 +219,16 @@ let healthCheckTimer: ReturnType<typeof setInterval> | null = null;
 let lastMessageTime = Date.now();
 let intentionalDisconnect = false;
 let currentUserId: string | null = null;
+// True between a backend IRC_RECONNECTING and the next IRC_CONNECTED; gates
+// the missed-message backfill so a first connect doesn't double-preload.
+let backendReconnecting = false;
+// Approximate start of the current outage: the last time any frame arrived
+// when IRC_RECONNECTING was first seen. Bounds the backfill fetch window.
+let outageStartedAtMs: number | null = null;
+// Consecutive watchdog reconnects without an IRC_CONNECTED in between. At 2,
+// the backend task is alive but wedged (start_chat's idempotent path can't
+// fix that), so the watchdog escalates to a full stop_chat teardown.
+let watchdogCycles = 0;
 
 // Every Twitch user id that belongs to the local user (primary + any linked
 // secondary accounts). Used so a message we sent from a secondary account is
@@ -283,6 +295,56 @@ const emoteSubscribers = new Map<string, Set<() => void>>();
 // (OverlayChat.collapseGiftBombs) via the shared matchers in giftBombCollapse.
 const announcedGiftBombOrigins = new Set<string>();
 const MAX_TRACKED_BOMB_ORIGINS = 200;
+
+// Open repeat runs per channel: normalized message text -> the run's anchor.
+// `pushSeq` is the value of that channel's push counter when the anchor landed,
+// so we can tell whether the anchor has since been trimmed out of the buffer
+// without scanning it. A run whose anchor is gone must not swallow later copies,
+// or they'd vanish with nothing on screen carrying their count.
+interface RepeatRun {
+  anchorId: string;
+  /** Last time a copy joined. Slides, so a sustained wave stays one run. */
+  atMs: number;
+  pushSeq: number;
+  /** Messages in the run, including the anchor. */
+  count: number;
+  participants: RepeatParticipant[];
+}
+const openRepeatRuns = new Map<string, Map<string, RepeatRun>>();
+// Monotonic count of messages pushed per channel. Only ever incremented and
+// compared, so wraparound isn't a practical concern.
+const channelPushSeq = new Map<string, number>();
+const MAX_OPEN_RUNS_PER_CHANNEL = 200;
+
+function pruneRepeatRuns(runs: Map<string, RepeatRun>, nowMs: number, windowMs: number): void {
+  for (const [key, run] of runs) {
+    if (nowMs - run.atMs > windowMs) runs.delete(key);
+  }
+  while (runs.size > MAX_OPEN_RUNS_PER_CHANNEL) {
+    const oldest = runs.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    runs.delete(oldest);
+  }
+}
+
+/** Whether the logged-in user moderates the channel this slice belongs to.
+ *  Reads the badges already cached on the slice, so it costs nothing. */
+function isModeratorOfSlice(slice: ChannelSlice): boolean {
+  const badges = slice.userBadges ?? slice.userBadgesFromIrc ?? '';
+  if (!badges) return false;
+  return /\bmoderator\/|\bbroadcaster\/|\bglobal_mod\//.test(badges);
+}
+
+/** Forget every open run for a channel (channel switch, disconnect, clear). */
+export function resetRepeatRuns(channelKey?: string): void {
+  if (channelKey) {
+    openRepeatRuns.delete(channelKey.toLowerCase());
+    channelPushSeq.delete(channelKey.toLowerCase());
+    return;
+  }
+  openRepeatRuns.clear();
+  channelPushSeq.clear();
+}
 
 // Extract the gift-bomb origin + recipient from a buffered message, if it is a
 // (non-suppressed, out-of-order) gift child. Raw-string rows and non-gift rows
@@ -670,6 +732,43 @@ function getActiveHistoryMax(): number {
   return Math.max(50, Math.min(1000, Math.round(setting)));
 }
 
+// Timestamp of a buffered message in unix ms: structured rows carry
+// tmi-sent-ts millis in `timestamp`; raw IRC strings carry the tag; system
+// rows injected before that field existed have neither.
+function messageTs(m: any): number | null {
+  if (typeof m === 'string') {
+    const t = m.match(/(?:^|;)tmi-sent-ts=(\d+)/)?.[1];
+    return t ? Number(t) : null;
+  }
+  const n = Number(m?.timestamp);
+  return Number.isFinite(n) ? n : null;
+}
+
+// Insert backfill messages (ascending by timestamp, already deduped) into the
+// buffer chronologically: each lands right after the last existing row whose
+// timestamp is not later. Scans from the end because gap messages belong near
+// it; timestamp-less rows never move and never anchor an insertion.
+function insertChronological(slice: ChannelSlice, incoming: any[]): void {
+  if (incoming.length === 0) return;
+  const out = [...slice.messages];
+  for (const msg of incoming) {
+    const ts = messageTs(msg);
+    let insertAt = out.length;
+    if (ts !== null) {
+      insertAt = 0;
+      for (let i = out.length - 1; i >= 0; i--) {
+        const existingTs = messageTs(out[i]);
+        if (existingTs !== null && existingTs <= ts) {
+          insertAt = i + 1;
+          break;
+        }
+      }
+    }
+    out.splice(insertAt, 0, msg);
+  }
+  slice.messages = out;
+}
+
 function pushMessage(slice: ChannelSlice, msg: any) {
   const historyMax = getActiveHistoryMax();
   const limit = slice.isPausedForBuffer ? historyMax + CHAT_BUFFER_SIZE : historyMax;
@@ -809,11 +908,30 @@ function startHealthCheck() {
       if (!currentStream || isAutoSwitching) return;
       (async () => {
         try {
-          const online = await invoke<boolean>('check_stream_online', {
-            channel: currentStream.user_login,
+          // The command's argument is user_login (camelCased by Tauri); passing
+          // { channel } rejects with a missing-arg error, which lands in the
+          // catch below and silently turned this offline check into a chat
+          // reconnect every time.
+          const online = await invoke<object | null>('check_stream_online', {
+            userLogin: currentStream.user_login,
           });
           if (online) {
             Logger.debug('[ChatStore] Stream online but chat dead, reconnecting chat');
+            watchdogCycles++;
+            if (watchdogCycles >= 2) {
+              // Two watchdog reconnects without recovery: the backend task is
+              // alive but wedged, and start_chat's idempotent path cannot fix
+              // that. Force the one true teardown before reconnecting.
+              Logger.warn(
+                '[ChatStore] Watchdog escalation: stopping chat service for cold restart',
+              );
+              watchdogCycles = 0;
+              try {
+                await invoke('stop_chat');
+              } catch {
+                // Proceed to reconnect regardless.
+              }
+            }
             scheduleReconnect(0);
           } else {
             Logger.debug('[ChatStore] Stream offline, triggering handleStreamOffline');
@@ -1053,15 +1171,44 @@ async function initializeBadgesForChannel(channelId: string | null): Promise<voi
   }
 }
 
-async function preloadChannel(channel: string, channelId: string | null): Promise<void> {
+interface PreloadOpts {
+  mode?: 'initial' | 'backfill';
+  /** Backfill only: unix ms bounds of the outage window (null = unbounded). */
+  afterMs?: number | null;
+  beforeMs?: number | null;
+}
+
+// Backfill fetch size: assume at most ~10 messages/sec of downtime (the
+// reference-client heuristic), clamped to the buffer cap and the history
+// service's 800-message ceiling.
+function backfillLimit(afterMs: number | null): number {
+  const cap = Math.min(getActiveHistoryMax(), 800);
+  if (afterMs === null) return Math.min(100, cap);
+  const seconds = Math.max(1, Math.ceil((Date.now() - afterMs) / 1000));
+  return Math.max(10, Math.min(seconds * 10, cap));
+}
+
+async function preloadChannel(
+  channel: string,
+  channelId: string | null,
+  opts?: PreloadOpts,
+): Promise<void> {
   if (!channelId) return;
+  const mode = opts?.mode ?? 'initial';
   const __tBadges = performance.now();
   await initializeBadgesForChannel(channelId);
   Logger.info(`[ChatPerf] preload: initializeBadgesForChannel ${Math.round(performance.now() - __tBadges)}ms`);
 
   try {
     const __tRecent = performance.now();
-    const raw = await fetchRecentMessagesAsIRC(channel, channelId);
+    const raw =
+      mode === 'backfill'
+        ? await fetchRecentMessagesAsIRC(channel, channelId, {
+            limit: backfillLimit(opts?.afterMs ?? null),
+            afterMs: opts?.afterMs ?? null,
+            beforeMs: opts?.beforeMs ?? null,
+          })
+        : await fetchRecentMessagesAsIRC(channel, channelId);
     Logger.info(`[ChatPerf] preload: fetchRecentMessages ${Math.round(performance.now() - __tRecent)}ms (${raw.length} msgs)`);
     if (raw.length === 0) return;
     const __tParse = performance.now();
@@ -1126,8 +1273,16 @@ async function preloadChannel(channel: string, channelId: string | null): Promis
         filtered.push(msg);
       }
 
-      // Prepend so recent history appears before live messages
-      slice.messages = [...filtered, ...slice.messages];
+      // Initial load prepends (history belongs above the live stream that
+      // raced in during the fetch). A post-outage backfill inserts each gap
+      // message chronologically instead, so the hole fills in place between
+      // the pre-outage rows, the disconnect marker, and post-reconnect live
+      // rows.
+      if (mode === 'backfill') {
+        insertChronological(slice, filtered);
+      } else {
+        slice.messages = [...filtered, ...slice.messages];
+      }
       const historyMax = getActiveHistoryMax();
       const limit = slice.isPausedForBuffer ? historyMax + CHAT_BUFFER_SIZE : historyMax;
       if (slice.messages.length > limit) {
@@ -1174,9 +1329,38 @@ function handleWsMessage(raw: string) {
     setAllChannelsConnected(true);
     setAllChannelsError(null);
     reconnectAttempts = 0;
+    watchdogCycles = 0;
+    if (backendReconnecting) {
+      backendReconnecting = false;
+      // Backfill anything missed during the backend outage, bounded to the
+      // outage window (30s overlap margin on each side; dedup by message id
+      // makes overlap harmless). Messages insert chronologically, so the gap
+      // fills in place instead of stacking at the end.
+      const afterMs = outageStartedAtMs !== null ? outageStartedAtMs - 30_000 : null;
+      outageStartedAtMs = null;
+      const beforeMs = Date.now() + 30_000;
+      const { channels } = useChatConnectionStore.getState();
+      for (const [key, slice] of channels) {
+        if (slice.provider === 'twitch' && slice.channelId) {
+          void preloadChannel(key, slice.channelId, { mode: 'backfill', afterMs, beforeMs });
+        }
+      }
+    }
     return;
   }
   if (raw === 'IRC_RECONNECTING') {
+    if (!backendReconnecting) {
+      backendReconnecting = true;
+      outageStartedAtMs = lastMessageTime;
+      // Inline marker so the gap is visible in the transcript, not just in a
+      // transient banner. The backfill stitches the missed messages around it.
+      const { channels } = useChatConnectionStore.getState();
+      for (const [key, slice] of channels) {
+        if (slice.provider === 'twitch') {
+          injectSystemMessage(key, 'Chat connection lost, reconnecting...');
+        }
+      }
+    }
     setAllChannelsError('Reconnecting to chat...');
     return;
   }
@@ -1732,31 +1916,109 @@ function appendStructuredMessage(slice: ChannelSlice, parsed: any) {
     }
   }
 
+  // Repeat collapse: fold a run of the same message into the first one's
+  // counter. Cross-user by design — the noisy case is many people posting one
+  // thing, not one person repeating (Twitch already rejects that).
+  let repeatSuppressed = false;
+  if (slice.channel) {
+    // Counts every message that gets this far, events included, so the
+    // "has the anchor been trimmed yet" distance below can't undercount.
+    const chKey = slice.channel.toLowerCase();
+    const seq = (channelPushSeq.get(chKey) ?? 0) + 1;
+    channelPushSeq.set(chKey, seq);
+
+    const rp = useAppStore.getState().settings.message_repeat;
+    const mode = rp?.mode ?? 'collapse';
+    // Moderators need every message actionable, so runs stay expanded in
+    // channels they moderate unless they opt out.
+    const moderatingHere = (rp?.keep_all_when_moderator ?? true) && isModeratorOfSlice(slice);
+    const privileged = (rp?.exempt_privileged ?? true) && isPrivilegedChatter(parsed.badges);
+
+    if (
+      mode !== 'off' &&
+      !giftBombChildSuppressed &&
+      !parsed.metadata?.msg_type &&
+      !moderatingHere &&
+      !privileged
+    ) {
+      const key = normalizeForRepeat(parsed.content ?? '', rp?.match ?? 'normalized');
+      if (key) {
+        const windowMs = Math.max(1, rp?.window_seconds ?? 60) * 1000;
+        const now = Date.now();
+        let runs = openRepeatRuns.get(chKey);
+        if (!runs) {
+          runs = new Map();
+          openRepeatRuns.set(chKey, runs);
+        }
+        pruneRepeatRuns(runs, now, windowMs);
+
+        // The anchor has scrolled out once more than a full buffer's worth of
+        // messages have been pushed since it landed. A run whose anchor is gone
+        // must not swallow copies, or they'd disappear with nothing carrying
+        // their count.
+        const bufferCap = getActiveHistoryMax() + CHAT_BUFFER_SIZE;
+        const existing = runs.get(key);
+        const anchorLive = !!existing && seq - existing.pushSeq < bufferCap;
+
+        if (existing && anchorLive && now - existing.atMs <= windowMs) {
+          existing.count += 1;
+          existing.atMs = now;
+          if (existing.participants.length < 20) {
+            existing.participants.push({
+              userId: parsed.user_id,
+              displayName: parsed.display_name || parsed.username,
+            });
+          }
+          // Collapse folds the count onto the first row and hides this one.
+          // Label leaves every row on screen and numbers THIS one, so the
+          // chat reads x2, x3, x4 going down.
+          const rowId = mode === 'collapse' ? existing.anchorId : messageId;
+          useMessageRepeatStore
+            .getState()
+            .noteRun(rowId, existing.count, existing.participants);
+          repeatSuppressed = mode === 'collapse';
+        } else {
+          runs.set(key, {
+            anchorId: messageId,
+            atMs: now,
+            pushSeq: seq,
+            count: 1,
+            participants: [],
+          });
+        }
+      }
+    }
+  }
+
   // TikTok likes are high-frequency engagement, not conversation. Keep them OUT of
   // the chat feed (they'd bury real chat) but still feed the activity panel below
   // (the producer reads `parsed` directly, not the slice, so skipping the queue is
   // safe). Follows / gifts stay inline like every other platform's events.
   const activityOnly =
     (parsed.provider === 'tiktok' && parsed.metadata?.msg_type === 'tiktok_like') ||
-    giftBombChildSuppressed;
+    giftBombChildSuppressed ||
+    repeatSuppressed;
 
   if (!activityOnly) {
     queueMessage(slice.channel, parsed);
+  }
 
-    // Active /nuke future-window check. No-op if no nukes are armed for this
-    // channel. Fire-and-forget; nuke action errors are logged inside the engine.
-    if (slice.channel) {
-      withNukeEngine((mod) => {
-        void mod.checkActiveNukesForMessage(slice.channel, parsed);
-      });
-    }
+  // Side effects run on every real chat message, including copies that repeat
+  // collapse folded out of the view. A copypasta wave is exactly what /nuke
+  // targets, so hiding copies from the engine would leave it actioning only the
+  // first one; a keyword reminder should fire on a folded message too.
+  // Gift-bomb children and TikTok likes are events, not chat, so they stay out.
+  if (slice.channel && !giftBombChildSuppressed && parsed.metadata?.msg_type !== 'tiktok_like') {
+    // No-op if no nukes are armed for this channel. Fire-and-forget; nuke
+    // action errors are logged inside the engine.
+    withNukeEngine((mod) => {
+      void mod.checkActiveNukesForMessage(slice.channel, parsed);
+    });
 
-    // Keyword reminders. No-op unless a keyword reminder is scoped to this channel.
-    if (slice.channel) {
-      withReminderEngine((mod) => {
-        mod.checkRemindersForMessage(slice.channel, parsed);
-      });
-    }
+    // No-op unless a keyword reminder is scoped to this channel.
+    withReminderEngine((mod) => {
+      mod.checkRemindersForMessage(slice.channel, parsed);
+    });
   }
 
   // Mirror non-chat channel events (subs, gifts, ... and future follows/raids/
@@ -2078,6 +2340,8 @@ export async function releaseChannel(
   // its component-driven unsubscribe lifecycle.
   pendingByChannel.delete(key);
   emoteCache.delete(key);
+  // Open repeat runs point at message ids in the buffer we just dropped.
+  resetRepeatRuns(key);
   inflightEmoteFetches.delete(key);
   try {
     if (provider === 'twitch') {
@@ -2272,6 +2536,9 @@ export function injectSystemMessage(channel: string, message: string, songCard?:
   withSlice(channel, (slice) => {
     pushMessage(slice, {
       id: sysMsgId,
+      // Stamped so chronological backfill insertion can order gap messages
+      // around system rows (e.g. the disconnect marker) instead of past them.
+      timestamp: String(Date.now()),
       username: 'System',
       display_name: 'Twitch',
       color: '#9147ff',

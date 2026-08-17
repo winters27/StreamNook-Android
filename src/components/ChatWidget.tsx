@@ -4,8 +4,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import ChatMessageList from './ChatMessageList';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { Pickaxe, Gift, Settings } from 'lucide-react';
+import { openProfilePopup } from '../utils/openProfilePopup';
+import { Pickaxe, Gift, Settings, Zap, BarChart3 } from 'lucide-react';
 
 // Channel Points Icon (Twitch style)
 const ChannelPointsIcon = ({ className = "", size = 14 }: { className?: string; size?: number }) => (
@@ -31,6 +31,8 @@ import UserProfileCard from './UserProfileCard';
 import ErrorBoundary from './ErrorBoundary';
 import PredictionOverlay from './PredictionOverlay';
 import PollOverlay from './PollOverlay';
+import { ChatOverlayStack } from './chat/ChatOverlayStack';
+import PollPredictionComposer from './chat/PollPredictionComposer';
 import HypeTrainBanner from './HypeTrainBanner';
 import ViewersPanel from './ViewersPanel';
 import ModRoomPane from './modroom/ModRoomPane';
@@ -1053,6 +1055,89 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
     ? "Add a message (optional)..."
     : (isSubOnly && !canBypassSubOnly ? "Subscriber-Only Mode" : "Send a message");
 
+  // Optional composer chrome. The placeholder keeps its text whenever it is
+  // saying something the user can act on (read-only, connect your account,
+  // sub-only), so hiding it only ever drops the idle "Send a message" prompt.
+  const chatInputPrefs = settings.chat_input;
+  const showEmoteButton = !chatInputPrefs?.hide_emote_button;
+  const showPointsBalance = !chatInputPrefs?.hide_points_balance;
+  const visiblePlaceholder =
+    chatInputPrefs?.hide_placeholder && !isInputDisabled && !isWatchStreakMode
+      ? ''
+      : chatPlaceholder;
+  // 36px clears the inset emote button; 12px is the plain input inset once it's
+  // hidden. The /remind highlight backdrop reuses this so its text stays
+  // pixel-aligned with the real textarea underneath it.
+  const composerPaddingLeft = showSendAsPicker ? '74px' : showEmoteButton ? '36px' : '12px';
+
+  // Dry run of the /nuke being typed, so you see the blast radius before you
+  // commit to it. Deliberately a count in ChatWidget's own state rendered above
+  // the input: it never reaches ChatMessageList, so typing can't re-render the
+  // message rows. Highlighting the matches in chat would, which is why that is
+  // a separate piece of work rather than part of this.
+  const [nukePreview, setNukePreview] = useState<
+    { messages: number; users: number; action: string } | null
+  >(null);
+
+  // Poll / prediction builder. Broadcaster-only, because Twitch scopes both
+  // create endpoints to the channel owner.
+  const [composerKind, setComposerKind] = useState<'poll' | 'prediction' | null>(null);
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ channel?: string; kind?: string }>).detail;
+      // Scoped like the prefill event: only the surface whose channel the
+      // command was typed in should open a builder.
+      const mine = currentStream?.user_login?.toLowerCase();
+      const theirs = detail?.channel?.toLowerCase();
+      if (mine && theirs && mine !== theirs) return;
+      if (detail?.kind === 'poll' || detail?.kind === 'prediction') setComposerKind(detail.kind);
+    };
+    window.addEventListener('streamnook-open-poll-composer', handler);
+    return () => window.removeEventListener('streamnook-open-poll-composer', handler);
+  }, [currentStream?.user_login]);
+
+  useEffect(() => {
+    const raw = messageInput.trim();
+    const lower = raw.toLowerCase();
+    const channel = currentStream?.user_login;
+    if (!channel || !isModerator || !lower.startsWith('/nuke ')) {
+      setNukePreview(null);
+      return;
+    }
+    const args = raw.slice('/nuke '.length).trim();
+    if (!args || args.toLowerCase() === 'stop') {
+      setNukePreview(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const mod = await import('../utils/nukeEngine');
+        const parsed = mod.parseNukeArgs(args);
+        // A half-typed command is the normal case while typing, so an unparseable
+        // one just shows nothing rather than an error.
+        if ('error' in parsed) {
+          if (!cancelled) setNukePreview(null);
+          return;
+        }
+        const { matchedMessages, affected } = mod.previewNuke(channel, parsed);
+        if (!cancelled) {
+          setNukePreview({
+            messages: matchedMessages,
+            users: affected.length,
+            action: mod.describeAction(parsed.action),
+          });
+        }
+      } catch {
+        if (!cancelled) setNukePreview(null);
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [messageInput, currentStream?.user_login, isModerator]);
+
   // Messages to render
   const visibleMessages = messages;
 
@@ -1909,6 +1994,23 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
     window.addEventListener('streamnook-clear-local-chat', handler);
     return () => window.removeEventListener('streamnook-clear-local-chat', handler);
   }, [messages, getMessageId]);
+
+  // Shift-clicking a message's timeout/ban control drops the command into the
+  // composer instead of firing it, so the reason can be edited before sending.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ channel?: string; command?: string }>).detail;
+      if (!detail?.command) return;
+      // Ignore prefills meant for another surface's channel.
+      const mine = currentStream?.user_login?.toLowerCase();
+      const theirs = detail.channel?.toLowerCase().replace(/^twitch:/, '');
+      if (mine && theirs && mine !== theirs) return;
+      setMessageInput(detail.command);
+      inputRef.current?.focus({ preventScroll: true });
+    };
+    window.addEventListener('streamnook-prefill-command', handler);
+    return () => window.removeEventListener('streamnook-prefill-command', handler);
+  }, [currentStream?.user_login]);
 
   // /usercard — open the profile card from a slash command via a synthetic
   // mouse-event stub (handleUsernameClick only reads clientX/Y in its fallback
@@ -3229,63 +3331,29 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   // Declared here, above the early returns below, so it can be a useCallback
   // (hooks can't live after a conditional return).
   const handleUsernameClick = useCallback(async (userId: string, username: string, displayName: string, color: string, badges: Array<{ key: string; info: any }>, event: React.MouseEvent) => {
-    try {
-      const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-      const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      const mainWindow = getCurrentWindow();
-      const mainPosition = await mainWindow.outerPosition();
-      // Popout window width matches the default chat panel width (402px, see
-      // App.tsx:DEFAULT_CHAT_WIDTH) so a docked or side-by-side popout reads
-      // as a familiar chat-shaped surface. Height stays tall to give the
-      // messages view room — message rows are short so height drives capacity.
-      const cardWidth = 402;
-      const cardHeight = 680;
-      const gap = 10;
-      // Anchor the popout to the CURSOR position, not the main window's origin.
-      // Previously the math was `mainPosition.x - cardWidth - gap`, which
-      // placed the popout at a fixed offset to the left of the entire app
-      // regardless of where in chat the user clicked — making it open "far
-      // away for no reason." Convert the click's viewport coords to screen
-      // coords by adding the main window's outer position, then place the
-      // popout just to the left of the cursor with a small gap. If that
-      // would push off-screen left, flip to the right of the cursor.
-      const cursorScreenX = mainPosition.x + event.clientX;
-      const cursorScreenY = mainPosition.y + event.clientY;
-      let x = cursorScreenX - cardWidth - gap;
-      let y = cursorScreenY - Math.floor(cardHeight / 2);
-      if (x < 0) x = cursorScreenX + gap;
-      if (y < 0) y = 0;
-      const windowLabel = `profile-${userId}-${Date.now()}`;
-
-      // PHASE 3: Fetch message history from Rust LRU cache instead of frontend Map
-      // This eliminates frontend memory overhead and provides more reliable history
-      let messageHistory: any[] = [];
-      try {
-        messageHistory = await invoke<any[]>('get_user_message_history', { userId });
-      } catch (err) {
-        Logger.warn('[ChatWidget] Failed to fetch user history from Rust, using frontend cache:', err);
-        messageHistory = userMessageHistory.current.get(userId) || [];
-      }
-
-      const params = new URLSearchParams({
-        userId, username, displayName, color,
-        badges: JSON.stringify(badges),
-        channelId: currentStream?.user_id || '',
-        channelName: currentStream?.user_login || '',
-        messageHistory: JSON.stringify(messageHistory)
-      });
-      const profileWindow = new WebviewWindow(windowLabel, {
-        url: `${window.location.origin}/#/profile?${params.toString()}`,
-        title: `${displayName}'s Profile`,
-        width: cardWidth, height: cardHeight, x, y,
-        resizable: false, decorations: false, alwaysOnTop: true, skipTaskbar: true, transparent: true, focus: true
-      });
-      profileWindow.once('tauri://error', (e) => Logger.error('Error opening profile window:', e));
-    } catch (err) {
-      Logger.error('Failed to open profile window:', err);
+    // Placement lives in openProfilePopup, which is the single implementation. This
+    // used to hand-roll its own copy that added the main window's PHYSICAL position
+    // to the click's LOGICAL clientX and passed the result as a logical window
+    // coordinate — so on a scaled monitor Tauri multiplied the already-inflated
+    // number by the scale factor again and threw the card onto whatever display sat
+    // to the right. The shared helper converts units properly and clamps the card
+    // inside the monitor the cursor is actually on.
+    const opened = await openProfilePopup({
+      userId,
+      username,
+      displayName,
+      color,
+      badges,
+      channelId: currentStream?.user_id || '',
+      channelName: currentStream?.user_login || '',
+      isModerator,
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+    if (!opened) {
       setSelectedUser({ userId, username, displayName, color, badges, position: { x: event.clientX, y: event.clientY } });
     }
-  }, [currentStream?.user_id, currentStream?.user_login]);
+  }, [currentStream?.user_id, currentStream?.user_login, isModerator]);
   // Refresh the latest-handler ref each render so window-event callers (e.g. the
   // /usercard and /user commands) invoke the current closure.
   handleUsernameClickRef.current = handleUsernameClick;
@@ -3354,23 +3422,34 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   return (
     <>
       <div ref={setChatContainerEl} className="h-full bg-secondary overflow-hidden flex flex-col relative">
-        {/* Prediction Overlay - floating at top of chat */}
-        {settings.show_predictions !== false && (
-          <PredictionOverlay
-            channelId={currentStream?.user_id}
-            channelLogin={currentStream?.user_login}
-            isHypeTrainActive={!!currentHypeTrain}
-          />
-        )}
-
-        {/* Poll Overlay - floating at top of chat (same slot as predictions) */}
-        {settings.show_polls !== false && (
-          <PollOverlay
-            channelId={currentStream?.user_id}
-            channelLogin={currentStream?.user_login}
-            isHypeTrainActive={!!currentHypeTrain}
-          />
-        )}
+        {/* Floating cards at the top of chat. Twitch allows a poll and a
+            prediction at once, so they stack in one column rather than both
+            pinning themselves to the same box. Order is the user's choice. */}
+        <ChatOverlayStack isHypeTrainActive={!!currentHypeTrain}>
+          {(settings.chat_overlay_order === 'poll-first'
+            ? (['poll', 'prediction'] as const)
+            : (['prediction', 'poll'] as const)
+          ).map((kind) => {
+            if (kind === 'poll') {
+              if (settings.show_polls === false) return null;
+              return (
+                <PollOverlay
+                  key="poll"
+                  channelId={currentStream?.user_id}
+                  channelLogin={currentStream?.user_login}
+                />
+              );
+            }
+            if (settings.show_predictions === false) return null;
+            return (
+              <PredictionOverlay
+                key="prediction"
+                channelId={currentStream?.user_id}
+                channelLogin={currentStream?.user_login}
+              />
+            );
+          })}
+        </ChatOverlayStack>
 
         {/* Chat header - transforms when Hype Train active */}
         {/* flex-col-reverse keeps the stream-info row on top while the hype bar
@@ -4026,6 +4105,13 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                 )}
               </AnimatePresence>
               {/* Channel Points Menu - renders at full width like emote picker */}
+              {composerKind && currentStream?.user_id && (
+                <PollPredictionComposer
+                  broadcasterId={currentStream.user_id}
+                  initialKind={composerKind}
+                  onClose={() => setComposerKind(null)}
+                />
+              )}
               {showChannelPointsMenu && currentStream && (
                 <ChannelPointsMenu
                   channelLogin={currentStream.user_login}
@@ -4082,6 +4168,33 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                   }}
                 />
               )}
+              {/* /nuke dry run. Transient — it only exists while the command is
+                  in the box, so it can't add permanent height to this shelf. */}
+              {nukePreview && (
+                <div className="mb-2 flex items-center gap-2 px-3 py-2 bg-glass rounded-lg border border-borderSubtle">
+                  <Zap
+                    size={14}
+                    className={`flex-shrink-0 ${nukePreview.messages > 0 ? 'text-warning' : 'text-textSecondary'}`}
+                  />
+                  <span className="text-xs text-textSecondary flex-1">
+                    {nukePreview.messages === 0 ? (
+                      'Nothing in the buffer matches that yet'
+                    ) : (
+                      <>
+                        Would {nukePreview.action}{' '}
+                        <span className="text-warning font-semibold">
+                          {nukePreview.messages.toLocaleString()}
+                        </span>{' '}
+                        {nukePreview.messages === 1 ? 'message' : 'messages'} from{' '}
+                        <span className="text-warning font-semibold">
+                          {nukePreview.users.toLocaleString()}
+                        </span>{' '}
+                        {nukePreview.users === 1 ? 'person' : 'people'}
+                      </>
+                    )}
+                  </span>
+                </div>
+              )}
               {replyingTo && !isResubMode && !isWatchStreakMode && (
                 <div className="mb-2 flex items-center gap-2 px-3 py-2 bg-glass rounded-lg border border-borderSubtle">
                   <svg className="w-4 h-4 text-accent flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
@@ -4114,7 +4227,10 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
               <div className="flex items-center gap-2 min-w-0">
                 {/* Channel Points button. Opens the rewards menu, balance on
                     hover. While the watched channel has a bonus chest ready
-                    and auto-claim is off, it becomes the claim control. */}
+                    and auto-claim is off, it becomes the claim control.
+                    Stays visible while a chest is waiting even if the balance
+                    is hidden, so hiding the number never costs you points. */}
+                {(showPointsBalance || (availableClaim && !autoClaimWatching)) && (
                 <div
                   ref={channelPointsRef}
                   className="relative flex-shrink-0 self-center flex items-center"
@@ -4175,6 +4291,23 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                     />
                   )}
                 </div>
+                )}
+                {/* Poll / prediction builder. Twitch scopes both create
+                    endpoints to the channel owner, so this only appears on
+                    your own channel. */}
+                {isBroadcaster && isTwitch && !isVodReplay && (
+                  <Tooltip content="Start a poll or prediction" side="top">
+                    <button
+                      onClick={() => setComposerKind((k) => (k ? null : 'poll'))}
+                      className={`flex items-center justify-center w-9 h-9 flex-shrink-0 self-center transition-colors duration-200 ${
+                        composerKind ? 'text-accent-neon' : 'text-textSecondary hover:text-accent-neon'
+                      }`}
+                      aria-label="Start a poll or prediction"
+                    >
+                      <BarChart3 size={18} />
+                    </button>
+                  </Tooltip>
+                )}
                 {/* Drops automation button: only when a drops automation plugin is installed
                     and the current game has active drops. Without the plugin, core
                     earns natively on the watched channel with no automation control. */}
@@ -4195,12 +4328,21 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                 {/* Moderator Dashboard */}
                 {isModerator && currentStream && (
                   <div className="flex-shrink-0 self-center z-20">
-                    <ModeratorMenu broadcasterId={currentStream.user_id} roomState={roomState} />
+                    {/* currentStream is synthesized from channelOverride in a
+                        MultiChat pane, so these are this pane's channel, not
+                        the main window's. */}
+                    <ModeratorMenu
+                      broadcasterId={currentStream.user_id}
+                      channelLogin={currentStream.user_login}
+                      isBroadcaster={!!isBroadcaster}
+                      roomState={roomState}
+                    />
                   </div>
                 )}
                 {/* Input container with emoji button inset on the left */}
                 <div className="relative flex-1 min-w-0 flex items-center">
                   {/* Emoji button — inset left inside the input */}
+                  {showEmoteButton && (
                   <Tooltip content={showEmotePicker ? "Close Emotes" : "Emotes"} side="top">
                   <button
                     onClick={() => {
@@ -4231,6 +4373,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                     )}
                   </button>
                   </Tooltip>
+                  )}
                   {/* Send-as account picker, just right of the emote button */}
                   {showSendAsPicker && (
                     <div className="absolute left-8 top-1/2 -translate-y-1/2 z-10">
@@ -4264,7 +4407,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                       style={{
                         paddingTop: '8px',
                         paddingBottom: '8px',
-                        paddingLeft: showSendAsPicker ? '74px' : '36px',
+                        paddingLeft: composerPaddingLeft,
                         paddingRight: '12px',
                         color: 'var(--color-text-primary)',
                         wordSpacing: '0.4em',
@@ -4291,7 +4434,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                         remindBackdropRef.current.scrollLeft = e.currentTarget.scrollLeft;
                       }
                     }}
-                    placeholder={chatPlaceholder}
+                    placeholder={visiblePlaceholder}
                     className={`relative w-full text-sm placeholder-textSecondary resize-none overflow-hidden scrollbar-thin leading-[1.4] self-center transition-all duration-300 ${remindOverlayActive ? '' : 'glass-input'} ${
                       isWatchStreakMode 
                         ? 'ring-2 ring-amber-500/50 bg-amber-500/5 shadow-[0_0_15px_color-mix(in_srgb,var(--color-warning)_15%,transparent)] placeholder-amber-500/60 text-textPrimary'
@@ -4304,7 +4447,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                       maxHeight: '120px',
                       paddingTop: '8px',
                       paddingBottom: '8px',
-                      paddingLeft: showSendAsPicker ? '74px' : '36px',
+                      paddingLeft: composerPaddingLeft,
                       paddingRight: '12px',
                       ...(remindOverlayActive ? {
                         // The backdrop above renders the surface + chipped text;
@@ -4400,6 +4543,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
             color={selectedUser.color} badges={selectedUser.badges} messageHistory={userMessageHistory.current.get(selectedUser.userId) || []}
             onClose={() => setSelectedUser(null)} position={selectedUser.position}
             isModerator={isModerator}
+            viewerIsBroadcaster={!!isBroadcaster}
             broadcasterId={currentStream?.user_id}
             onPreFillCommand={preFillCommand} />
         )

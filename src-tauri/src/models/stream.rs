@@ -64,6 +64,12 @@ pub struct TwitchClip {
     pub embed_url: String,
     pub broadcaster_id: String,
     pub broadcaster_name: String,
+    /// Broadcaster LOGIN (lowercase), distinct from the display name. Chat replay
+    /// keys a channel's third-party emote set off the login, and Helix clips only
+    /// carry the display name, so this stays None on that path and the frontend
+    /// resolves it from broadcaster_id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub broadcaster_login: Option<String>,
     pub creator_id: String,
     pub creator_name: String,
     pub video_id: String,

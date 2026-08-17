@@ -22,6 +22,18 @@ type StreamStartResult = {
   proxy_region?: string;
   /** Quality menu the resolver discovered (variant names + best/worst). */
   available?: string[];
+  /** Clips only: where this clip sits inside its source broadcast, so chat replay can
+   *  address the right comments. Playback never uses it. */
+  clip_source?: ClipSource;
+};
+
+/** Chat-replay coordinates for a clip. Every field is optional: a clip whose parent VOD
+ *  has expired still plays, it just has no chat to show. */
+export type ClipSource = {
+  video_id?: string;
+  vod_offset?: number;
+  duration?: number;
+  broadcaster_login?: string;
 };
 
 /** The current stream's ad source, surfaced as an unobtrusive note in the player. */
@@ -82,6 +94,29 @@ export interface MediaInfo {
   game_id?: string;
   game_name?: string;
   language?: string;
+  /** Clips only: the source broadcast and the window inside it, used to address chat
+   *  replay. Grouped rather than spread as loose fields because `duration` would collide
+   *  with TwitchVideo's, which is a formatted string ("1h23m45s") not seconds. Present
+   *  when the clip came from a grid; the resolver supplies it for a clip opened from a
+   *  link. Absent when the parent VOD has expired. */
+  clip_source?: ClipSource;
+}
+
+/** Pull the chat-replay coordinates off a clip. Returns undefined when the clip has no
+ *  usable source, which is normal once the parent broadcast has expired. */
+export function clipSourceOf(clip: {
+  video_id?: string;
+  vod_offset?: number;
+  duration?: number;
+  broadcaster_login?: string;
+}): ClipSource | undefined {
+  if (!clip.video_id || clip.vod_offset == null) return undefined;
+  return {
+    video_id: clip.video_id,
+    vod_offset: clip.vod_offset,
+    duration: clip.duration,
+    broadcaster_login: clip.broadcaster_login,
+  };
 }
 
 // Types for drops data - matches backend DropCampaign struct
@@ -413,6 +448,7 @@ interface AppState {
   clearWhisperTargetUser: () => void;
   toggleTheaterMode: () => void;
   toggleWindowFullscreen: () => Promise<void>;
+  toggleKeepOnTop: () => Promise<void>;
   loginToTwitch: () => Promise<void>;
   logoutFromTwitch: () => Promise<void>;
   /** Make a linked account the main (watch & stream as it), then re-establish identity. */
@@ -755,30 +791,37 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ isAutoSwitching: true });
 
     try {
-      // Step 1: Verify the stream is actually offline via Twitch API
-      // We'll check twice with a delay to be sure (streams can have brief interruptions)
-      let isOffline = false;
+      // Step 1: Verify the stream is actually offline via Twitch API.
+      // The triggers (EventSub stream.offline, player errors) run seconds AHEAD
+      // of the Helix streams endpoint, which keeps listing a dead stream for a
+      // while after it ends. A fast double-check therefore reads "still online"
+      // for a genuinely-ended stream and wastes the one-shot trigger. Poll for
+      // up to ~35s instead: proceed once Helix reports offline twice in a row,
+      // give up only if the window closes with Helix still reporting the stream
+      // live (a brief encoder blip the streamer recovered from).
+      const VERIFY_ATTEMPTS = 8;
+      const VERIFY_INTERVAL_MS = 5000;
+      let consecutiveOffline = 0;
 
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < VERIFY_ATTEMPTS; attempt++) {
         if (attempt > 0) {
-          // Wait 3 seconds before second check
-          await new Promise(resolve => setTimeout(resolve, 3000));
+          await new Promise(resolve => setTimeout(resolve, VERIFY_INTERVAL_MS));
         }
 
         const streamData = await invoke('check_stream_online', { userLogin: currentUserLogin }) as TwitchStream | null;
 
         if (streamData) {
-          Logger.debug(`[AutoSwitch] Stream is still online (attempt ${attempt + 1}), aborting auto-switch`);
-          set({ isAutoSwitching: false });
-          return;
+          consecutiveOffline = 0;
+          Logger.debug(`[AutoSwitch] Helix still reports ${currentUserLogin} online (attempt ${attempt + 1}/${VERIFY_ATTEMPTS})`);
+        } else {
+          consecutiveOffline++;
+          Logger.debug(`[AutoSwitch] Stream reported offline (${consecutiveOffline}/2, attempt ${attempt + 1}/${VERIFY_ATTEMPTS})`);
+          if (consecutiveOffline >= 2) break;
         }
-
-        Logger.debug(`[AutoSwitch] Stream confirmed offline (attempt ${attempt + 1})`);
       }
 
-      isOffline = true;
-
-      if (!isOffline) {
+      if (consecutiveOffline < 2) {
+        Logger.debug('[AutoSwitch] Helix kept reporting the stream online; treating as a blip and aborting');
         set({ isAutoSwitching: false });
         return;
       }
@@ -1324,11 +1367,24 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       const result = await invoke<StreamStartResult>('start_stream', { url: url, quality: settings.quality });
       logQualityFallback(settings.quality, result.quality);
+      // A clip replays the chat from the moment it was cut. The resolver looks the
+      // coordinates up for ANY clip, so prefer its answer over whatever the caller
+      // happened to carry, and fall back to the caller for paths that pre-resolved.
+      const clipSource = type === 'clip' ? (result.clip_source ?? info.clip_source) : undefined;
+      const canClipReplay = !!clipSource?.video_id && clipSource?.vod_offset != null;
+
       // VODs carry their owner login (TwitchVideo.user_login). Binding it lets
       // the chat panel offer replay + a live-chat toggle. The live IRC connect
       // stays gated behind the replay/live toggle in ChatWidget, so setting a
-      // login here does NOT auto-join live chat. Clips leave it blank.
-      const vodOwnerLogin = type === 'video' ? (info.user_login || '').toLowerCase() : '';
+      // login here does NOT auto-join live chat. A clip only binds one when it can
+      // actually replay: binding it otherwise would make the connect effect join the
+      // channel's LIVE chat during a clip, which nobody asked for.
+      const vodOwnerLogin =
+        type === 'video'
+          ? (info.user_login || '').toLowerCase()
+          : canClipReplay
+            ? (clipSource?.broadcaster_login || '').toLowerCase()
+            : '';
       const parsedInfo: TwitchStream = {
         id: info.id || '',
         user_id: info.broadcaster_id || info.user_id || '',
@@ -1338,6 +1394,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         viewer_count: info.view_count || 0,
         game_name: type === 'clip' ? 'Twitch Clip' : 'Twitch Video',
         thumbnail_url: info.thumbnail_url || '',
+        // Filled in by the lookup below. Neither TwitchVideo nor TwitchClip carries the
+        // broadcaster's avatar, and leaving it blank is why a VOD or clip showed no
+        // profile picture while a live stream (which gets it from the stream payload)
+        // always did.
         profile_image_url: '',
         started_at: info.created_at || new Date().toISOString(),
       };
@@ -1355,6 +1415,29 @@ export const useAppStore = create<AppState>((set, get) => ({
         streamOriginCategory: get().homeSelectedCategory || null,
       });
 
+      // Resolve the broadcaster's avatar and patch it in. Fire-and-forget: playback and
+      // chat must never wait on it, and a failure just leaves the picture blank as
+      // before. Guarded on the session still being the same media, so a fast
+      // clip-to-clip switch can't stamp the previous streamer's avatar.
+      const avatarKey = parsedInfo.user_id || vodOwnerLogin;
+      if (avatarKey && !parsedInfo.profile_image_url) {
+        const wantUrl = url;
+        void (async () => {
+          try {
+            const who = parsedInfo.user_id
+              ? await invoke<{ profile_image_url?: string }>('get_user_by_id', { userId: parsedInfo.user_id })
+              : await invoke<{ profile_image_url?: string }>('get_user_by_login', { login: vodOwnerLogin });
+            const img = who?.profile_image_url;
+            if (!img) return;
+            const s = get();
+            if (s.originalMediaUrl !== wantUrl || !s.currentStream) return;
+            set({ currentStream: { ...s.currentStream, profile_image_url: img } });
+          } catch {
+            /* no avatar is not worth surfacing */
+          }
+        })();
+      }
+
       // Start synced chat replay for VODs. The vod id comes from the url
       // (/videos/<id>); the owner login keys the channel's emote set. Replay is
       // read-only and drives the chat panel until the user toggles to live.
@@ -1366,6 +1449,16 @@ export const useAppStore = create<AppState>((set, get) => ({
             .then((m) => m.beginVodReplay(vodId, login))
             .catch((e) => Logger.warn('[playMedia] could not start VOD replay:', e));
         }
+      } else if (canClipReplay && clipSource) {
+        // The clip plays its own MP4 as always; the source VOD is only the address
+        // for the comments. clipReplayWindow bounds the fetch to the clip's own span.
+        const vodOffset = clipSource.vod_offset ?? 0;
+        const duration = clipSource.duration;
+        const videoId = clipSource.video_id as string;
+        const login = vodOwnerLogin;
+        import('./vodReplayStore')
+          .then((m) => m.beginVodReplay(videoId, login, m.clipReplayWindow(vodOffset, duration)))
+          .catch((e) => Logger.warn('[playMedia] could not start clip chat replay:', e));
       }
 
     } catch (e: unknown) {
@@ -1459,7 +1552,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   restartStream: async () => {
-    const { currentStream, settings, currentMediaType } = get();
+    const { currentStream, settings, currentMediaType, isAutoSwitching } = get();
     if (!currentStream) {
       Logger.warn('[Stream] Cannot restart: no current stream');
       return;
@@ -1467,6 +1560,13 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     if (currentMediaType && currentMediaType !== 'live') {
       Logger.warn('[Stream] Cannot restart non-live media (clips/videos).');
+      return;
+    }
+
+    // The behind-live watchdog keeps firing while auto-switch verifies a dead
+    // stream; a restart mid-switch would tear down the backend under it.
+    if (isAutoSwitching) {
+      Logger.debug('[Stream] Skipping restart: auto-switch in progress');
       return;
     }
 
@@ -1523,6 +1623,24 @@ export const useAppStore = create<AppState>((set, get) => ({
       get().addToast('Stream restarted with new settings', 'success');
     } catch (e) {
       Logger.error('[Stream] Failed to restart:', e);
+
+      // A restart that dies on resolve is the signature of a stream that just
+      // ended: usher 404s and every further retry will too. Without this check
+      // the watchdog loops restart -> 404 -> restart forever and auto-switch
+      // never gets a chance. Confirm liveness and hand a dead channel to
+      // handleStreamOffline (auto-switch / offline chat) instead of retrying.
+      try {
+        const live = await invoke('check_stream_online', { userLogin: channel }) as TwitchStream | null;
+        if (!live) {
+          Logger.info(`[Stream] ${channel} is offline; routing to auto-switch instead of restarting`);
+          set({ isRestartingStream: false });
+          await get().handleStreamOffline();
+          return;
+        }
+      } catch (checkError) {
+        Logger.warn('[Stream] Liveness check after failed restart errored:', checkError);
+      }
+
       get().addToast('Failed to restart stream', 'error');
 
       // Try to recover by starting fresh
@@ -2366,6 +2484,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (err) {
       Logger.error('[Fullscreen] Failed to toggle window fullscreen:', err);
     }
+  },
+
+  toggleKeepOnTop: async () => {
+    const state = get();
+    const s = state.settings;
+    const next = s.keep_on_top_in_compact !== true;
+    // Only writes the preference. Applying it to the window is App.tsx's job,
+    // and it only takes effect while Compact View is active.
+    await state.updateSettings({ ...s, keep_on_top_in_compact: next });
+    trackActivity(next ? 'Pinned compact player on top' : 'Unpinned compact player');
   },
 
   loginToTwitch: async () => {

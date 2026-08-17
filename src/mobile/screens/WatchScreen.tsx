@@ -821,12 +821,10 @@ export const WatchScreen: React.FC = () => {
               <PredictionOverlay
                 channelId={currentStream.user_id}
                 channelLogin={currentStream.user_login}
-                isHypeTrainActive={!!currentHypeTrain}
               />
               <PollOverlay
                 channelId={currentStream.user_id}
                 channelLogin={currentStream.user_login}
-                isHypeTrainActive={!!currentHypeTrain}
               />
             </>
           )}

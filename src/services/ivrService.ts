@@ -274,13 +274,30 @@ export async function fetchIVRModVip(username: string, channel: string): Promise
  * @param channel - The channel to fetch messages for
  * @returns Array of raw IRC message strings (limited to 100 most recent)
  */
-export async function fetchRecentMessages(channel: string): Promise<string[]> {
-    const cacheKey = channel.toLowerCase();
-    const cached = recentMessagesCache.get(cacheKey);
+export interface RecentMessagesWindow {
+    limit?: number;
+    /** Unix millisecond bounds for the fetch window (robotty `after`/`before`). */
+    afterMs?: number | null;
+    beforeMs?: number | null;
+}
 
-    if (cached && Date.now() - cached.timestamp < RECENT_MESSAGES_CACHE_DURATION) {
-        Logger.debug('[RecentMessages] Using cached recent messages for:', channel);
-        return cached.data || [];
+export async function fetchRecentMessages(
+    channel: string,
+    window?: RecentMessagesWindow,
+): Promise<string[]> {
+    const cacheKey = channel.toLowerCase();
+    // Windowed fetches (reconnect backfill) bypass the cache entirely: their
+    // result is window-specific, so serving or storing it under the plain
+    // channel key would poison the initial-load path.
+    const windowed =
+        window != null &&
+        (window.afterMs != null || window.beforeMs != null || window.limit != null);
+    if (!windowed) {
+        const cached = recentMessagesCache.get(cacheKey);
+        if (cached && Date.now() - cached.timestamp < RECENT_MESSAGES_CACHE_DURATION) {
+            Logger.debug('[RecentMessages] Using cached recent messages for:', channel);
+            return cached.data || [];
+        }
     }
 
     try {
@@ -292,13 +309,14 @@ export async function fetchRecentMessages(channel: string): Promise<string[]> {
         // a one-shot join cost, and messages trim to the buffer cap regardless,
         // so steady-state memory is unchanged. The channel emote fetch, not this,
         // dominates chat-load time.
-        const response = await fetch(
-            `https://recent-messages.robotty.de/api/v2/recent-messages/${encodeURIComponent(channel)}?limit=100&hide_moderation_messages=true&hide_moderated_messages=true`
-        );
+        let url = `https://recent-messages.robotty.de/api/v2/recent-messages/${encodeURIComponent(channel)}?limit=${window?.limit ?? 100}&hide_moderation_messages=true&hide_moderated_messages=true`;
+        if (window?.afterMs != null) url += `&after=${Math.floor(window.afterMs)}`;
+        if (window?.beforeMs != null) url += `&before=${Math.floor(window.beforeMs)}`;
+        const response = await fetch(url);
 
         if (!response.ok) {
             Logger.error('[RecentMessages] API error:', response.status, response.statusText);
-            recentMessagesCache.set(cacheKey, { data: null, timestamp: Date.now() });
+            if (!windowed) recentMessagesCache.set(cacheKey, { data: null, timestamp: Date.now() });
             return [];
         }
 
@@ -315,12 +333,14 @@ export async function fetchRecentMessages(channel: string): Promise<string[]> {
                 }
                 return `@historical=1 ${msg}`;
             });
-            recentMessagesCache.set(cacheKey, { data: historicalMessages, timestamp: Date.now() });
+            if (!windowed) {
+                recentMessagesCache.set(cacheKey, { data: historicalMessages, timestamp: Date.now() });
+            }
             Logger.debug('[RecentMessages] Fetched', historicalMessages.length, 'recent messages');
             return historicalMessages;
         }
 
-        recentMessagesCache.set(cacheKey, { data: [], timestamp: Date.now() });
+        if (!windowed) recentMessagesCache.set(cacheKey, { data: [], timestamp: Date.now() });
         return [];
     } catch (error) {
         Logger.error('[RecentMessages] Failed to fetch recent messages:', error);
@@ -383,9 +403,13 @@ export function convertIVRMessageToIRC(msg: IVRRecentMessage, channel: string, r
  * @param _roomId - Channel/room ID (not used, kept for API compatibility)
  * @returns Array of IRC-formatted message strings
  */
-export async function fetchRecentMessagesAsIRC(channel: string, _roomId: string): Promise<string[]> {
+export async function fetchRecentMessagesAsIRC(
+    channel: string,
+    _roomId: string,
+    window?: RecentMessagesWindow,
+): Promise<string[]> {
     // The robotty.de API already returns raw IRC messages, so just fetch them directly
-    return fetchRecentMessages(channel);
+    return fetchRecentMessages(channel, window);
 }
 
 /**

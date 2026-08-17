@@ -317,6 +317,24 @@ pub async fn stop_chat() -> Result<(), String> {
     ChatService::stop().await.map_err(|e| e.to_string())
 }
 
+/// Recent IRC connection-lifecycle events (connects, auth results, session
+/// drops, deferred JOINs), pullable from a packaged build for support.
+#[tauri::command]
+pub async fn get_chat_lifecycle_log() -> Result<Vec<String>, String> {
+    Ok(crate::services::irc_service::lifecycle_snapshot())
+}
+
+/// Dev-only: force-FIN the IRC socket to exercise the reconnect path.
+#[tauri::command]
+pub async fn debug_break_chat_socket() -> Result<(), String> {
+    if !cfg!(debug_assertions) {
+        return Err("debug builds only".into());
+    }
+    crate::services::irc_service::IrcService::debug_shutdown_socket()
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn send_chat_message(
     message: String,

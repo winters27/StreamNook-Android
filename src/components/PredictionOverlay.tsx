@@ -1,16 +1,9 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
-import { Trophy, Users, ChevronDown, ChevronUp, Hourglass, PartyPopper, Frown, RefreshCw, CheckCircle2, XCircle } from 'lucide-react';
-import { motion } from 'framer-motion';
-
-// Channel Points Icon (Twitch style)
-const ChannelPointsIcon = ({ className = "", size = 14 }: { className?: string; size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" className={className} fill="currentColor">
-    <path d="M12 5v2a5 5 0 0 1 5 5h2a7 7 0 0 0-7-7Z"></path>
-    <path fillRule="evenodd" d="M1 12C1 5.925 5.925 1 12 1s11 4.925 11 11-4.925 11-11 11S1 18.075 1 12Zm11 9a9 9 0 1 1 0-18 9 9 0 0 1 0 18Z" clipRule="evenodd"></path>
-  </svg>
-);
+import { Trophy, Users, Hourglass, PartyPopper, RefreshCw, CheckCircle2, XCircle } from 'lucide-react';
+import { ChannelPointsIcon } from './ChannelPointsIcon';
+import { OverlayBanner } from './chat/OverlayBanner';
 import { useAppStore } from '../stores/AppStore';
 import { useChannelEmotes } from '../stores/chatConnectionStore';
 import { buildEmoteNameMap, EmoteText } from '../utils/emoteText';
@@ -38,10 +31,9 @@ interface PredictionData {
 interface PredictionOverlayProps {
   channelId?: string;
   channelLogin?: string;
-  isHypeTrainActive?: boolean;
 }
 
-const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false }: PredictionOverlayProps) => {
+const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) => {
   const [activePrediction, setActivePrediction] = useState<PredictionData | null>(null);
   const [selectedOutcome, setSelectedOutcome] = useState<string | null>(null);
   const [betAmount, setBetAmount] = useState<number>(10);
@@ -501,320 +493,280 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
   if (!activePrediction) return null;
 
   return (
-    // Eases in (fade + slight drop/scale) instead of snapping. transition-[top]
-    // keeps the CSS easing for the hype-train position shift only, leaving the
-    // transform/opacity entrance to framer so the two don't fight.
-    <motion.div
-      initial={{ opacity: 0, y: -12, scale: 0.97 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      transition={{ type: 'spring', stiffness: 320, damping: 26 }}
-      className={`absolute ${isHypeTrainActive ? 'top-16' : 'top-10'} left-2 right-2 z-40 transition-[top] duration-300 ease-in-out`}
+    <OverlayBanner
+      icon={<Trophy className="w-4 h-4 text-accent" />}
+      title={activePrediction.title}
+      isExpanded={isExpanded}
+      onToggleExpanded={() => setIsExpanded(!isExpanded)}
+      badges={
+        <>
+          {channelPoints !== null && (
+            <div className="flex items-center gap-1 px-1.5 py-1 bg-accent/20 border border-accent/40 rounded-md">
+              {customPointsIconUrl ? (
+                <img src={customPointsIconUrl} alt="points" className="w-3 h-3" />
+              ) : (
+                <ChannelPointsIcon className="text-accent" size={12} />
+              )}
+              <span className="text-xs font-bold text-accent">
+                {channelPoints.toLocaleString()}
+              </span>
+            </div>
+          )}
+          {!isLocked ? (
+            <span className="text-xs font-mono font-bold text-warning bg-warning/20 border border-warning/40 px-1.5 py-1 rounded-md">
+              {formatTime(timeRemaining)}
+            </span>
+          ) : (
+            <span className="text-xs font-medium text-error bg-error/20 border border-error/40 px-1.5 py-1 rounded-md">
+              Locked
+            </span>
+          )}
+        </>
+      }
     >
-      {/* Floating overlay with shadow effect */}
-      <div className="bg-background rounded-lg border border-border shadow-lg shadow-black/30 overflow-hidden">
-        {/* Header - Always visible with channel points */}
-        <button
-          onClick={() => setIsExpanded(!isExpanded)}
-          className={`w-full p-3 bg-backgroundSecondary hover:bg-backgroundSecondary/80 transition-colors ${isExpanded ? 'border-b border-borderSubtle' : ''}`}
-        >
-          <div className={`flex gap-2 ${isExpanded ? 'items-start' : 'items-center'}`}>
-            {/* Trophy icon */}
-            <div className="p-1.5 bg-accent/30 rounded-md flex-shrink-0">
-              <Trophy className="w-4 h-4 text-accent" />
-            </div>
-            
-            {/* Title - grows to fill space, wraps naturally when expanded, truncates when collapsed */}
-            <div className="flex-1 min-w-0">
-              <p className={`text-sm font-semibold text-textPrimary text-left leading-tight ${
-                isExpanded ? '' : 'truncate'
-              }`}>
-                {activePrediction.title}
-              </p>
-            </div>
-            
-            {/* Right side badges - always visible */}
-            <div className="flex items-center gap-1.5 flex-shrink-0">
-              {/* Channel Points Badge */}
-              {channelPoints !== null && (
-                <div className="flex items-center gap-1 px-1.5 py-1 bg-accent/20 border border-accent/40 rounded-md">
-                  {customPointsIconUrl ? (
-                    <img src={customPointsIconUrl} alt="points" className="w-3 h-3" />
-                  ) : (
-                    <ChannelPointsIcon className="text-accent" size={12} />
-                  )}
-                  <span className="text-xs font-bold text-accent">
-                    {channelPoints.toLocaleString()}
-                  </span>
-                </div>
-              )}
-              {/* Timer or Locked Badge */}
-              {!isLocked ? (
-                <span className="text-xs font-mono font-bold text-warning bg-warning/20 border border-warning/40 px-1.5 py-1 rounded-md">
-                  {formatTime(timeRemaining)}
-                </span>
-              ) : (
-                <span className="text-xs font-medium text-error bg-error/20 border border-error/40 px-1.5 py-1 rounded-md">
-                  Locked
-                </span>
-              )}
-              {isExpanded ? (
-                <ChevronUp className="w-4 h-4 text-textSecondary" />
-              ) : (
-                <ChevronDown className="w-4 h-4 text-textSecondary" />
-              )}
-            </div>
-          </div>
-        </button>
-
-        {/* Expanded Content */}
-        {isExpanded && (
-          <div className="bg-background">
-            {/* Outcomes */}
-            <div className="p-3 space-y-2">
-              {activePrediction.outcomes.map((outcome) => {
-                const percentage = getOutcomePercentage(outcome);
-                const isSelected = selectedOutcome === outcome.id;
-                
-                return (
-                  <button
-                    key={outcome.id}
-                    onClick={() => !isLocked && !hasPlacedBet && setSelectedOutcome(outcome.id)}
-                    disabled={isLocked || hasPlacedBet}
-                    className={`w-full relative p-2.5 rounded-lg border transition-all ${
-                      getOutcomeColor(outcome.color, isSelected)
-                    } ${(isLocked || hasPlacedBet) ? 'cursor-not-allowed opacity-70' : 'cursor-pointer'}`}
-                  >
-                    {/* Background progress bar */}
-                    <div 
-                      className={`absolute inset-0 rounded-md opacity-30 ${
-                        outcome.color === 'BLUE' ? 'bg-highlight-blue' : outcome.color === 'PINK' ? 'bg-highlight-pink' : 'bg-highlight-purple'
-                      }`}
-                      style={{ width: `${percentage}%` }}
-                    />
-                    
-                    <div className="relative flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        {isSelected && (!isLocked || hasPlacedBet) && (
-                          <div className="w-4 h-4 rounded-full bg-white/30 flex items-center justify-center">
-                            <div className="w-2.5 h-2.5 rounded-full bg-white" />
-                          </div>
-                        )}
-                        <span className="font-semibold text-white text-sm">
-                          <EmoteText text={outcome.title} emoteMap={emoteMap} keyPrefix={`pred-${outcome.id}`} />
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-3 text-xs text-white/90">
-                        <span className="flex items-center gap-1">
-                          <Users className="w-3 h-3" />
-                          {outcome.total_users}
-                        </span>
-                        <span className="flex items-center gap-1">
-                          {customPointsIconUrl ? (
-                            <img src={customPointsIconUrl} alt="points" className="w-3 h-3" />
-                          ) : (
-                            <ChannelPointsIcon size={12} className="text-white/90" />
-                          )}
-                          {outcome.total_points.toLocaleString()}
-                        </span>
-                        <span className="font-bold text-sm">{percentage}%</span>
-                      </div>
+      {/* Outcomes */}
+      <div className="p-3 space-y-2">
+        {activePrediction.outcomes.map((outcome) => {
+          const percentage = getOutcomePercentage(outcome);
+          const isSelected = selectedOutcome === outcome.id;
+          
+          return (
+            <button
+              key={outcome.id}
+              onClick={() => !isLocked && !hasPlacedBet && setSelectedOutcome(outcome.id)}
+              disabled={isLocked || hasPlacedBet}
+              className={`w-full relative p-2.5 rounded-lg border transition-all ${
+                getOutcomeColor(outcome.color, isSelected)
+              } ${(isLocked || hasPlacedBet) ? 'cursor-not-allowed opacity-70' : 'cursor-pointer'}`}
+            >
+              {/* Background progress bar */}
+              <div 
+                className={`absolute inset-0 rounded-md opacity-30 ${
+                  outcome.color === 'BLUE' ? 'bg-highlight-blue' : outcome.color === 'PINK' ? 'bg-highlight-pink' : 'bg-highlight-purple'
+                }`}
+                style={{ width: `${percentage}%` }}
+              />
+              
+              <div className="relative flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  {isSelected && (!isLocked || hasPlacedBet) && (
+                    <div className="w-4 h-4 rounded-full bg-white/30 flex items-center justify-center">
+                      <div className="w-2.5 h-2.5 rounded-full bg-white" />
                     </div>
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Bet Amount & Action - only when not locked/already bet */}
-            {!isLocked && !hasPlacedBet && (
-              <div className="px-3 pb-3">
-                {/* Bet Input Row */}
-                <div className="flex items-center gap-2 p-2 bg-backgroundSecondary rounded-lg border border-border">
-                  {/* Number Input */}
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    value={betAmountInput}
-                    onChange={(e) => {
-                      // Allow only numbers
-                      const value = e.target.value.replace(/[^0-9]/g, '');
-                      setBetAmountInput(value);
-                      // Update betAmount if valid
-                      const num = parseInt(value) || 0;
-                      if (num > 0) {
-                        setBetAmount(num);
-                      }
-                    }}
-                    onBlur={() => {
-                      // Validate on blur - ensure minimum of 1 and max of channel points
-                      const num = parseInt(betAmountInput) || 1;
-                      const maxPoints = channelPoints || 250000;
-                      const clamped = Math.min(Math.max(1, num), maxPoints);
-                      setBetAmount(clamped);
-                      setBetAmountInput(clamped.toString());
-                    }}
-                    className="w-24 px-2 py-1.5 glass-input text-textPrimary text-sm font-medium focus:outline-none"
-                    placeholder="Amount"
-                  />
-                  
-                  {/* Quick Amount Buttons - fewer presets */}
-                  <div className="flex gap-1">
-                    {[10, 100, 1000].map(amount => (
-                      <button
-                        key={amount}
-                        onClick={() => {
-                          setBetAmount(amount);
-                          setBetAmountInput(amount.toString());
-                        }}
-                        className={`px-2 py-1.5 text-xs font-medium rounded transition-colors border ${
-                          betAmount === amount 
-                            ? 'bg-accent/30 border-accent/60 text-accent'
-                            : 'bg-background border-border text-textSecondary hover:bg-backgroundSecondary'
-                        }`}
-                      >
-                        {amount >= 1000 ? `${amount / 1000}k` : amount}
-                      </button>
-                    ))}
-                    {channelPoints && (
-                      <button
-                        onClick={() => {
-                          setBetAmount(channelPoints);
-                          setBetAmountInput(channelPoints.toString());
-                        }}
-                        className="px-2 py-1.5 text-xs font-bold bg-accent/30 hover:bg-accent/40 border border-accent/60 rounded transition-colors text-accent"
-                      >
-                        ALL
-                      </button>
-                    )}
-                  </div>
-                  
-                  {/* Bet Button - compact */}
-                  <button
-                    onClick={handlePlacePrediction}
-                    disabled={!selectedOutcome || isSubmitting}
-                    className={`px-3 py-1.5 rounded text-xs font-bold transition-all whitespace-nowrap ${
-                      selectedOutcome && !isSubmitting
-                        ? 'bg-accent hover:bg-accent-hover text-white'
-                        : 'bg-background border border-border text-textSecondary cursor-not-allowed'
-                    }`}
-                  >
-                    {isSubmitting ? '...' : 'Bet'}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Status indicators */}
-            {hasPlacedBet && !isLocked && resolutionState === 'none' && (
-              <div className="px-3 pb-3">
-                <div className="py-2 px-3 bg-success/20 border border-success/50 rounded-lg flex items-center justify-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-success" />
-                  <span className="text-success text-sm font-semibold">Bet Placed!</span>
-                </div>
-              </div>
-            )}
-            
-            {/* Resolution States - Win/Loss/Refund/Pending */}
-            {resolutionState === 'pending' && (
-              <div className="px-3 pb-3">
-                <div className="py-3 px-4 bg-accent/20 border border-accent/50 rounded-lg flex items-center justify-center gap-2 animate-pulse">
-                  <div className="w-5 h-5 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" />
-                  <span className="text-accent text-sm font-semibold">
-                    Resolving Prediction...
+                  )}
+                  <span className="font-semibold text-white text-sm">
+                    <EmoteText text={outcome.title} emoteMap={emoteMap} keyPrefix={`pred-${outcome.id}`} />
                   </span>
                 </div>
-              </div>
-            )}
-            
-            {resolutionState === 'win' && (
-              <div className="px-3 pb-3">
-                <div className="py-4 px-4 bg-gradient-to-r from-success/30 to-highlight-green/30 border border-success rounded-lg text-center animate-pulse">
-                  <div className="flex justify-center mb-2">
-                    <PartyPopper className="w-8 h-8 text-success" />
-                  </div>
-                  <span className="text-success text-lg font-bold">YOU WON!</span>
-                  {winningOutcomeId && (
-                    <p className="text-success/80 text-sm mt-1">
-                      <EmoteText text={activePrediction.outcomes.find(o => o.id === winningOutcomeId)?.title ?? ''} emoteMap={emoteMap} keyPrefix="pred-win" />
-                    </p>
-                  )}
-                </div>
-              </div>
-            )}
-            
-            {resolutionState === 'loss' && (
-              <div className="px-3 pb-3">
-                <div className="py-4 px-4 bg-gradient-to-r from-error/30 to-highlight-red/30 border border-error rounded-lg text-center">
-                  <div className="flex justify-center mb-2">
-                    <XCircle className="w-8 h-8 text-error" />
-                  </div>
-                  <span className="text-error text-lg font-bold">Better Luck Next Time</span>
-                  {winningOutcomeId && (
-                    <p className="text-error/80 text-sm mt-1">
-                      Winner: <EmoteText text={activePrediction.outcomes.find(o => o.id === winningOutcomeId)?.title ?? ''} emoteMap={emoteMap} keyPrefix="pred-loss" />
-                    </p>
-                  )}
-                </div>
-              </div>
-            )}
-            
-            {resolutionState === 'refund' && (
-              <div className="px-3 pb-3">
-                <div className="py-4 px-4 bg-gradient-to-r from-info/30 to-highlight-cyan/30 border border-info rounded-lg text-center">
-                  <div className="flex justify-center mb-2">
-                    <RefreshCw className="w-8 h-8 text-info" />
-                  </div>
-                  <span className="text-info text-lg font-bold">Points Refunded</span>
-                  <p className="text-info/80 text-sm mt-1">Prediction was cancelled</p>
-                </div>
-              </div>
-            )}
-            
-            {resolutionState === 'announced' && (
-              <div className="px-3 pb-3">
-                <div className="py-4 px-4 bg-gradient-to-r from-accent/30 to-highlight-purple/30 border border-accent rounded-lg text-center">
-                  <div className="flex justify-center mb-2">
-                    <Trophy className="w-8 h-8 text-accent" />
-                  </div>
-                  <span className="text-accent text-lg font-bold">Prediction Ended</span>
-                  {winningOutcomeId && (
-                    <p className="text-accent/80 text-sm mt-1">
-                      Winner: <EmoteText text={activePrediction.outcomes.find(o => o.id === winningOutcomeId)?.title ?? ''} emoteMap={emoteMap} keyPrefix="pred-announced" />
-                    </p>
-                  )}
-                </div>
-              </div>
-            )}
-            
-            {/* Normal Locked State (waiting for results) */}
-            {isLocked && resolutionState === 'none' && (
-              <div className="px-3 pb-3">
-                <div className="py-2 px-3 bg-warning/20 border border-warning/50 rounded-lg flex items-center justify-center gap-2">
-                  <Hourglass className="w-4 h-4 text-warning animate-pulse" />
-                  <span className="text-warning text-sm font-semibold">
-                    Awaiting Results{hasPlacedBet && ' • Your bet is in!'}
-                  </span>
-                </div>
-                {/* Total stats when locked */}
-                <div className="mt-2 flex items-center justify-center gap-4 text-xs text-textSecondary">
+                <div className="flex items-center gap-3 text-xs text-white/90">
                   <span className="flex items-center gap-1">
                     <Users className="w-3 h-3" />
-                    {activePrediction.outcomes.reduce((sum, o) => sum + o.total_users, 0).toLocaleString()} voters
+                    {outcome.total_users}
                   </span>
                   <span className="flex items-center gap-1">
                     {customPointsIconUrl ? (
                       <img src={customPointsIconUrl} alt="points" className="w-3 h-3" />
                     ) : (
-                      <ChannelPointsIcon size={12} className="text-textSecondary" />
+                      <ChannelPointsIcon size={12} className="text-white/90" />
                     )}
-                    {activePrediction.outcomes.reduce((sum, o) => sum + o.total_points, 0).toLocaleString()} points
+                    {outcome.total_points.toLocaleString()}
                   </span>
+                  <span className="font-bold text-sm">{percentage}%</span>
                 </div>
               </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Bet Amount & Action - only when not locked/already bet */}
+      {!isLocked && !hasPlacedBet && (
+        <div className="px-3 pb-3">
+          {/* Bet Input Row */}
+          <div className="flex items-center gap-2 p-2 bg-backgroundSecondary rounded-lg border border-border">
+            {/* Number Input */}
+            <input
+              type="text"
+              inputMode="numeric"
+              value={betAmountInput}
+              onChange={(e) => {
+                // Allow only numbers
+                const value = e.target.value.replace(/[^0-9]/g, '');
+                setBetAmountInput(value);
+                // Update betAmount if valid
+                const num = parseInt(value) || 0;
+                if (num > 0) {
+                  setBetAmount(num);
+                }
+              }}
+              onBlur={() => {
+                // Validate on blur - ensure minimum of 1 and max of channel points
+                const num = parseInt(betAmountInput) || 1;
+                const maxPoints = channelPoints || 250000;
+                const clamped = Math.min(Math.max(1, num), maxPoints);
+                setBetAmount(clamped);
+                setBetAmountInput(clamped.toString());
+              }}
+              className="w-24 px-2 py-1.5 glass-input text-textPrimary text-sm font-medium focus:outline-none"
+              placeholder="Amount"
+            />
+            
+            {/* Quick Amount Buttons - fewer presets */}
+            <div className="flex gap-1">
+              {[10, 100, 1000].map(amount => (
+                <button
+                  key={amount}
+                  onClick={() => {
+                    setBetAmount(amount);
+                    setBetAmountInput(amount.toString());
+                  }}
+                  className={`px-2 py-1.5 text-xs font-medium rounded transition-colors border ${
+                    betAmount === amount 
+                      ? 'bg-accent/30 border-accent/60 text-accent'
+                      : 'bg-background border-border text-textSecondary hover:bg-backgroundSecondary'
+                  }`}
+                >
+                  {amount >= 1000 ? `${amount / 1000}k` : amount}
+                </button>
+              ))}
+              {channelPoints && (
+                <button
+                  onClick={() => {
+                    setBetAmount(channelPoints);
+                    setBetAmountInput(channelPoints.toString());
+                  }}
+                  className="px-2 py-1.5 text-xs font-bold bg-accent/30 hover:bg-accent/40 border border-accent/60 rounded transition-colors text-accent"
+                >
+                  ALL
+                </button>
+              )}
+            </div>
+            
+            {/* Bet Button - compact */}
+            <button
+              onClick={handlePlacePrediction}
+              disabled={!selectedOutcome || isSubmitting}
+              className={`px-3 py-1.5 rounded text-xs font-bold transition-all whitespace-nowrap ${
+                selectedOutcome && !isSubmitting
+                  ? 'bg-accent hover:bg-accent-hover text-white'
+                  : 'bg-background border border-border text-textSecondary cursor-not-allowed'
+              }`}
+            >
+              {isSubmitting ? '...' : 'Bet'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Status indicators */}
+      {hasPlacedBet && !isLocked && resolutionState === 'none' && (
+        <div className="px-3 pb-3">
+          <div className="py-2 px-3 bg-success/20 border border-success/50 rounded-lg flex items-center justify-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-success" />
+            <span className="text-success text-sm font-semibold">Bet Placed!</span>
+          </div>
+        </div>
+      )}
+      
+      {/* Resolution States - Win/Loss/Refund/Pending */}
+      {resolutionState === 'pending' && (
+        <div className="px-3 pb-3">
+          <div className="py-3 px-4 bg-accent/20 border border-accent/50 rounded-lg flex items-center justify-center gap-2 animate-pulse">
+            <div className="w-5 h-5 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" />
+            <span className="text-accent text-sm font-semibold">
+              Resolving Prediction...
+            </span>
+          </div>
+        </div>
+      )}
+      
+      {resolutionState === 'win' && (
+        <div className="px-3 pb-3">
+          <div className="py-4 px-4 bg-gradient-to-r from-success/30 to-highlight-green/30 border border-success rounded-lg text-center animate-pulse">
+            <div className="flex justify-center mb-2">
+              <PartyPopper className="w-8 h-8 text-success" />
+            </div>
+            <span className="text-success text-lg font-bold">YOU WON!</span>
+            {winningOutcomeId && (
+              <p className="text-success/80 text-sm mt-1">
+                <EmoteText text={activePrediction.outcomes.find(o => o.id === winningOutcomeId)?.title ?? ''} emoteMap={emoteMap} keyPrefix="pred-win" />
+              </p>
             )}
           </div>
-        )}
-      </div>
-    </motion.div>
+        </div>
+      )}
+      
+      {resolutionState === 'loss' && (
+        <div className="px-3 pb-3">
+          <div className="py-4 px-4 bg-gradient-to-r from-error/30 to-highlight-red/30 border border-error rounded-lg text-center">
+            <div className="flex justify-center mb-2">
+              <XCircle className="w-8 h-8 text-error" />
+            </div>
+            <span className="text-error text-lg font-bold">Better Luck Next Time</span>
+            {winningOutcomeId && (
+              <p className="text-error/80 text-sm mt-1">
+                Winner: <EmoteText text={activePrediction.outcomes.find(o => o.id === winningOutcomeId)?.title ?? ''} emoteMap={emoteMap} keyPrefix="pred-loss" />
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+      
+      {resolutionState === 'refund' && (
+        <div className="px-3 pb-3">
+          <div className="py-4 px-4 bg-gradient-to-r from-info/30 to-highlight-cyan/30 border border-info rounded-lg text-center">
+            <div className="flex justify-center mb-2">
+              <RefreshCw className="w-8 h-8 text-info" />
+            </div>
+            <span className="text-info text-lg font-bold">Points Refunded</span>
+            <p className="text-info/80 text-sm mt-1">Prediction was cancelled</p>
+          </div>
+        </div>
+      )}
+      
+      {resolutionState === 'announced' && (
+        <div className="px-3 pb-3">
+          <div className="py-4 px-4 bg-gradient-to-r from-accent/30 to-highlight-purple/30 border border-accent rounded-lg text-center">
+            <div className="flex justify-center mb-2">
+              <Trophy className="w-8 h-8 text-accent" />
+            </div>
+            <span className="text-accent text-lg font-bold">Prediction Ended</span>
+            {winningOutcomeId && (
+              <p className="text-accent/80 text-sm mt-1">
+                Winner: <EmoteText text={activePrediction.outcomes.find(o => o.id === winningOutcomeId)?.title ?? ''} emoteMap={emoteMap} keyPrefix="pred-announced" />
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+      
+      {/* Normal Locked State (waiting for results) */}
+      {isLocked && resolutionState === 'none' && (
+        <div className="px-3 pb-3">
+          <div className="py-2 px-3 bg-warning/20 border border-warning/50 rounded-lg flex items-center justify-center gap-2">
+            <Hourglass className="w-4 h-4 text-warning animate-pulse" />
+            <span className="text-warning text-sm font-semibold">
+              Awaiting Results{hasPlacedBet && ' • Your bet is in!'}
+            </span>
+          </div>
+          {/* Total stats when locked */}
+          <div className="mt-2 flex items-center justify-center gap-4 text-xs text-textSecondary">
+            <span className="flex items-center gap-1">
+              <Users className="w-3 h-3" />
+              {activePrediction.outcomes.reduce((sum, o) => sum + o.total_users, 0).toLocaleString()} voters
+            </span>
+            <span className="flex items-center gap-1">
+              {customPointsIconUrl ? (
+                <img src={customPointsIconUrl} alt="points" className="w-3 h-3" />
+              ) : (
+                <ChannelPointsIcon size={12} className="text-textSecondary" />
+              )}
+              {activePrediction.outcomes.reduce((sum, o) => sum + o.total_points, 0).toLocaleString()} points
+            </span>
+          </div>
+        </div>
+      )}
+    </OverlayBanner>
   );
 };
 

@@ -9,15 +9,113 @@ import {
 import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, ExternalLink, Loader2, Copy, Pencil, Trash2, Clapperboard, Check, ArrowUpRight } from 'lucide-react';
+import { X, ExternalLink, Loader2, Copy, Pencil, Trash2, Clapperboard, Check, ArrowUpRight, MessageSquare } from 'lucide-react';
 import { useAppStore } from '../stores/AppStore';
-import type { MediaInfo } from '../stores/AppStore';
+import type { ClipSource, MediaInfo } from '../stores/AppStore';
 import { Logger } from '../utils/logger';
+import ChatMessageList from './ChatMessageList';
+import { openProfilePopup } from '../utils/openProfilePopup';
+import { useChatCosmetics } from '../hooks/useChatCosmetics';
+import {
+  beginVodReplay,
+  clipReplayWindow,
+  restoreReplaySession,
+  snapshotReplaySession,
+  useVodReplaySnapshot,
+  useVodReplayStore,
+  type ReplaySession,
+} from '../stores/vodReplayStore';
 
 interface ClipResolveResult {
   url: string;
   quality: string;
   available: string[];
+  /** Where this clip sits in its source broadcast, for chat replay. */
+  clip_source?: ClipSource;
+}
+
+const NOOP = () => {};
+const EMPTY_IDS: Set<string> = new Set();
+const EMPTY_CONTEXTS = new Map<string, never>();
+// Replay comments arrive already tokenized into segments by the Rust parser, so the
+// list never has to resolve an emote set itself.
+const getReplayMessageId = (m: string | { id?: string }): string | null =>
+  typeof m === 'string' ? null : (m.id ?? null);
+
+/** The chat that was live while this clip was being recorded.
+ *
+ *  The clip plays its own MP4 as always; this only reads the source broadcast's
+ *  comments, because Twitch addresses them by video id + offset and has no
+ *  clip-addressed equivalent. */
+function ClipChatPanel({ hasSource }: { hasSource: boolean }) {
+  const chat = useVodReplaySnapshot();
+  const error = useVodReplayStore((s) => s.error);
+  const active = useVodReplayStore((s) => s.active);
+  // This panel renders ChatMessageList directly instead of going through ChatWidget, so
+  // it has to resolve account-level cosmetics itself (paints, 7TV + member badges,
+  // atmospheres). Without it the rows render, just stripped of everything that isn't
+  // carried on the message.
+  useChatCosmetics(chat.messages);
+
+  // Every branch is `absolute inset-0`, which is load-bearing: the column is a flex item
+  // stretched to the row's height, and if this content were in flow its intrinsic height
+  // (hundreds of message rows) would define the row instead, stretching the video box to
+  // thousands of pixels and destroying its 16:9 box. Taking it out of flow makes the
+  // video the only thing that sizes the row, and gives the list a definite height to
+  // scroll inside.
+  if (!hasSource) {
+    return (
+      <div className="absolute inset-0 flex items-center justify-center px-6 text-center">
+        <p className="text-xs leading-relaxed text-textSecondary">
+          No chat for this clip.
+          <br />
+          <span className="text-textMuted">Its broadcast is no longer available.</span>
+        </p>
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="absolute inset-0 flex items-center justify-center px-6 text-center">
+        <p className="text-xs text-textSecondary">Couldn&apos;t load the chat for this clip.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="absolute inset-0">
+      <ChatMessageList
+        messages={chat.messages}
+        renderToken={chat.renderToken}
+        isPaused={false}
+        onScroll={NOOP}
+        onUsernameClick={(userId, username, displayName, color, badges, event) => {
+          void openProfilePopup({
+            userId,
+            username,
+            displayName,
+            color,
+            badges,
+            clientX: event.clientX,
+            clientY: event.clientY,
+          });
+        }}
+        onReplyClick={NOOP}
+        onEmoteRightClick={NOOP}
+        onUsernameRightClick={NOOP}
+        onBadgeClick={NOOP}
+        highlightedMessageId={null}
+        deletedMessageIds={EMPTY_IDS}
+        clearedUserContexts={EMPTY_CONTEXTS}
+        emotes={null}
+        getMessageId={getReplayMessageId}
+      />
+      {!active && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-2 text-center text-[11px] text-textMuted">
+          Loading chat…
+        </div>
+      )}
+    </div>
+  );
 }
 
 function FooterBtn({
@@ -143,6 +241,14 @@ function ClipModalInner({
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  // The resolver looks these up for any clip, so it is the more reliable source; the
+  // caller's copy covers a clip opened straight from a grid before the resolve lands.
+  const [resolvedSource, setResolvedSource] = useState<ClipSource | null>(null);
+  const clipSource = resolvedSource ?? info.clip_source ?? null;
+  const hasClipSource = !!clipSource?.video_id && clipSource?.vod_offset != null;
+  const showChat = useAppStore((s) => s.settings.clip_chat_replay !== false);
+  const setShowChat = useAppStore((s) => s.updateSettings);
+  const settings = useAppStore((s) => s.settings);
   const addToast = useAppStore((s) => s.addToast);
   const channelLogin = useAppStore((s) => s.currentStream?.user_login);
   const [pendingDelete, setPendingDelete] = useState(false);
@@ -173,6 +279,32 @@ function ClipModalInner({
     videoRef.current = el;
   }, []);
 
+  // The chat that was live while this clip was recorded. The clip still plays its own
+  // MP4; the source broadcast is only the address for the comments.
+  //
+  // The replay engine is a module singleton, so if a VOD replay was already running when
+  // this opened (a clip link clicked mid-VOD is completely ordinary), snapshot it and put
+  // it back on close. Without that, closing the modal leaves the VOD with dead chat.
+  useEffect(() => {
+    const videoId = clipSource?.video_id;
+    if (!showChat || !hasClipSource || !src || !videoId) return;
+    const previous: ReplaySession | null = snapshotReplaySession();
+    beginVodReplay(videoId, clipSource?.broadcaster_login || channelLogin || '', {
+      ...clipReplayWindow(clipSource?.vod_offset ?? 0, clipSource?.duration),
+      getTime: () => videoRef.current?.currentTime ?? null,
+    });
+    return () => restoreReplaySession(previous);
+  }, [
+    showChat,
+    hasClipSource,
+    src,
+    channelLogin,
+    clipSource?.video_id,
+    clipSource?.vod_offset,
+    clipSource?.duration,
+    clipSource?.broadcaster_login,
+  ]);
+
   // Get the playable source. A freshly-created clip (`created`) needs Twitch to
   // finish RENDERING it first — resolving too early yields a black frame that
   // never refreshes — so poll ShareClipRenderStatus until CREATED, then resolve
@@ -197,7 +329,9 @@ function ClipModalInner({
     const resolveSrc = (retriesLeft: number) => {
       invoke<ClipResolveResult>('resolve_clip_media', { url, quality })
         .then((r) => {
-          if (!cancelled) setSrc(r.url);
+          if (cancelled) return;
+          setSrc(r.url);
+          if (r.clip_source) setResolvedSource(r.clip_source);
         })
         .catch((e) => {
           if (cancelled) return;
@@ -469,6 +603,17 @@ function ClipModalInner({
           </div>
           <button
             type="button"
+            onClick={() => setShowChat({ ...settings, clip_chat_replay: !showChat })}
+            aria-label={showChat ? 'Hide chat replay' : 'Show chat replay'}
+            title={showChat ? 'Hide chat replay' : 'Show chat replay'}
+            className={`hidden h-8 w-8 flex-shrink-0 items-center justify-center rounded-md transition-colors hover:bg-white/[0.06] lg:flex ${
+              showChat ? 'text-textPrimary' : 'text-textSecondary hover:text-textPrimary'
+            }`}
+          >
+            <MessageSquare size={16} />
+          </button>
+          <button
+            type="button"
             onClick={onClose}
             aria-label="Close clip"
             className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md text-textSecondary transition-colors hover:bg-white/[0.06] hover:text-textPrimary"
@@ -477,7 +622,8 @@ function ClipModalInner({
           </button>
         </div>
 
-        <div className="relative w-full bg-black" style={{ aspectRatio: '16 / 9' }}>
+        <div className="flex w-full flex-col lg:flex-row">
+        <div className="relative w-full min-w-0 flex-1 bg-black" style={{ aspectRatio: '16 / 9' }}>
           {src ? (
             <video
               ref={attachVideo}
@@ -504,6 +650,14 @@ function ClipModalInner({
               {created && <p className="text-xs text-textSecondary">Preparing your clip…</p>}
             </div>
           )}
+        </div>
+        {/* Hidden under lg so a narrow window keeps the full-width video rather than
+            squeezing both. */}
+        {showChat && (
+          <div className="relative hidden w-[340px] flex-shrink-0 self-stretch border-l border-borderSubtle lg:block">
+            <ClipChatPanel hasSource={hasClipSource} />
+          </div>
+        )}
         </div>
 
         {/* Action bar — the all-in-one: watch above, act below. */}

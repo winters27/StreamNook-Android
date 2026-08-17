@@ -5,7 +5,8 @@ import { Logger } from '../utils/logger';
 // Shared service reached by both shells, so a platform branch here is legitimate.
 import { IS_MOBILE } from '../utils/platform';
 import type { Atmosphere } from './atmospheres';
-import type { ActiveEquipment, CosmeticSlot } from './cosmetics/types';
+import type { ActiveEquipment, CosmeticSlot, CosmeticType } from './cosmetics/types';
+import { SLOT_FOR_TYPE } from './cosmetics/types';
 // Supabase client singleton
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -1561,6 +1562,25 @@ export const getOwnedCosmeticSlugs = (userId: string | undefined | null): Set<st
     return owned;
 };
 
+// Cosmetic kinds that own their own equip slot (see CosmeticSlot / SLOT_FOR_TYPE
+// in services/cosmetics/types). `user_cosmetic_active` predates that model: it is
+// a single UNTYPED slot, and it is what the chat badge renders. So a non-badge
+// kind landing in it replaces the member's StreamNook badge entirely.
+//
+// Derived from SLOT_FOR_TYPE rather than restated here, so a cosmetic type added
+// later is kept out of the badge slot without anyone remembering to update a
+// second list.
+//
+// An UNRECOGNISED kind is treated as badge-eligible on purpose. This is a
+// deny-list, not an allow-list of 'badge': a legacy badge row may carry an older
+// kind string, and blanking a real badge for everyone is far worse than letting
+// an unknown kind through.
+const isBadgeKind = (slug: string): boolean => {
+    const kind = cosmeticsCatalog.get(slug)?.kind ?? '';
+    const slot = SLOT_FOR_TYPE[kind as CosmeticType];
+    return slot === undefined || slot === 'badge';
+};
+
 /** Sync read: which slug is this user currently displaying? */
 export const getActiveCosmeticSlug = (userId: string | undefined | null): string | null => {
     if (!userId) return null;
@@ -1571,6 +1591,11 @@ export const getActiveCosmeticSlug = (userId: string | undefined | null): string
     // membership + is_default eligibility checked together.
     const owned = getOwnedCosmeticSlugs(userId);
     if (!owned.has(slug)) return null;
+    // Repairs existing rows, not just new ones: the badge picker stopped listing
+    // non-badge kinds, so a member who equipped one before that landed has no way
+    // to clear it from the UI. Ignoring it here restores their badge with no
+    // migration and no action from them.
+    if (!isBadgeKind(slug)) return null;
     return slug;
 };
 
@@ -1950,6 +1975,13 @@ export const setActiveCosmetic = async (
 ): Promise<{ ok: boolean; error?: string }> => {
     if (!supabase) return { ok: false, error: 'supabase not configured' };
     if (!userId) return { ok: false, error: 'no userId' };
+    // Defence in depth alongside the picker's own filter: this row is the badge
+    // slot, so refuse to write a cosmetic that belongs to a different one rather
+    // than persisting a state the reader will then have to ignore.
+    if (slug && !isBadgeKind(slug)) {
+        Logger.warn('[Supabase] refusing to equip non-badge cosmetic in the badge slot:', slug);
+        return { ok: false, error: 'not a badge cosmetic' };
+    }
 
     // Optimistic local update so the swap is instant in this window.
     const prev = cosmeticsActive.get(userId) ?? null;

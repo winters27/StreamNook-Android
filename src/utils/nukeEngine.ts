@@ -127,6 +127,9 @@ interface NukeRecord {
   affected: NukeAffected[];
   futureExpiresAt: number; // 0 if no future window
   seenUserIds: Set<string>; // for future-window dedupe
+  // Handle for the window-close timer, so `/nuke stop` can cancel it instead of
+  // leaving it to fire a "window closed" notice for a nuke that already ended.
+  closeTimer?: ReturnType<typeof setTimeout>;
 }
 
 // Per-channel last nuke. /undo pops the most recent.
@@ -141,6 +144,13 @@ export function getActiveNukesForChannel(channel: string): NukeRecord[] {
 function pickStructured(msg: string | BackendChatMessage): BackendChatMessage | null {
   if (typeof msg === 'string') return null; // raw IRC form, ignore for nuke matching
   return msg;
+}
+
+/** The reason recorded against a nuke's bans and timeouts. Shown to the user in
+ *  Twitch's own mod view, so it's worth letting people write their own. */
+function nukeReason(): string {
+  const custom = useAppStore.getState().settings.moderation?.nuke_reason?.trim();
+  return custom || '/nuke';
 }
 
 async function applyActionToUser(
@@ -158,14 +168,14 @@ async function applyActionToUser(
         broadcasterId,
         targetUserId: affected.user_id,
         duration: null,
-        reason: '/nuke',
+        reason: nukeReason(),
       });
     } else {
       await invoke('ban_user', {
         broadcasterId,
         targetUserId: affected.user_id,
         duration: action.seconds,
-        reason: '/nuke',
+        reason: nukeReason(),
       });
     }
   } catch (err) {
@@ -173,30 +183,24 @@ async function applyActionToUser(
   }
 }
 
-function describeAction(action: NukeAction): string {
-  if (action.kind === 'delete') return 'delete';
-  if (action.kind === 'ban') return 'ban';
-  return `timeout ${action.seconds}s`;
+export interface NukePreview {
+  matchedMessages: number;
+  affected: NukeAffected[];
 }
 
 /**
- * Execute /nuke against the past window of the current channel's local buffer.
- * Optionally arms a future-window subscription.
+ * Everything /nuke WOULD hit right now, with no side effects.
+ *
+ * Shared with executeNuke so the count shown while you type is produced by the
+ * same code that later does the banning. A preview that could disagree with the
+ * action would be worse than no preview.
  */
-export async function executeNuke(
-  channel: string,
-  broadcasterId: string,
-  parsed: ParsedNuke,
-): Promise<{ matchedMessages: number; affectedUsers: number }> {
-  const chKey = channel.toLowerCase();
-  const slice = useChatConnectionStore.getState().channels.get(chKey);
-  if (!slice) {
-    injectSystemMessage(chKey, '/nuke: no chat connected for this channel.');
-    return { matchedMessages: 0, affectedUsers: 0 };
-  }
+export function previewNuke(channel: string, parsed: ParsedNuke): NukePreview {
+  const slice = useChatConnectionStore.getState().channels.get(channel.toLowerCase());
+  if (!slice) return { matchedMessages: 0, affected: [] };
 
   const cutoffMs = Date.now() - parsed.pastSeconds * 1000;
-  const grouped = new Map<string, NukeAffected>(); // user_id -> NukeAffected
+  const grouped = new Map<string, NukeAffected>();
   let matchedMessages = 0;
 
   for (const msg of slice.messages) {
@@ -224,7 +228,47 @@ export async function executeNuke(
     }
   }
 
-  const affected = [...grouped.values()];
+  return { matchedMessages, affected: [...grouped.values()] };
+}
+
+/**
+ * Cancel any armed future windows for a channel. Returns how many were stopped.
+ */
+export function stopActiveNukes(channel: string): number {
+  const chKey = channel.toLowerCase();
+  const records = activeNukes.get(chKey) ?? [];
+  if (records.length === 0) return 0;
+  for (const record of records) {
+    if (record.closeTimer !== undefined) clearTimeout(record.closeTimer);
+    record.futureExpiresAt = 0;
+  }
+  activeNukes.delete(chKey);
+  return records.length;
+}
+
+export function describeAction(action: NukeAction): string {
+  if (action.kind === 'delete') return 'delete';
+  if (action.kind === 'ban') return 'ban';
+  return `timeout ${action.seconds}s`;
+}
+
+/**
+ * Execute /nuke against the past window of the current channel's local buffer.
+ * Optionally arms a future-window subscription.
+ */
+export async function executeNuke(
+  channel: string,
+  broadcasterId: string,
+  parsed: ParsedNuke,
+): Promise<{ matchedMessages: number; affectedUsers: number }> {
+  const chKey = channel.toLowerCase();
+  const slice = useChatConnectionStore.getState().channels.get(chKey);
+  if (!slice) {
+    injectSystemMessage(chKey, '/nuke: no chat connected for this channel.');
+    return { matchedMessages: 0, affectedUsers: 0 };
+  }
+
+  const { matchedMessages, affected } = previewNuke(chKey, parsed);
 
   // Execute concurrently per user. Tauri handle invoke is async; the Rust side
   // serializes Helix-bound mod actions naturally, so we don't bother throttling
@@ -247,7 +291,7 @@ export async function executeNuke(
     const list = activeNukes.get(chKey) ?? [];
     list.push(record);
     activeNukes.set(chKey, list);
-    setTimeout(() => {
+    record.closeTimer = setTimeout(() => {
       const cur = activeNukes.get(chKey) ?? [];
       const next = cur.filter((r) => r !== record);
       if (next.length) activeNukes.set(chKey, next);

@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
-import { BarChart3, Users, ChevronDown, ChevronUp, CheckCircle2, Trophy } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { BarChart3, Users, CheckCircle2, Trophy } from 'lucide-react';
 import { useAppStore } from '../stores/AppStore';
+import { OverlayBanner } from './chat/OverlayBanner';
 import { Logger } from '../utils/logger';
 
 interface PollChoice {
@@ -31,10 +31,9 @@ interface PollData {
 interface PollOverlayProps {
   channelId?: string;
   channelLogin?: string;
-  isHypeTrainActive?: boolean;
 }
 
-const PollOverlay = ({ channelId, isHypeTrainActive = false }: PollOverlayProps) => {
+const PollOverlay = ({ channelId }: PollOverlayProps) => {
   const [activePoll, setActivePoll] = useState<PollData | null>(null);
   const [votedChoiceId, setVotedChoiceId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -188,120 +187,91 @@ const PollOverlay = ({ channelId, isHypeTrainActive = false }: PollOverlayProps)
   if (!activePoll) return null;
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: -12, scale: 0.97 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      transition={{ type: 'spring', stiffness: 320, damping: 26 }}
-      className={`absolute ${isHypeTrainActive ? 'top-16' : 'top-10'} left-2 right-2 z-40 transition-[top] duration-300 ease-in-out`}
+    <OverlayBanner
+      icon={<BarChart3 className="w-4 h-4 text-accent" />}
+      title={activePoll.title}
+      isExpanded={isExpanded}
+      onToggleExpanded={() => setIsExpanded(!isExpanded)}
+      badges={
+        isClosed ? (
+          <span className="text-xs font-medium text-accent bg-accent/20 border border-accent/40 px-1.5 py-1 rounded-md">
+            Final
+          </span>
+        ) : timeRemaining > 0 ? (
+          <span className="text-xs font-mono font-bold text-warning bg-warning/20 border border-warning/40 px-1.5 py-1 rounded-md">
+            {formatTime(timeRemaining)}
+          </span>
+        ) : (
+          <span className="text-xs font-medium text-error bg-error/20 border border-error/40 px-1.5 py-1 rounded-md">
+            Closed
+          </span>
+        )
+      }
     >
-      <div className="bg-background rounded-lg border border-border shadow-lg shadow-black/30 overflow-hidden">
-        {/* Header */}
-        <button
-          onClick={() => setIsExpanded(!isExpanded)}
-          className={`w-full p-3 bg-backgroundSecondary hover:bg-backgroundSecondary/80 transition-colors ${isExpanded ? 'border-b border-borderSubtle' : ''}`}
-        >
-          <div className={`flex gap-2 ${isExpanded ? 'items-start' : 'items-center'}`}>
-            <div className="p-1.5 bg-accent/30 rounded-md flex-shrink-0">
-              <BarChart3 className="w-4 h-4 text-accent" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className={`text-sm font-semibold text-textPrimary text-left leading-tight ${isExpanded ? '' : 'truncate'}`}>
-                {activePoll.title}
-              </p>
-            </div>
-            <div className="flex items-center gap-1.5 flex-shrink-0">
-              {isClosed ? (
-                <span className="text-xs font-medium text-accent bg-accent/20 border border-accent/40 px-1.5 py-1 rounded-md">
-                  Final
-                </span>
-              ) : timeRemaining > 0 ? (
-                <span className="text-xs font-mono font-bold text-warning bg-warning/20 border border-warning/40 px-1.5 py-1 rounded-md">
-                  {formatTime(timeRemaining)}
-                </span>
-              ) : (
-                <span className="text-xs font-medium text-error bg-error/20 border border-error/40 px-1.5 py-1 rounded-md">
-                  Closed
-                </span>
-              )}
-              {isExpanded ? (
-                <ChevronUp className="w-4 h-4 text-textSecondary" />
-              ) : (
-                <ChevronDown className="w-4 h-4 text-textSecondary" />
-              )}
-            </div>
-          </div>
-        </button>
+      <div className="p-3 space-y-2">
+        {activePoll.choices.map((choice) => {
+          const percentage = getPercentage(choice);
+          const isVoted = votedChoiceId === choice.id;
+          const isWinner = winningChoiceId === choice.id;
+          const clickable = !isLocked;
 
-        {/* Expanded content */}
-        {isExpanded && (
-          <div className="bg-background">
-            <div className="p-3 space-y-2">
-              {activePoll.choices.map((choice) => {
-                const percentage = getPercentage(choice);
-                const isVoted = votedChoiceId === choice.id;
-                const isWinner = winningChoiceId === choice.id;
-                const clickable = !isLocked;
-
-                return (
-                  <button
-                    key={choice.id}
-                    onClick={() => clickable && handleVote(choice.id)}
-                    disabled={!clickable}
-                    className={`w-full relative p-2.5 rounded-lg border transition-all overflow-hidden ${
-                      isWinner
-                        ? 'bg-accent/20 border-accent'
-                        : isVoted
-                          ? 'bg-accent/20 border-accent/70'
-                          : 'bg-backgroundSecondary border-border ' + (clickable ? 'hover:bg-accent/10 hover:border-accent/40 cursor-pointer' : 'cursor-default')
-                    }`}
-                  >
-                    {/* Vote-share bar */}
-                    <div
-                      className={`absolute inset-y-0 left-0 rounded-md opacity-25 transition-[width] duration-500 ${isWinner ? 'bg-accent' : 'bg-accent/70'}`}
-                      style={{ width: `${percentage}%` }}
-                    />
-                    <div className="relative flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 min-w-0">
-                        {isWinner && <Trophy className="w-3.5 h-3.5 text-accent flex-shrink-0" />}
-                        {isVoted && !isWinner && <CheckCircle2 className="w-3.5 h-3.5 text-accent flex-shrink-0" />}
-                        <span className="font-semibold text-textPrimary text-sm truncate">{choice.title}</span>
-                      </div>
-                      <div className="flex items-center gap-3 text-xs text-textSecondary flex-shrink-0">
-                        <span className="flex items-center gap-1">
-                          <Users className="w-3 h-3" />
-                          {choice.total_votes.toLocaleString()}
-                        </span>
-                        <span className="font-bold text-sm text-textPrimary">{percentage}%</span>
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Footer status line */}
-            <div className="px-3 pb-3">
-              {votedChoiceId && !isClosed && (
-                <div className="py-2 px-3 bg-accent/15 border border-accent/40 rounded-lg flex items-center justify-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-accent" />
-                  <span className="text-accent text-sm font-semibold">Vote counted</span>
+          return (
+            <button
+              key={choice.id}
+              onClick={() => clickable && handleVote(choice.id)}
+              disabled={!clickable}
+              className={`w-full relative p-2.5 rounded-lg border transition-all overflow-hidden ${
+                isWinner
+                  ? 'bg-accent/20 border-accent'
+                  : isVoted
+                    ? 'bg-accent/20 border-accent/70'
+                    : 'bg-backgroundSecondary border-border ' + (clickable ? 'hover:bg-accent/10 hover:border-accent/40 cursor-pointer' : 'cursor-default')
+              }`}
+            >
+              {/* Vote-share bar */}
+              <div
+                className={`absolute inset-y-0 left-0 rounded-md opacity-25 transition-[width] duration-500 ${isWinner ? 'bg-accent' : 'bg-accent/70'}`}
+                style={{ width: `${percentage}%` }}
+              />
+              <div className="relative flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  {isWinner && <Trophy className="w-3.5 h-3.5 text-accent flex-shrink-0" />}
+                  {isVoted && !isWinner && <CheckCircle2 className="w-3.5 h-3.5 text-accent flex-shrink-0" />}
+                  <span className="font-semibold text-textPrimary text-sm truncate">{choice.title}</span>
                 </div>
-              )}
-              {!votedChoiceId && !isLocked && (
-                <p className="text-center text-xs text-textSecondary">
-                  Tap a choice to vote
-                  {activePoll.channel_points_voting ? ' (free votes only)' : ''}
-                </p>
-              )}
-              <div className="mt-2 flex items-center justify-center gap-1 text-xs text-textSecondary">
-                <Users className="w-3 h-3" />
-                {activePoll.total_voters.toLocaleString()} {activePoll.total_voters === 1 ? 'voter' : 'voters'}
+                <div className="flex items-center gap-3 text-xs text-textSecondary flex-shrink-0">
+                  <span className="flex items-center gap-1">
+                    <Users className="w-3 h-3" />
+                    {choice.total_votes.toLocaleString()}
+                  </span>
+                  <span className="font-bold text-sm text-textPrimary">{percentage}%</span>
+                </div>
               </div>
-            </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Footer status line */}
+      <div className="px-3 pb-3">
+        {votedChoiceId && !isClosed && (
+          <div className="py-2 px-3 bg-accent/15 border border-accent/40 rounded-lg flex items-center justify-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-accent" />
+            <span className="text-accent text-sm font-semibold">Vote counted</span>
           </div>
         )}
+        {!votedChoiceId && !isLocked && (
+          <p className="text-center text-xs text-textSecondary">
+            Tap a choice to vote
+            {activePoll.channel_points_voting ? ' (free votes only)' : ''}
+          </p>
+        )}
+        <div className="mt-2 flex items-center justify-center gap-1 text-xs text-textSecondary">
+          <Users className="w-3 h-3" />
+          {activePoll.total_voters.toLocaleString()} {activePoll.total_voters === 1 ? 'voter' : 'voters'}
+        </div>
       </div>
-    </motion.div>
+    </OverlayBanner>
   );
 };
 

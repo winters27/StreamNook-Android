@@ -224,6 +224,59 @@ fn parse_seventv_active_emotes(items: &[serde_json::Value]) -> Vec<Emote> {
     out
 }
 
+// Modifier-emote flag bits carried by `Emote::modifier_flags` and by
+// `MessageSegment::Emote`. Bits 0..17 are FrankerFaceZ's own, in FFZ's
+// authoritative declaration order. Bits 18+ are ours, for BetterTTV effects
+// that have no FFZ equivalent. Codes whose effect is genuinely identical
+// share a bit rather than getting a duplicate.
+//
+// The renderer mirrors this table in `src/utils/emoteModifiers.ts`; the two
+// are hand-kept in sync, which is what the exact-value unit tests below guard.
+const MOD_HIDDEN: u32 = 1; // modifier draws no art of its own
+const MOD_FLIP_X: u32 = 1 << 1;
+const MOD_FLIP_Y: u32 = 1 << 2;
+const MOD_CURSED: u32 = 1 << 14;
+const MOD_NO_SPACE: u32 = 1 << 17; // eats the space before the target
+/// Marker: this modifier attaches to the emote AFTER it, not before it.
+/// BetterTTV modifiers are prefixes; FrankerFaceZ modifiers are suffixes.
+const MOD_PREFIX: u32 = 1 << 18;
+const MOD_BTTV_WIDE: u32 = 1 << 19;
+const MOD_BTTV_ROTATE_L: u32 = 1 << 20;
+const MOD_BTTV_ROTATE_R: u32 = 1 << 21;
+const MOD_BTTV_PARTY: u32 = 1 << 22;
+const MOD_BTTV_SHAKE: u32 = 1 << 23;
+
+/// BetterTTV emote modifiers, mirroring `EMOTE_MODIFIERS` in BetterTTV's own
+/// client. Every one is hidden and attaches forward. A `modifier: true` emote
+/// whose code is NOT in this table renders as an ordinary emote, which is what
+/// BetterTTV does with a code missing from its map.
+const BTTV_MODIFIER_FLAGS: &[(&str, u32)] = &[
+    ("w!", MOD_HIDDEN | MOD_PREFIX | MOD_BTTV_WIDE),
+    ("h!", MOD_HIDDEN | MOD_PREFIX | MOD_FLIP_X),
+    ("v!", MOD_HIDDEN | MOD_PREFIX | MOD_FLIP_Y),
+    ("l!", MOD_HIDDEN | MOD_PREFIX | MOD_BTTV_ROTATE_L),
+    ("r!", MOD_HIDDEN | MOD_PREFIX | MOD_BTTV_ROTATE_R),
+    ("c!", MOD_HIDDEN | MOD_PREFIX | MOD_CURSED),
+    ("p!", MOD_HIDDEN | MOD_PREFIX | MOD_BTTV_PARTY),
+    ("s!", MOD_HIDDEN | MOD_PREFIX | MOD_BTTV_SHAKE),
+    ("z!", MOD_HIDDEN | MOD_PREFIX | MOD_NO_SPACE),
+];
+
+/// BetterTTV overlay ("zero-width") emotes. The API reports `modifier: false`
+/// for all of them, so there is nothing to detect: BetterTTV's client hardcodes
+/// these same ids in CSS and we mirror the list. Six are seasonal and drop out
+/// of the global set outside winter, so the list stays complete year-round.
+const BTTV_OVERLAY_EMOTE_IDS: &[&str] = &[
+    "5e76d338d6581c3724c0f0b2", // cvHazmat
+    "5e76d399d6581c3724c0f0b8", // cvMask
+    "5849c9a4f52be01a7ee5f79d", // IceCold
+    "567b5b520e984428652809b6", // SoSnowy
+    "58487cc6f52be01a7ee5f205", // SantaHat
+    "5849c9c8f52be01a7ee5f79e", // TopHat
+    "567b5c080e984428652809ba", // CandyCane
+    "567b5dc00e984428652809bd", // ReinDeer
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Emote {
     pub id: String,
@@ -246,9 +299,10 @@ pub struct Emote {
     /// Emote width in pixels (for aspect ratio sorting - wide emotes > 32)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
-    /// FFZ modifier bitmask (Hidden=1, FlipX=2, FlipY=4, GrowX=8, ...).
-    /// Some(_) marks the emote as a modifier that attaches to the preceding
-    /// emote; Some(0) is a legacy overlay modifier with no effect bits.
+    /// Modifier bitmask (see the MOD_* constants above). Some(_) marks the
+    /// emote as a modifier: it attaches to the preceding emote by default, or
+    /// to the following one when MOD_PREFIX is set (BetterTTV's `w!` and
+    /// friends). Some(0) is a legacy FFZ overlay modifier with no effect bits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modifier_flags: Option<u32>,
     /// FFZ effect emote that only FFZ subscribers may compose with (set not in
@@ -749,6 +803,49 @@ impl EmoteService {
 
     // Private helper methods for fetching from each provider
 
+    /// Parse one BetterTTV emote. A `modifier: true` emote whose code is in
+    /// BTTV_MODIFIER_FLAGS rides the zero-width grouping machinery (the same
+    /// mapping FFZ modifiers use) and carries its flag bitmask, including
+    /// MOD_PREFIX so the renderer attaches it to the FOLLOWING emote. Overlay
+    /// emotes are matched by id because BetterTTV's API does not flag them.
+    fn parse_bttv_emote(item: &serde_json::Value) -> Option<Emote> {
+        let id = item.get("id").and_then(|v| v.as_str())?;
+        let code = item.get("code").and_then(|v| v.as_str())?;
+
+        let modifier_flags = if item
+            .get("modifier")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            BTTV_MODIFIER_FLAGS
+                .iter()
+                .find(|(c, _)| *c == code)
+                .map(|(_, flags)| *flags)
+        } else {
+            None
+        };
+        let is_overlay = BTTV_OVERLAY_EMOTE_IDS.contains(&id);
+
+        Some(Emote {
+            id: id.to_string(),
+            name: code.to_string(),
+            url: format!("https://cdn.betterttv.net/emote/{}/1x", id),
+            provider: EmoteProvider::BTTV,
+            is_zero_width: if modifier_flags.is_some() || is_overlay {
+                Some(true)
+            } else {
+                None
+            },
+            local_url: None,
+            emote_type: None,
+            owner_id: None,
+            width: None,
+            owner_name: None,
+            modifier_flags,
+            ffz_sub_only: None,
+        })
+    }
+
     async fn fetch_bttv_emotes(
         &self,
         _channel_name: Option<String>,
@@ -766,31 +863,7 @@ impl EmoteService {
             Ok(response) if response.status().is_success() => {
                 if let Ok(json) = response.json::<serde_json::Value>().await {
                     if let Some(array) = json.as_array() {
-                        for item in array {
-                            if let (Some(id), Some(code)) = (
-                                item.get("id").and_then(|v| v.as_str()),
-                                item.get("code").and_then(|v| v.as_str()),
-                            ) {
-                                let is_modifier = item
-                                    .get("modifier")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(false);
-                                emotes.push(Emote {
-                                    id: id.to_string(),
-                                    name: code.to_string(),
-                                    url: format!("https://cdn.betterttv.net/emote/{}/1x", id),
-                                    provider: EmoteProvider::BTTV,
-                                    is_zero_width: Some(is_modifier),
-                                    local_url: None,
-                                    emote_type: None,
-                                    owner_id: None,
-                                    width: None,
-                                    owner_name: None,
-                                    modifier_flags: None,
-                                    ffz_sub_only: None,
-                                });
-                            }
-                        }
+                        emotes.extend(array.iter().filter_map(Self::parse_bttv_emote));
                     }
                 }
             }
@@ -811,64 +884,13 @@ impl EmoteService {
             {
                 Ok(response) if response.status().is_success() => {
                     if let Ok(json) = response.json::<serde_json::Value>().await {
-                        // Channel emotes
-                        if let Some(channel_emotes) =
-                            json.get("channelEmotes").and_then(|v| v.as_array())
-                        {
-                            for item in channel_emotes {
-                                if let (Some(id), Some(code)) = (
-                                    item.get("id").and_then(|v| v.as_str()),
-                                    item.get("code").and_then(|v| v.as_str()),
-                                ) {
-                                    let is_modifier = item
-                                        .get("modifier")
-                                        .and_then(|v| v.as_bool())
-                                        .unwrap_or(false);
-                                    emotes.push(Emote {
-                                        id: id.to_string(),
-                                        name: code.to_string(),
-                                        url: format!("https://cdn.betterttv.net/emote/{}/1x", id),
-                                        provider: EmoteProvider::BTTV,
-                                        is_zero_width: Some(is_modifier),
-                                        local_url: None,
-                                        emote_type: None,
-                                        owner_id: None,
-                                        width: None,
-                                        owner_name: None,
-                                        modifier_flags: None,
-                                        ffz_sub_only: None,
-                                    });
-                                }
-                            }
-                        }
-                        // Shared emotes
-                        if let Some(shared_emotes) =
-                            json.get("sharedEmotes").and_then(|v| v.as_array())
-                        {
-                            for item in shared_emotes {
-                                if let (Some(id), Some(code)) = (
-                                    item.get("id").and_then(|v| v.as_str()),
-                                    item.get("code").and_then(|v| v.as_str()),
-                                ) {
-                                    let is_modifier = item
-                                        .get("modifier")
-                                        .and_then(|v| v.as_bool())
-                                        .unwrap_or(false);
-                                    emotes.push(Emote {
-                                        id: id.to_string(),
-                                        name: code.to_string(),
-                                        url: format!("https://cdn.betterttv.net/emote/{}/1x", id),
-                                        provider: EmoteProvider::BTTV,
-                                        is_zero_width: Some(is_modifier),
-                                        local_url: None,
-                                        emote_type: None,
-                                        owner_id: None,
-                                        width: None,
-                                        owner_name: None,
-                                        modifier_flags: None,
-                                        ffz_sub_only: None,
-                                    });
-                                }
+                        // Channel emotes, then shared emotes. Neither can be a
+                        // modifier (BetterTTV only sets `modifier` on globals),
+                        // but both can be overlay emotes, so both go through
+                        // the same parser.
+                        for key in ["channelEmotes", "sharedEmotes"] {
+                            if let Some(list) = json.get(key).and_then(|v| v.as_array()) {
+                                emotes.extend(list.iter().filter_map(Self::parse_bttv_emote));
                             }
                         }
                     }
@@ -1614,6 +1636,68 @@ mod tests {
             "modifier_flags": 0
         });
         let e = EmoteService::parse_ffz_emoticon(&item, false).unwrap();
+        assert_eq!(e.is_zero_width, None);
+        assert_eq!(e.modifier_flags, None);
+        assert_eq!(e.ffz_sub_only, None);
+    }
+
+    // The renderer hand-mirrors this bit table in TypeScript, so these assert
+    // literal integers rather than the constants: a bit reassigned on one side
+    // and not the other has to fail here, not in a live chat.
+    #[test]
+    fn bttv_prefix_modifier_parses_flags_and_rides_zero_width() {
+        let item = serde_json::json!({
+            "id": "64e3b31920cb0d25d950a9f9",
+            "code": "w!",
+            "imageType": "png",
+            "animated": false,
+            "modifier": true
+        });
+        let e = EmoteService::parse_bttv_emote(&item).unwrap();
+        assert_eq!(e.is_zero_width, Some(true));
+        // Hidden | Prefix | BttvWide
+        assert_eq!(e.modifier_flags, Some(786433));
+    }
+
+    #[test]
+    fn bttv_modifiers_reusing_ffz_bits_match_them_exactly() {
+        for (code, expected) in [
+            ("h!", 1 | (1 << 18) | (1 << 1)),  // Hidden | Prefix | FlipX
+            ("c!", 1 | (1 << 18) | (1 << 14)), // Hidden | Prefix | Cursed
+            ("z!", 1 | (1 << 18) | (1 << 17)), // Hidden | Prefix | NoSpace
+        ] {
+            let item = serde_json::json!({ "id": "x", "code": code, "modifier": true });
+            let e = EmoteService::parse_bttv_emote(&item).unwrap();
+            assert_eq!(e.modifier_flags, Some(expected), "code {}", code);
+        }
+    }
+
+    #[test]
+    fn bttv_overlay_emote_is_zero_width_without_flags() {
+        let item = serde_json::json!({
+            "id": "5e76d399d6581c3724c0f0b8",
+            "code": "cvMask",
+            "modifier": false
+        });
+        let e = EmoteService::parse_bttv_emote(&item).unwrap();
+        assert_eq!(e.is_zero_width, Some(true));
+        assert_eq!(e.modifier_flags, None);
+    }
+
+    #[test]
+    fn bttv_unknown_modifier_code_renders_as_a_plain_emote() {
+        // BetterTTV renders a modifier missing from its own map as ordinary
+        // art rather than guessing an effect, and so do we.
+        let item = serde_json::json!({ "id": "abc", "code": "q!", "modifier": true });
+        let e = EmoteService::parse_bttv_emote(&item).unwrap();
+        assert_eq!(e.is_zero_width, None);
+        assert_eq!(e.modifier_flags, None);
+    }
+
+    #[test]
+    fn bttv_plain_emote_has_no_modifier_fields() {
+        let item = serde_json::json!({ "id": "def", "code": "Kappa", "modifier": false });
+        let e = EmoteService::parse_bttv_emote(&item).unwrap();
         assert_eq!(e.is_zero_width, None);
         assert_eq!(e.modifier_flags, None);
         assert_eq!(e.ffz_sub_only, None);

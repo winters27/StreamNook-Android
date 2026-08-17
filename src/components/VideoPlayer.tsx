@@ -15,6 +15,7 @@ import { useChannelSocial } from '../hooks/useChannelSocial';
 import StreamTitleWithEmojis from './StreamTitleWithEmojis';
 import PlayerStatsOverlay from './PlayerStatsOverlay';
 import { Tooltip } from './ui/Tooltip';
+import { TwitchVerifiedMark } from './ui/TwitchGlyph';
 import { registerPlayerControls, type PlayerControls } from '../keybindings';
 import { qualitiesEquivalent } from '../utils/quality';
 
@@ -2365,10 +2366,40 @@ const VideoPlayer = () => {
               )
             )}
             <div className="min-w-0">
+              {/* Identity row: avatar, display name, partner mark. Mirrors the
+                  mobile player's info block so both clients read the same. The
+                  live ring is gated on media type — this overlay also serves
+                  VODs, clips, and offline chat, where it would be a lie. */}
+              <div className="flex items-center gap-2 min-w-0">
+                {currentStream.profile_image_url ? (
+                  <img
+                    src={currentStream.profile_image_url}
+                    alt=""
+                    draggable={false}
+                    className={`w-7 h-7 rounded-full object-cover shrink-0 ${
+                      currentMediaType === 'live' ? 'ring-2 ring-live/80' : ''
+                    }`}
+                  />
+                ) : (
+                  <div className="w-7 h-7 rounded-full bg-white/15 shrink-0 flex items-center justify-center text-[12px] font-bold text-white">
+                    {(currentStream.user_name || currentStream.user_login || '?')
+                      .charAt(0)
+                      .toUpperCase()}
+                  </div>
+                )}
+                {/* min-w-0: a flex item won't shrink below its content width by
+                    default, which makes `truncate` a no-op and overflows instead. */}
+                <span className="text-white text-[13.5px] font-semibold truncate min-w-0 drop-shadow-lg">
+                  {currentStream.user_name || currentStream.user_login}
+                </span>
+                {currentStream.broadcaster_type === 'partner' && (
+                  <TwitchVerifiedMark size={13} className="text-[#9146FF] shrink-0" />
+                )}
+              </div>
               {currentStream.title?.trim() && (
                 <Tooltip content={currentStream.title} side="bottom" delay={300}>
                 <h3
-                  className="text-white text-sm font-medium line-clamp-1 drop-shadow-lg"
+                  className="text-white text-sm font-medium line-clamp-1 drop-shadow-lg mt-1"
                 >
                   <StreamTitleWithEmojis title={currentStream.title} />
                 </h3>

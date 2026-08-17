@@ -76,6 +76,90 @@ pub async fn get_window_size(window: Window) -> Result<(u32, u32), String> {
     Ok((size.width, size.height))
 }
 
+/// Restore-and-drag for the borderless title bar.
+///
+/// Windows restores a maximized window when you drag its caption, but that is
+/// DefWindowProc behavior tied to a real caption. A `decorations: false` window only
+/// gets `start_dragging()`, which slides it around at its maximized size.
+///
+/// One command rather than a chain of JS calls on purpose: every extra IPC hop
+/// between the mousedown and `start_dragging` is a chance for the mouse button to
+/// come up first, which leaves the window stuck to the cursor until the next click.
+#[command]
+pub fn start_titlebar_drag(window: Window) -> Result<(), String> {
+    if window.is_maximized().unwrap_or(false) {
+        // Read the pre-maximize size BEFORE unmaximizing. Tauri setters are queued on
+        // the event loop, so outer_size() straight after unmaximize() can still report
+        // the maximized size.
+        if let Some((mut rw, mut rh)) = restore_rect_size(&window) {
+            // A build before the logical-units fix could have persisted a restore rect
+            // larger than the screen. Never restore into one.
+            if let Ok(Some(monitor)) = window.current_monitor() {
+                let work = monitor.work_area();
+                rw = rw.min(work.size.width);
+                rh = rh.min(work.size.height);
+            }
+
+            let cursor = window.cursor_position().map_err(|e| e.to_string())?;
+            let pos = window.outer_position().map_err(|e| e.to_string())?;
+            let size = window.outer_size().map_err(|e| e.to_string())?;
+
+            // Keep the same point of the title bar under the cursor after the restore.
+            let frac_x = if size.width > 0 {
+                ((cursor.x - pos.x as f64) / size.width as f64).clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
+            let grab_y = (cursor.y - pos.y as f64).clamp(0.0, (rh as f64 - 1.0).max(0.0));
+
+            let x = (cursor.x - frac_x * rw as f64).round() as i32;
+            let y = (cursor.y - grab_y).round() as i32;
+
+            // Queued setters, so they apply in this order on the event loop.
+            window.unmaximize().map_err(|e| e.to_string())?;
+            window
+                .set_size(tauri::PhysicalSize::new(rw, rh))
+                .map_err(|e| e.to_string())?;
+            window
+                .set_position(tauri::PhysicalPosition::new(x, y))
+                .map_err(|e| e.to_string())?;
+        } else {
+            window.unmaximize().map_err(|e| e.to_string())?;
+        }
+    }
+    window.start_dragging().map_err(|e| e.to_string())
+}
+
+/// Pre-maximize window size straight from Win32. `rcNormalPosition` is documented as
+/// workspace coordinates, which differ from screen coordinates when the taskbar sits
+/// on the top or left edge, so only its width and height are used here.
+#[cfg(windows)]
+fn restore_rect_size(window: &Window) -> Option<(u32, u32)> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowPlacement, WINDOWPLACEMENT};
+
+    let hwnd = HWND(window.hwnd().ok()?.0 as *mut std::ffi::c_void);
+    let mut placement = WINDOWPLACEMENT {
+        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+        ..Default::default()
+    };
+    unsafe { GetWindowPlacement(hwnd, &mut placement) }.ok()?;
+
+    let r = placement.rcNormalPosition;
+    let w = (r.right - r.left).max(0) as u32;
+    let h = (r.bottom - r.top).max(0) as u32;
+    if w == 0 || h == 0 {
+        None
+    } else {
+        Some((w, h))
+    }
+}
+
+#[cfg(not(windows))]
+fn restore_rect_size(_window: &Window) -> Option<(u32, u32)> {
+    None
+}
+
 #[command]
 pub async fn calculate_aspect_ratio_size(
     current_width: u32,

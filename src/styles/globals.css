@@ -770,6 +770,19 @@ html[data-motion="off"] {
   scroll-behavior: auto !important;
 }
 
+/* The Penrose mark IS the app's loading indicator, so it keeps marching here for
+   exactly the reason spinners are exempt above: a frozen loader reads as a hung
+   app, not as a preference being honoured. The exemption above can only name one
+   class (`.animate-spin`) and the mark uses its own, so it was being collapsed to
+   0.001ms and standing perfectly still. Timing is restated verbatim from the
+   loader's own rule; it outranks the kill on specificity (0,3,1 vs 0,2,1).
+   NOTE: the OS-level `prefers-reduced-motion` freeze further down is deliberate
+   and stays — that one is a real accessibility signal, not an app preference. */
+html[data-motion="off"] .penrose-march .pm-cube {
+  animation-duration: 1.5s !important;
+  animation-delay: 0ms !important;
+}
+
 /* Reduced: keep quick fades, but strip the larger movements, the glass-button
    bounce, and decorative looping effects. */
 html[data-motion="reduced"] .animate-scale-in {
@@ -1816,12 +1829,15 @@ html[data-motion="reduced"] .animate-shimmer {
   animation-name: pm-flow-c, pm-phase-b;
 }
 
-/* Frozen at their base positions the cubes are exactly the static logo. */
-@media (prefers-reduced-motion: reduce) {
-  .penrose-march .pm-cube {
-    animation: none;
-  }
-}
+/* Deliberately NOT frozen under prefers-reduced-motion, unlike most looping
+   effects in this file. This mark is only ever used by the loading widget, and a
+   loader that does not move reads as a hung app rather than as a preference being
+   honoured — the same reasoning that exempts spinners from the motion-off kill
+   above. The motion itself is a small in-place march with no travel across the
+   viewport, no parallax and no scaling, so it is not the vestibular-trigger class
+   of animation that preference exists to suppress.
+   (This previously froze the cubes, which made the loader look permanently stuck
+   for anyone with Windows "Animation effects" turned off.) */
 
 /* Plyr Custom Styling - Theme aware */
 .video-player-container {
@@ -3471,8 +3487,40 @@ html[data-motion="reduced"] .animate-shimmer {
 }
 .sn-ffz-anim-leave { animation: sn-ffz-leave 0.5s ease-in 1 both; }
 
+/* ============================================================
+   BetterTTV emote modifiers (p! party, s! shake). The rest of
+   BetterTTV's set is static and lives as inline styles, same as
+   the FFZ ones above. Durations and keyframes are transcribed
+   from BetterTTV's own chat stylesheet.
+   ============================================================ */
+
+@keyframes sn-bttv-party {
+  0% { filter: sepia(0.5) hue-rotate(0deg) saturate(2.5); }
+  100% { filter: sepia(0.5) hue-rotate(360deg) saturate(2.5); }
+}
+.sn-bttv-anim-party { animation: sn-bttv-party 1.5s linear infinite; }
+
+/* step-start is what gives BetterTTV's shake its snap: the emote jumps
+   between stops instead of easing through them. */
+@keyframes sn-bttv-shake {
+  0% { translate: 0px 1px; }
+  10% { translate: 2px 0px; }
+  20% { translate: 1px -2px; }
+  30% { translate: -2px 1px; }
+  40% { translate: 0px -1px; }
+  50% { translate: 2px 2px; }
+  60% { translate: -1px -1px; }
+  70% { translate: -2px 2px; }
+  80% { translate: 2px 1px; }
+  90% { translate: -1px -2px; }
+  100% { translate: 1px 0px; }
+}
+.sn-bttv-anim-shake { animation: sn-bttv-shake 500ms step-start infinite; }
+
 /* Reduced motion keeps static effects (flip / wide / tint) but stops the
    animated ones. data-motion="off" is already covered by the global kill. */
+html[data-motion="reduced"] .sn-bttv-anim-party,
+html[data-motion="reduced"] .sn-bttv-anim-shake,
 html[data-motion="reduced"] .sn-ffz-anim-rainbow,
 html[data-motion="reduced"] .sn-ffz-anim-shake,
 html[data-motion="reduced"] .sn-ffz-anim-jam,
@@ -3484,6 +3532,8 @@ html[data-motion="reduced"] .sn-ffz-anim-leave {
   animation: none;
 }
 @media (prefers-reduced-motion: reduce) {
+  .sn-bttv-anim-party,
+  .sn-bttv-anim-shake,
   .sn-ffz-anim-rainbow,
   .sn-ffz-anim-shake,
   .sn-ffz-anim-jam,

@@ -198,6 +198,15 @@ export interface ChatDesignSettings {
   // ...) to the preceding emote, like FFZ's own client. Default true. Off
   // renders modifier emotes as plain overlay emotes instead.
   ffz_emote_effects?: boolean;
+  // Apply BetterTTV modifier effects (w! wide, h!/v! flips, c! cursed, p!
+  // party, s! shake, l!/r! rotate, z! zero space) to the emote AFTER them,
+  // like BetterTTV's own client. Default true. Off renders the modifiers as
+  // plain emotes.
+  bttv_emote_modifiers?: boolean;
+  // Render the last emote of a "Gigantify an Emote" power-up message (msg-id
+  // gigantified-emote-message) at 4x below the message body, like Twitch does.
+  // Default true. Off renders the emote inline at its normal size.
+  giant_emotes?: boolean;
   // Which half of the user card opens first: their recent messages (default) or
   // the profile body. The card switches between the two either way.
   user_card_opens_messages?: boolean;
@@ -474,6 +483,11 @@ export interface ChatInputSettings {
   emote_tab_complete_enabled?: boolean;
   emote_tab_complete_match_mode?: 'starts_with' | 'includes';
   emote_tab_complete_include_chatters?: boolean;
+  // Chrome around the composer, for people who want the row as bare as
+  // possible. All default to showing.
+  hide_placeholder?: boolean;
+  hide_emote_button?: boolean;
+  hide_points_balance?: boolean;
 }
 
 // Screen anchor a toast popup appears at. Mirrors the Rust `toast_position`
@@ -632,6 +646,8 @@ export interface MultiNookSlot {
   gameName?: string;         // Current stream category (for rich presence majority game)
   quality?: string;          // Preferred Streamlink quality for this tile (defaults to 'best')
   loadError?: boolean;       // Ephemeral: the proxy failed to start (offline/unreachable). Not persisted.
+  title?: string;            // Ephemeral: current stream title, refreshed from Helix while the grid is open. Not persisted, since a saved title goes stale the moment the streamer edits it.
+  broadcasterType?: string;  // Ephemeral: 'partner' | 'affiliate' | ''. Drives the verified mark on the tile. Resolved from helix/users, which every slot-creating path already calls.
 }
 
 /** A single channel stored inside a MultiNook preset. Deliberately a lean subset
@@ -676,6 +692,57 @@ export type KeybindingOverrides = Record<string, string[]>;
 // everything; 'reduced' keeps quick fades but drops movement; 'off' is instant.
 export type MotionMode = 'full' | 'reduced' | 'off';
 
+// Which of the two floating chat cards sits on top when both are live. Twitch
+// allows a poll and a prediction to run at once, so both stack either way.
+export type ChatOverlayOrder = 'prediction-first' | 'poll-first';
+
+// How strictly two messages must match to count as a repeat. 'normalized' also
+// folds case, spacing and trailing punctuation, so "LULW!!" joins "lulw".
+export type RepeatMatchMode = 'exact' | 'normalized';
+
+// What to do with a run of identical messages. 'collapse' keeps the first and
+// folds the rest into its counter; 'label' leaves every message in place and
+// just numbers them; 'off' disables detection entirely.
+export type RepeatDisplayMode = 'collapse' | 'label' | 'off';
+
+// Folding runs of the same message (a copypasta wave, or 30 people posting one
+// emote) into a single row with a count. Matching is cross-user.
+export interface MessageRepeatSettings {
+  mode?: RepeatDisplayMode;
+  match?: RepeatMatchMode;
+  // Copies needed before the counter appears. 2 shows "x2" on the first repeat.
+  threshold?: number;
+  // How long after the first message a copy still joins its run, in seconds.
+  window_seconds?: number;
+  // Counter colour. Empty falls back to the muted chat text colour.
+  color?: string;
+  // Never fold messages from the broadcaster, moderators or VIPs.
+  exempt_privileged?: boolean;
+  // Keep every message visible in channels where you're a moderator, so a
+  // hidden copy can never be a message you needed to action.
+  keep_all_when_moderator?: boolean;
+}
+
+// Which rows the chat user card shows. Everything defaults to on, so a user
+// who never opens this sees the card exactly as it has always looked.
+export interface UserCardSettings {
+  show_join_date?: boolean;
+  show_followage?: boolean;
+  show_follows_count?: boolean;
+  show_past_subscriber?: boolean;
+  show_last_live?: boolean;
+  show_chatter_count?: boolean;
+  // Append "(6y ago)" next to the join date, followage and sub tenure.
+  show_relative_time?: boolean;
+  // Link out to the user's 7TV profile from the card header.
+  show_seventv_link?: boolean;
+}
+
+// What the main window's close button does. Mirrors the Rust CloseToTrayMode
+// enum (kebab-case); keep the two in sync. 'with-popouts' is the default and
+// the long-standing behavior.
+export type CloseToTrayMode = 'with-popouts' | 'always' | 'never';
+
 export interface Settings {
   quality: string;
   chat_placement: string;
@@ -719,8 +786,12 @@ export interface Settings {
   show_mod_logs?: boolean; // Whether to display the Mod Logs pane
   show_polls?: boolean; // Show the live poll overlay card at the top of chat (default on)
   show_predictions?: boolean; // Show the live prediction overlay card at the top of chat (default on)
+  // Which card sits on top when a poll and a prediction are live at the same
+  // time. Both always render (they stack); this only picks the order.
+  chat_overlay_order?: ChatOverlayOrder;
   show_channel_point_redemptions?: boolean; // Show no-input channel-point redemptions as chat rows (default on)
   collapse_gift_subs?: boolean; // Collapse mass gift-sub bombs into one announcement row with recipients (default on)
+  clip_chat_replay?: boolean; // Show the chat that was live during a clip, beside it in the clip player (default on)
   chat_logging?: ChatLoggingSettings; // Save chat to plain text files as you watch
   moderation?: ModerationSettings;
   keybindings?: KeybindingOverrides; // Customizable keyboard shortcut overrides (id -> chords)
@@ -737,6 +808,27 @@ export interface Settings {
   // animates everything; 'reduced' keeps fades but drops movement; 'off' is
   // instant. Applied app-wide by MotionScope (data-motion + framer MotionConfig).
   motion_mode?: MotionMode;
+  // What closing the main window does. Read by the Rust window-event handler.
+  close_to_tray?: CloseToTrayMode;
+  // Float the window above other apps while Compact View is active, so the
+  // small player stays visible over a browser. Scoped to Compact View on
+  // purpose: a full-size window glued in front of everything is overbearing.
+  // Only the frontend reads it, so it rides Rust's `extra` catch-all.
+  keep_on_top_in_compact?: boolean;
+  // Which rows the chat user card shows.
+  user_card?: UserCardSettings;
+  // Folding runs of the same message into one row with a count.
+  message_repeat?: MessageRepeatSettings;
+  // Last 10 polls and predictions you started, newest first, so running the
+  // same one again is two clicks in the composer.
+  recent_polls?: RecentPollEntry[];
+  recent_predictions?: RecentPollEntry[];
+}
+
+/** A title plus its choices, remembered so the composer can offer it again. */
+export interface RecentPollEntry {
+  title: string;
+  options: string[];
 }
 
 export interface ModerationSettings {
@@ -752,6 +844,12 @@ export interface ModerationSettings {
   // How mod-log severity is shown: a filled card with a matching same-color
   // border (default), a colored left bar, or just a colored dot.
   mod_log_highlight_style?: 'box' | 'bar' | 'dot';
+  // Reason recorded against bans and timeouts issued by /nuke. Twitch shows it
+  // in the channel's mod view, so a real sentence beats the "/nuke" default.
+  nuke_reason?: string;
+  // Reasons offered when banning or timing out from the user card or a
+  // message's moderation controls. First entry is the prefilled default.
+  saved_ban_reasons?: string[];
 }
 
 export interface ModLogEvent {
@@ -814,6 +912,10 @@ export interface TwitchClip {
   embed_url: string;
   broadcaster_id: string;
   broadcaster_name: string;
+  /** Broadcaster LOGIN (lowercase), distinct from the display name. Chat replay keys a
+   *  channel's third-party emote set off the login. Absent on the Helix clip path, which
+   *  only carries the display name; resolve it from broadcaster_id there. */
+  broadcaster_login?: string;
   creator_id: string;
   creator_name: string;
   video_id: string;

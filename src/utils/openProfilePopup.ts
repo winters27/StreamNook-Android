@@ -2,9 +2,13 @@ import { invoke } from '@tauri-apps/api/core';
 import { Logger } from './logger';
 
 /**
- * Open the same cursor-anchored user-profile popout window that clicking a
- * username in chat opens (the `/#/profile` WebviewWindow). Extracted so the mod
- * log (and anywhere else) can reuse it instead of the in-app modal.
+ * Open the cursor-anchored user-profile popout window (the `/#/profile`
+ * WebviewWindow). This is THE implementation — chat, the mod log and MultiChat all
+ * route through it, because the placement math below (physical/logical units and
+ * the per-monitor clamp) is easy to get subtly wrong in a second copy.
+ *
+ * Returns false when the window could not be opened, so a caller can fall back to
+ * the in-app modal.
  */
 export async function openProfilePopup(opts: {
   userId: string;
@@ -20,10 +24,10 @@ export async function openProfilePopup(opts: {
   isModerator?: boolean;
   clientX?: number;
   clientY?: number;
-}): Promise<void> {
+}): Promise<boolean> {
   try {
     const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-    const { getCurrentWindow, availableMonitors, currentMonitor } = await import(
+    const { getCurrentWindow, availableMonitors, currentMonitor, PhysicalPosition } = await import(
       '@tauri-apps/api/window'
     );
     const mainWindow = getCurrentWindow();
@@ -102,9 +106,14 @@ export async function openProfilePopup(opts: {
       if (y < 0) y = 0;
     }
 
-    // The window options take LOGICAL pixels, so convert back from physical.
-    const winX = Math.round(x / scale);
-    const winY = Math.round(y / scale);
+    // NOT passed as the window's x/y options. Those are LOGICAL pixels, and Tauri
+    // has to pick a scale factor to convert them before the window exists — which
+    // is not necessarily the scale of the monitor we just clamped to. On a
+    // mixed-DPI desktop that inflates the coordinate and throws the card onto the
+    // next monitor. Physical coordinates are unambiguous, so the window is created
+    // hidden and moved with an explicit PhysicalPosition below.
+    const physX = Math.round(x);
+    const physY = Math.round(y);
 
     let userId = opts.userId;
     let displayName = opts.displayName || opts.username;
@@ -167,17 +176,45 @@ export async function openProfilePopup(opts: {
       title: `${displayName}'s Profile`,
       width: cardWidth,
       height: cardHeight,
-      x: winX,
-      y: winY,
       resizable: false,
       decorations: false,
       alwaysOnTop: true,
       skipTaskbar: true,
       transparent: true,
-      focus: true,
+      // Created hidden and shown after it is positioned, so the corrective move
+      // can't flash the card at the wrong spot (or on the wrong monitor).
+      visible: false,
+      focus: false,
     });
-    profileWindow.once('tauri://error', (e) => Logger.error('Error opening profile window:', e));
+
+    const created = await new Promise<boolean>((resolve) => {
+      let settled = false;
+      const done = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        resolve(ok);
+      };
+      void profileWindow.once('tauri://created', () => done(true));
+      void profileWindow.once('tauri://error', (e) => {
+        Logger.error('Error opening profile window:', e);
+        done(false);
+      });
+      // A window that never reports either way still gets shown rather than
+      // stranded invisible.
+      setTimeout(() => done(true), 3000);
+    });
+    if (!created) return false;
+
+    try {
+      await profileWindow.setPosition(new PhysicalPosition(physX, physY));
+    } catch (e) {
+      Logger.warn('Could not position profile popup, showing at default:', e);
+    }
+    await profileWindow.show();
+    await profileWindow.setFocus().catch(() => { /* focus is best-effort */ });
+    return true;
   } catch (err) {
     Logger.error('Failed to open profile popup:', err);
+    return false;
   }
 }

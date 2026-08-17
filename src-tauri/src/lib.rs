@@ -39,7 +39,7 @@ use commands::{
 #[cfg(desktop)]
 use commands::{discord::*, multi_nook::*, screen_capture::*};
 use log::{debug, error};
-use models::settings::{AppState, Settings};
+use models::settings::{AppState, CloseToTrayMode, Settings};
 use services::background_service::BackgroundService;
 use services::cache_service;
 use services::drops_service::DropsService;
@@ -157,6 +157,49 @@ fn show_main_window(app: &tauri::AppHandle) {
         }
         Err(e) => error!("[Main] Failed to recreate main window: {e}"),
     }
+}
+
+/// Pull an oversized saved restore rect back inside the monitor's work area.
+///
+/// Only the size is corrected, and `showCmd` is untouched, so a window that restored
+/// maximized stays maximized with no flash and only its restore geometry changes.
+/// Keeping left/top also sidesteps the workspace-vs-screen coordinate ambiguity of
+/// `rcNormalPosition`.
+#[cfg(windows)]
+fn sanitize_restore_rect(window: &tauri::WebviewWindow) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowPlacement, SetWindowPlacement, WINDOWPLACEMENT,
+    };
+
+    let Ok(Some(monitor)) = window.current_monitor() else {
+        return;
+    };
+    let work = monitor.work_area();
+    let Ok(raw) = window.hwnd() else {
+        return;
+    };
+    let hwnd = HWND(raw.0 as *mut std::ffi::c_void);
+
+    let mut placement = WINDOWPLACEMENT {
+        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetWindowPlacement(hwnd, &mut placement) }.is_err() {
+        return;
+    }
+
+    let r = placement.rcNormalPosition;
+    let (w, h) = (r.right - r.left, r.bottom - r.top);
+    let (max_w, max_h) = (work.size.width as i32, work.size.height as i32);
+    if w <= max_w && h <= max_h {
+        return;
+    }
+
+    placement.rcNormalPosition.right = r.left + w.min(max_w);
+    placement.rcNormalPosition.bottom = r.top + h.min(max_h);
+    let _ = unsafe { SetWindowPlacement(hwnd, &placement) };
+    debug!("[Main] Clamped oversized restore rect to the monitor work area");
 }
 
 /// Get-or-create the main window. Invoked from a MultiChat popout when an action
@@ -506,6 +549,19 @@ pub fn run() {
                     }
                 }
             }
+            // A build before the logical-units fix could resize the window past the
+            // screen, and the window-state plugin persists that rect because it only
+            // skips saving while maximized. Correcting rcNormalPosition rather than the
+            // live size also covers the case where the user quit while maximized, where
+            // the oversized rect stays invisible until the next unmaximize or drag.
+            // Config windows are built before this setup hook runs and the plugin
+            // restores in its on_window_ready callback, so the state is already applied.
+            #[cfg(windows)]
+            {
+                if let Some(main) = app.get_webview_window("main") {
+                    sanitize_restore_rect(&main);
+                }
+            }
             // Hand the stream server an app handle so the ad auto-pivot can emit
             // its `ad-pivot` reload event to the player.
             services::stream_server::set_app_handle(app_handle.clone());
@@ -794,6 +850,7 @@ pub fn run() {
             close_main_window,
             calculate_aspect_ratio_size,
             calculate_aspect_ratio_size_preserve_video,
+            start_titlebar_drag,
             get_system_info,
             get_emoji_image,
             read_clipboard_text_native,
@@ -913,6 +970,8 @@ pub fn run() {
             // Chat commands
             start_chat,
             stop_chat,
+            get_chat_lifecycle_log,
+            debug_break_chat_socket,
             send_chat_message,
             join_chat_channel,
             leave_chat_channel,
@@ -972,6 +1031,13 @@ pub fn run() {
             start_commercial,
             start_raid,
             cancel_raid,
+            add_blocked_term,
+            remove_blocked_term,
+            create_poll,
+            get_active_poll,
+            end_poll,
+            create_prediction,
+            end_prediction,
             create_stream_marker,
             warn_chat_user,
             update_shield_mode,
@@ -1278,10 +1344,11 @@ pub fn run() {
         ])
         // Window-event handler. Two behaviors:
         //
-        // 1. Main window close: if any StreamNook MultiChat popouts are open,
-        //    intercept the close and hide the window to the tray instead.
-        //    Process keeps running, popouts stay alive. If no popouts exist,
-        //    the close proceeds normally (full exit).
+        // 1. Main window close: hide to the tray instead of exiting, per the
+        //    user's Close button preference. The default only hides while
+        //    MultiChat popouts are open (quitting would take them with it);
+        //    Always hides every time, Never always exits. When we hide, the
+        //    process keeps running and popouts stay alive.
         //
         // 2. Popout destroyed: when a popout closes, if it was the last
         //    popout AND the main window is currently hidden (i.e. the user
@@ -1320,9 +1387,21 @@ pub fn run() {
                         .webview_windows()
                         .iter()
                         .any(|(l, _)| l.starts_with("multichat-"));
-                    if popouts_open {
+                    // Settings can be poisoned or momentarily locked; falling
+                    // back to the default keeps close working either way.
+                    let mode = app_handle
+                        .try_state::<AppState>()
+                        .and_then(|s| s.settings.lock().ok().map(|g| g.close_to_tray))
+                        .unwrap_or_default();
+                    let hide_to_tray = match mode {
+                        CloseToTrayMode::Always => true,
+                        CloseToTrayMode::Never => false,
+                        CloseToTrayMode::WithPopouts => popouts_open,
+                    };
+                    if hide_to_tray {
                         debug!(
-                            "[Main] Close requested with popouts open — hiding main to tray"
+                            "[Main] Close requested (mode {:?}, popouts_open {}) — hiding main to tray",
+                            mode, popouts_open
                         );
                         api.prevent_close();
                         if let Some(main_win) = app_handle.get_webview_window("main") {
@@ -1359,11 +1438,23 @@ pub fn run() {
                         // main to free its memory). A destroyed main returns None
                         // here, so treat None as "gone"; otherwise the process would
                         // linger with no windows.
-                        let main_gone_or_hidden = match app_handle.get_webview_window("main") {
-                            Some(main_win) => !main_win.is_visible().unwrap_or(true),
+                        //
+                        // A hidden-but-alive main is only a reason to exit when the
+                        // user hasn't asked to always live in the tray. Under
+                        // `Always` they expect to quit from the tray menu, so
+                        // closing their last popout must not take the app with it.
+                        // A destroyed main still exits in every mode: there is no
+                        // window left to restore.
+                        let always_tray = app_handle
+                            .try_state::<AppState>()
+                            .and_then(|s| s.settings.lock().ok().map(|g| g.close_to_tray))
+                            .unwrap_or_default()
+                            == CloseToTrayMode::Always;
+                        let should_exit = match app_handle.get_webview_window("main") {
+                            Some(main_win) => !main_win.is_visible().unwrap_or(true) && !always_tray,
                             None => true,
                         };
-                        if main_gone_or_hidden {
+                        if should_exit {
                             debug!("[Main] Last MultiChat closed while main hidden/closed — exiting");
                             app_handle.exit(0);
                         }

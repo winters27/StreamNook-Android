@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useState, useRef, useCallback, useMemo } from 'react';
-import { useAppStore, HomeTab } from '../stores/AppStore';
+import { useAppStore, clipSourceOf, HomeTab } from '../stores/AppStore';
 import { IS_MOBILE } from '../utils/platform';
 import { createPortal } from 'react-dom';
 import { Search, ArrowLeft, Heart, Maximize2, X, Gift, Pickaxe, LayoutGrid, Flame, ArrowUpRight, Undo2, Users, User, Loader2, Clock, Play } from 'lucide-react';
@@ -1665,7 +1665,7 @@ const Home = () => {
                 className={`glass-panel media-card cursor-pointer hover:bg-glass-hover transition-all duration-200 group overflow-hidden relative ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''}`}
                 onClick={() => {
                     setHomeCategoryTab('clips');
-                    playMedia('clip', clip.url, clip);
+                    playMedia('clip', clip.url, { ...clip, clip_source: clipSourceOf(clip) });
                 }}
             >
                 <div className="relative overflow-hidden rounded">

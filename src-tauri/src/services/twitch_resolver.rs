@@ -13,6 +13,7 @@ use crate::services::auth_proxy::{self, PlaybackStatus};
 use crate::services::quality::{pick_closest_quality, sort_qualities_descending};
 use anyhow::{anyhow, Context, Result};
 use log::debug;
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -113,6 +114,14 @@ const CLIP_ACCESS_TOKEN_QUERY: &str = "\
 query VideoAccessToken_Clip($slug: ID!) {\n\
   clip(slug: $slug) {\n\
     id\n\
+    durationSeconds\n\
+    videoOffsetSeconds\n\
+    video {\n\
+      id\n\
+    }\n\
+    broadcaster {\n\
+      login\n\
+    }\n\
     playbackAccessToken(params: {platform: \"web\", playerBackend: \"mediaplayer\", playerType: \"site\"}) {\n\
       signature\n\
       value\n\
@@ -589,11 +598,26 @@ fn build(
 /// A resolved VOD or clip: the URL the player should load plus the quality menu.
 /// VODs resolve to an HLS media-playlist URL (served through `StreamServer` like
 /// live); clips resolve to a signed MP4 URL the player loads directly.
+/// Where a clip sits inside its source broadcast. Used ONLY to address chat replay
+/// (Twitch's comment API is video-id + offset; there is no clip-addressed one). The
+/// clip still plays from its own signed MP4 — none of this touches playback. Every
+/// field is optional because a clip whose parent VOD has expired keeps playing fine,
+/// it just has no chat to show.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ClipSource {
+    pub video_id: Option<String>,
+    pub vod_offset: Option<u32>,
+    pub duration: Option<f32>,
+    pub broadcaster_login: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ResolvedMedia {
     pub url: String,
     pub quality: String,
     pub available: Vec<String>,
+    /// Clip resolution only; None for a live stream or a VOD.
+    pub clip_source: Option<ClipSource>,
 }
 
 /// Extract the numeric VOD id from a `.../videos/123456789` URL.
@@ -719,6 +743,7 @@ pub async fn resolve_vod(
         url: variants[idx].url.clone(),
         quality: label,
         available: quality_names(&variants),
+        clip_source: None,
     })
 }
 
@@ -840,10 +865,34 @@ pub async fn resolve_clip(
 
     let mut available = names;
     sort_qualities_descending(&mut available);
+    // Chat-replay coordinates. Every field is best-effort: a clip whose parent VOD has
+    // expired still plays, it just gets no chat.
+    let clip_source = ClipSource {
+        video_id: clip
+            .pointer("/video/id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string()),
+        vod_offset: clip
+            .get("videoOffsetSeconds")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u32),
+        duration: clip
+            .get("durationSeconds")
+            .and_then(|v| v.as_f64())
+            .map(|n| n as f32),
+        broadcaster_login: clip
+            .pointer("/broadcaster/login")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_lowercase()),
+    };
+
     Ok(ResolvedMedia {
         url: with_clip_token(&src, sig, token),
         quality: chosen,
         available,
+        clip_source: Some(clip_source),
     })
 }
 

@@ -332,6 +332,20 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     tab: 'Chat',
     section: 'Chat Events',
     sectionId: 'settings-section-chat-events',
+    title: 'Starting a poll or prediction',
+    description: 'On your own channel, the chart button beside the message box opens a builder for polls and predictions, with outcomes, a duration, channel-point voting and a live preview. Also reachable with /poll and /prediction.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Chat Events',
+    sectionId: 'settings-section-chat-events',
+    title: 'When both are running',
+    description: 'A channel can run a poll and a prediction at the same time. Both cards show either way, stacked. Pick which one sits on top.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Chat Events',
+    sectionId: 'settings-section-chat-events',
     title: 'Channel point redemptions',
     description: 'Drop a chat row when someone redeems a reward that does not post its own message, such as a no-input reward.'
   },
@@ -341,6 +355,13 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     sectionId: 'settings-section-chat-events',
     title: 'Collapse gift-sub floods',
     description: 'When someone gifts a batch of subs, show one row with the recipients attached instead of a separate row per gift.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Chat Events',
+    sectionId: 'settings-section-chat-events',
+    title: 'Chat replay on clips',
+    description: 'Show the chat that was live while a clip was recorded, beside the clip. VOD chat replay for clips, historical chat, clip chat, past chat.'
   },
   {
     tab: 'Chat',
@@ -536,6 +557,24 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   },
   {
     tab: 'Chat',
+    section: 'Chat Input',
+    title: 'Hide the placeholder text',
+    description: 'Leave the message box empty instead of prompting you to send a message. Notices you can act on, like read-only or subscriber-only mode, still show.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Chat Input',
+    title: 'Hide the emote button',
+    description: 'Remove the smiley from inside the message box. The emote picker is still reachable from its keyboard shortcut and from tab completion.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Chat Input',
+    title: 'Hide the points balance',
+    description: 'Remove the channel points button next to the message box. It comes back on its own whenever a bonus chest is waiting.'
+  },
+  {
+    tab: 'Chat',
     section: 'Emote Tab Completion',
     sectionId: 'settings-section-emote-tab-completion',
     title: 'Emote Tab Completion',
@@ -600,10 +639,57 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   },
   {
     tab: 'Chat',
+    section: 'Render Style',
+    title: 'BetterTTV emote modifiers',
+    description: 'Apply BetterTTV modifiers (w! wide, h!/v! flips, c! cursed, p! party, s! shake, l!/r! rotate) to the emote after them.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Render Style',
+    title: 'Giant emotes',
+    description: 'Render the last emote of a Gigantify power-up message at 4x below the message.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Repeated Messages',
+    sectionId: 'settings-section-repeated-messages',
+    title: 'When a message repeats',
+    description: 'Fold a run of the same message into one row with a count like x12, just number them in place, or leave repeats alone. Helps when a copypasta wave or one emote floods chat.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Repeated Messages',
+    sectionId: 'settings-section-repeated-messages',
+    title: 'How closely they must match',
+    description: 'Whether nearly-identical messages count as repeats, ignoring capitals, extra spaces and trailing punctuation, or only exactly identical ones.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Repeated Messages',
+    sectionId: 'settings-section-repeated-messages',
+    title: 'Repeat counter threshold, window and colour',
+    description: 'How many copies before the counter shows, how long copies keep joining the same run, and what colour the counter is.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Repeated Messages',
+    sectionId: 'settings-section-repeated-messages',
+    title: 'Never fold mods, VIPs or the streamer',
+    description: 'Keep messages from the broadcaster, moderators and VIPs on their own rows, and optionally show everything in channels you moderate so nothing you might need to action is hidden.'
+  },
+  {
+    tab: 'Chat',
     section: 'User Cards',
     sectionId: 'settings-section-user-cards',
     title: 'Open on their messages',
     description: 'Whether clicking someone in chat opens their recent messages first or their profile first. The card switches between the two either way.'
+  },
+  {
+    tab: 'Chat',
+    section: 'User Cards',
+    sectionId: 'settings-section-user-cards',
+    title: 'Which details show on the card',
+    description: 'Pick the rows the user card displays: joined Twitch, following since, channels they follow, chatters, past subscriber, last live, how long ago, and the 7TV profile link. Hide fields you never read.'
   },
   {
     tab: 'Chat',
@@ -737,6 +823,20 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   // === Moderation ===
   {
     tab: 'Moderation',
+    section: 'Reasons',
+    sectionId: 'settings-section-mod-reasons',
+    title: 'Reason for /nuke',
+    description: 'The reason written against every ban and timeout that /nuke issues, shown in the channel mod view. Defaults to "/nuke".'
+  },
+  {
+    tab: 'Moderation',
+    section: 'Reasons',
+    sectionId: 'settings-section-mod-reasons',
+    title: 'Saved reasons',
+    description: 'Your list of ban and timeout reasons, offered when you moderate from a user card or a message. The first one is prefilled for you.'
+  },
+  {
+    tab: 'Moderation',
     section: 'Moderation Actions',
     title: 'Moderation Actions',
     description: 'Choose how to moderate: classic click buttons, drag a chat message into an action bucket (ban/timeout/delete/whisper/profile), or both. Also called Action Style. Includes Drag Style and Pin Action placement.'
@@ -841,6 +941,12 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   },
   {
     tab: 'Overlay',
+    section: 'Stream Overlay',
+    title: 'Overlay profiles',
+    description: 'Run multiple overlays in different styles, each with its own OBS link. Create, duplicate, rename, and delete overlay profiles.'
+  },
+  {
+    tab: 'Overlay',
     section: 'Sources',
     title: 'Sources',
     description: 'Choose which platforms feed the overlay (Twitch, Kick, YouTube, TikTok) and whether to tag each message with its source platform.'
@@ -853,15 +959,45 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   },
   {
     tab: 'Overlay',
+    section: 'Typography',
+    title: 'Justify text',
+    description: 'Align overlay messages left, centered, or right. Justification, text alignment, centre, middle, position.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Typography',
+    title: 'Text style',
+    description: 'Make overlay message text bold, light, italic, or strikethrough. Font weight, slant, crossed out, line through.'
+  },
+  {
+    tab: 'Overlay',
     section: 'Emotes & Badges',
     title: 'Emotes and Badges',
     description: 'Emote size on the overlay and whether chatter badges are shown: platform badges, third-party badges (7TV, FFZ, Chatterino), the StreamNook member badge, 7TV paints, and atmospheres.'
   },
   {
     tab: 'Overlay',
+    section: 'Emotes & Badges',
+    title: 'Giant emotes',
+    description: 'Render the last emote of a Gigantify power-up message at 4x below the message on the overlay.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Emotes & Badges',
+    title: 'Giant emote placement',
+    description: 'Where a Gigantify power-up emote lands on the overlay: left, centered, or right below the message, or inline next to the username.'
+  },
+  {
+    tab: 'Overlay',
     section: 'Appearance',
     title: 'Appearance',
     description: 'Message text color, text shadow for legibility over any scene, timestamps, and a transparent or solid background.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Appearance',
+    title: 'Text shadow',
+    description: 'Shadow behind overlay text for legibility over any scene: color, size, blur, spread, opacity, strength. Outline, stroke, drop shadow, contrast, readable.'
   },
   {
     tab: 'Overlay',
@@ -904,6 +1040,12 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     section: 'Chatters',
     title: 'First-time highlight animation',
     description: 'Border accent when a first-time chatter\'s message lands on the overlay: Sheen (glint sweep), Pulse (border breathes), or Chase (spark orbits the ring). Plays once, or repeats every 5 seconds with the repeat toggle. Animation, sweep, shimmer, border flash, loop.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Events',
+    title: 'Bits messages',
+    description: 'Show a Twitch cheer on the overlay inline like a normal message, or promote it to an event card like subs and raids. Bits, cheer, gem, tier.'
   },
   {
     tab: 'Overlay',
@@ -1007,6 +1149,20 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     sectionId: 'settings-section-motion',
     title: 'Animations',
     description: 'Choose how much the interface animates: Full, Reduced (fades only), or Off (instant and snappy, best for low-end PCs). Reduce motion, accessibility, performance, disable animations and transitions.'
+  },
+  {
+    tab: 'Interface',
+    section: 'Closing the Window',
+    sectionId: 'settings-section-window-close',
+    title: 'Close button',
+    description: 'Choose what the window close button does: quit, always minimize to the system tray, or only minimize while MultiChat popouts are open. Close to tray, minimize to tray, keep running in background, X button.'
+  },
+  {
+    tab: 'Interface',
+    section: 'Keep on Top',
+    sectionId: 'settings-section-window-on-top',
+    title: 'Keep on top in Compact View',
+    description: 'While Compact View is active, float the small player above other applications so clicking your browser does not bury it. Always on top, pin, stay in front, overlay, floating player, mini player over browser, disappears behind, sinks, second monitor, picture in picture alternative.'
   },
   {
     tab: 'Interface',

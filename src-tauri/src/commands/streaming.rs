@@ -104,6 +104,11 @@ pub struct StreamStartResult {
     /// Proxy region label (e.g. "EU") when the ad-block proxy path was used.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy_region: Option<String>,
+    /// Clips only: where this clip sits inside its source broadcast, so the chat
+    /// panel can replay the chat from that moment. Playback never uses it. Absent
+    /// for live/VOD, and for a clip whose parent VOD has expired.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clip_source: Option<tr::ClipSource>,
     /// The quality menu the resolver discovered for this stream (variant names
     /// plus best/worst). The player builds its quality selector from this, so it
     /// always matches what was actually resolved — no separate probe needed.
@@ -156,6 +161,7 @@ pub async fn resolve_clip_media(
         entitled: false,
         proxy_region: None,
         available: r.available,
+        clip_source: r.clip_source,
     })
 }
 
@@ -187,6 +193,7 @@ pub async fn start_stream(
             entitled: false,
             proxy_region: None,
             available: r.available,
+            clip_source: r.clip_source,
         });
     }
 
@@ -206,6 +213,7 @@ pub async fn start_stream(
             entitled: false,
             proxy_region: None,
             available: r.available,
+            clip_source: None,
         });
     }
 
@@ -282,6 +290,7 @@ pub async fn start_stream(
         entitled: r.status.entitled,
         proxy_region: r.status.proxy_region,
         available: r.available,
+        clip_source: None,
     })
 }
 

@@ -1,3 +1,121 @@
+## [8.4.2] - 2026-08-16
+
+## 🔦 Feature Spotlight: The Command Palette
+> Meet the Feature Spotlight, a new series in these release notes. Each spotlight shines a light on something StreamNook can already do that you might not have discovered yet. First up: press Ctrl+K anywhere and the command palette opens, one search box that finds everything in the app.
+
+![The StreamNook command palette](https://raw.githubusercontent.com/winters27/StreamNook/main/.github/assets/spotlight-command-palette.png)
+
+---
+
+### ✨ Features
+- If you have never tried the command palette, here is what Ctrl+K can do:
+  - Jump straight to any streamer you follow, search for new ones, or browse categories.
+  - Open any settings page instantly. Every setting is searchable by name, no digging through tabs.
+  - Fire quick actions without touching the mouse: MultiChat, the Drops center, Badges and Paints, Whispers, your profile, Compact View, full screen, and more.
+  - Act on the current stream: jump between your open chats, share the stream, or find recent chatters from the channel you are watching.
+  - Save chat snippets with custom aliases and favorites, then send them straight from the palette. There is a built-in guide and snippet manager too, just search "guide".
+- The command palette now introduces itself: look for hints in the loading messages, the settings sidebar, and the setup wizard.
+
+### 🐛 Bug Fixes
+- Fixed chat that could silently stop receiving new messages while sending kept working, even after a refresh. The chat connection now heals itself: dead or stalled connections are detected within about a minute, reconnection retries automatically with smart backoff, and sign-in credentials refresh on every attempt instead of going stale.
+- Messages missed while chat was reconnecting are now fetched and stitched back into their correct place in the conversation, with an inline marker showing where the connection dropped.
+- Reconnecting with many chats open now rejoins channels at a safe pace, avoiding Twitch's join limits.
+- Fixed stream overlays that could collapse onto one shared link when switching profiles while edits were saving. Each profile now keeps its own overlay URL, and affected setups repair themselves the next time the profile is published.
+
+### 🔧 Maintenance
+- Chat connection events are now kept in a small diagnostic log, making connection reports much easier to track down.
+
+## [8.4.1] - 2026-08-14
+
+### 🐛 Bug Fixes
+- Custom channel cheermotes now animate in chat with the right tier colors and art at every bits amount. Channels with their own cheermote (and even Twitch's Cheerwhal) used to show up as plain text.
+- Overlay event cards now look identical for your viewers and in the builder preview. Cards on the hosted overlay rendered with smaller padding and rounding than the preview showed, and an event line could sit too high inside its own highlight at tighter line heights.
+
+## [8.4.0] - 2026-08-10
+
+## 🎉 New: Chat replay on clips
+> Clips now play with the chat that was live when they happened, right beside the video. Scrub backwards and the chat rewinds with you. It works for clips opened from a profile, from a link in chat, or from browse, and it shows paints, badges and emotes exactly the way live chat does.
+
+---
+
+### ✨ Features
+- Clips now replay the chat from the moment they were captured, in a panel beside the video. Turn it off any time in Chat settings.
+- VODs opened from a streamer's Videos tab now show chat replay. Previously only the Watch VOD shortcut did.
+- Your stream overlay gained text controls. Justify left, center or right, pick a text weight, and turn on italic or strikethrough.
+- Overlay text shadow is now adjustable. Choose its color, size and strength instead of just on or off.
+- Gigantified emotes on the overlay can sit left, centered, right, or inline right after the name.
+- Bits messages on the overlay can render as an event card like subs and raids, or stay inline as a normal message.
+
+### 🐛 Bug Fixes
+- The profile popout no longer opens on a different monitor than the one you clicked on.
+- Streamer profile pictures now appear while watching a VOD or a clip.
+- The loading mark animates again for anyone with Windows animation effects turned off.
+- Scrubbing backwards in a clip now takes away the chat that has not happened yet.
+
+### 🔧 Maintenance
+- A fresh set of loading messages and emotes.
+
+## [8.3.12] - 2026-08-07
+
+### ✨ Features
+- Gigantified emotes now render like they do on Twitch: when someone uses the "Gigantify an Emote" power-up, the last emote in their message shows up big beneath the message, in both chat and your stream overlay. Turn it off any time in Chat > Render Style or in the overlay builder.
+- Bits cheers show Twitch's animated bits gem, colored by the cheer amount, instead of a static icon.
+- Run multiple stream overlays at once, each with its own style and its own OBS link. Create, rename, duplicate, and delete overlays right in the builder. Perfect for a clean look on face-cam scenes and a louder one for events.
+- Watch streaks on the overlay now match the app: the fire icon, the streak count, any channel points earned, and the viewer's own message.
+
+### 🐛 Bug Fixes
+- Fixed the app not switching away when the stream you were watching ended; it kept trying to restart a dead stream instead.
+- Fixed channel points and drops sometimes staying pointed at the previous channel after switching streams, and a case where an ended stream could keep counting watch time against its old broadcast.
+- Drops now show as disconnected at startup if the stored connection has expired, instead of claiming to be connected while earning nothing.
+- Event labels in the overlay builder now match each platform (Bits on Twitch, Super Chats on YouTube).
+
+### 🔧 Maintenance
+- Polished the overlay builder: tidier controls, sub-settings visually grouped under the setting they belong to, and the 7TV logo shown where 7TV features are named.
+
+### ⚡ Performance
+- Fixed a slow memory build-up over long sessions from chatter cosmetics caching, and stopped chat restarts from leaving stale background work and open connections behind.
+
+## [8.3.11] - 2026-07-31
+
+## 🎉 A big one for streamers and mods
+> Polls and predictions can now be built, started and resolved from inside StreamNook. Chat learned to fold a copypasta wave into a single counted row. BetterTTV emote modifiers do what they do on BetterTTV. And a stack of window fixes ends the growing, drifting and off-screen behaviour on scaled displays.
+
+---
+
+### ✨ Features
+- Run polls and predictions without leaving StreamNook. On your own channel a button beside the message box opens a builder with a live preview of exactly what viewers will see: write the question, add choices, pick how long it runs, and optionally let people buy extra votes with channel points. Recent ones are remembered, so running the same poll again is two clicks. /poll and /prediction open it too.
+- End, cancel, lock and pay out from where you already are. /endpoll, /cancelpoll, /lockprediction, /cancelprediction and /completeprediction all work, and the moderator menu grows live controls whenever a poll or prediction is running.
+- A poll and a prediction can both be on screen now. Twitch allows both at once, and the two cards used to land in the same spot and paint over each other. They stack instead, and Chat settings picks which one sits on top.
+- Copypasta waves fold into one line. When several people post the same thing at once, chat keeps the first and counts the rest onto it as a small x12, with a tooltip naming who joined in. Emote-only messages count too, since that is the usual case. You can loosen or tighten the match, set how many copies it takes, pick a colour, keep mods, VIPs and the streamer on their own rows, and show everything in channels you moderate.
+- BetterTTV emote modifiers work in chat. Prefix an emote with w!, h!, v!, l!, r!, c!, p!, s! or z! and it stretches, flips, rotates, tints, parties, shakes or closes the gap. BetterTTV's zero-width overlay emotes sit on the emote before them properly too. There is a toggle in Chat settings, and the emote picker previews each effect and says which way a modifier attaches.
+- Pin messages and manage blocked terms from chat. /pin takes a message id or just a name and pins that person's latest message, with an optional duration; /unpin clears it. /blockterm and /unblockterm add and remove AutoMod phrases, and the moderator menu has a one-line field for blocking a phrase on the spot.
+- See what a /nuke would hit before you run it. While you type the command, a line above the input counts the messages and people currently matching. /nuke stop ends a running window early, and you can write the reason recorded against nuke bans and timeouts.
+- Save your ban and timeout reasons. Moderation settings takes a list and the first one is filled in for you. Shift-click any timeout or ban control on a message and the command drops into the box with the reason ready to edit instead of firing straight away.
+- Broadcasters can mod and VIP straight from a user card, and the card now explains when a moderator cannot action someone rather than letting the click fail.
+- User cards say more, and show only what you want. Suspended accounts are marked, you can see how many people are in that person's own chat, dates carry a plain "how long ago", and there is a link to their 7TV profile. Every row has its own toggle under Chat > User Cards.
+- MultiChat tiles and the player overlay show who you are watching. Each tile carries the streamer's avatar, name, partner mark and current stream title, and the title refreshes itself while the grid is open. The main player picked up the same identity row.
+- Keep the Compact View player on top. A pin appears in the title bar while Compact View is active, so the small player stays in front of your browser. Ctrl+Shift+A toggles it, and it releases as soon as you leave Compact View.
+- Choose what the close button does. Interface settings can quit, always minimize to the tray, or keep today's behaviour of only minimizing while MultiChat popouts are open.
+- Strip the message box down to just the box. Chat settings can hide the placeholder text, the emote button and the points balance. The points button comes back on its own whenever a bonus chest is waiting, so hiding it never costs you points.
+- Click your points balance to refresh it, for when it still looks stale.
+
+### 🐛 Bug Fixes
+- The window no longer grows off the edge of the screen. On any display above 100% scaling the aspect-ratio lock was mixing two kinds of pixel and multiplying the window a little more on every resize. Sizes are worked out in the right units now and clamped to the screen, and a window already saved too big is pulled back at startup.
+- Dragging a maximized window restores it first, the way every other app does, instead of sliding a full-screen window around. Double-click to restore still works.
+- Leaving Compact View puts the window back exactly as it was, maximized included, instead of restoring it as a floating window with maximized dimensions.
+- The aspect-ratio lock no longer fights OS fullscreen, and no longer reacts to its own resizes, which is what made it jitter back and forth by a pixel or two.
+- Closing your last MultiChat popout no longer quits the app when you have asked it to live in the tray.
+
+### 🔧 Maintenance
+- One shared on/off switch and one shared overlay card behind the settings screens and the chat overlays, so a change to either lands everywhere at once.
+
+## [8.3.10] - 2026-07-28
+
+### 🐛 Bug Fixes
+- Cosmetics that belong to another slot, like the Cologne Medallion, no longer take over your StreamNook badge in chat. If one had replaced your badge, it comes back on its own with nothing for you to do.
+- Badge drop times now read in your own timezone instead of as a raw UTC timestamp, in the toast, the desktop notification and the notification list alike.
+- A badge notification that arrived as "Coming soon" updates itself to "Now available" once the window opens, rather than sitting there stale.
+
 ## [8.3.9] - 2026-07-28
 
 ## 🎉 Big update rolling through

@@ -8,10 +8,12 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { RotateCcw, Link2, Plus, X, AlertTriangle, Play, Pause } from 'lucide-react';
+import { RotateCcw, Link2, Plus, X, AlertTriangle, Play, Pause, Copy, Trash2, Pencil, Check } from 'lucide-react';
 import { Tooltip } from '../ui/Tooltip';
 import { Dropdown } from '../ui/Dropdown';
-import { SettingsSection, SettingsRow, SegmentedSelect } from './_primitives';
+import { SettingsSection, SettingsRow, SettingsSubGroup, SegmentedSelect } from './_primitives';
+import { SevenTvLogo } from '../ui/SevenTvLogo';
+import streamNookLogo from '../../assets/streamnook-logo.png';
 import { OverlayChat } from '../overlay/OverlayChat';
 import { LiveOverlayFeed } from '../overlay/LiveOverlayFeed';
 import { ProviderIcon } from '../overlay/ProviderIcon';
@@ -23,11 +25,17 @@ import {
   EVENT_CATEGORIES,
   FONT_OPTIONS,
   OVERLAY_ANIMATIONS,
+  CHEER_DISPLAYS,
+  GIANT_EMOTE_ALIGNS,
   OVERLAY_ENTRANCES,
   OVERLAY_LIMITS,
+  OVERLAY_TEXT_ALIGNS,
+  OVERLAY_TEXT_WEIGHTS,
+  PROVIDER_CATEGORY_LABELS,
   PROVIDER_EVENT_CATEGORIES,
   THIRD_PARTY_BADGE_PROVIDERS,
   clampOverlayStyle,
+  type EventCategory,
   type OverlayStyle,
 } from '../overlay/overlayConfig';
 import { CURRENCY_OPTIONS } from '../../services/currencyService';
@@ -138,6 +146,74 @@ const loadSources = (): OverlaySource[] => {
   } catch { /* ignore */ }
   return [];
 };
+
+// ── Multi-overlay profiles ──────────────────────────────────────────────────
+// Each profile is its own published overlay: its own id (OBS link), style, and
+// sources — so a streamer can run e.g. a clean face-cam overlay and a loud
+// event-wall overlay side by side. The legacy single-overlay keys migrate into
+// profile 0 on first load, and keep tracking the ACTIVE profile so anything
+// still reading them sees the overlay currently being edited. The profile name
+// travels inside the published style (`profileName`) so a fresh machine
+// recovers names along with configs.
+const PROFILES_KEY = 'sn_overlay_profiles_v1';
+const ACTIVE_PROFILE_KEY = 'sn_overlay_active_v1';
+
+interface OverlayProfile {
+  // Stable client-side identity for this profile. Publish responses are routed
+  // by uid so a mid-flight profile switch can never stamp one profile's row id
+  // onto another. Never sent to the server.
+  uid: string;
+  name: string;
+  id: string | null;
+  style: OverlayStyle;
+  sources: OverlaySource[];
+}
+
+const newProfileUid = (): string =>
+  typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+
+function loadProfiles(): { profiles: OverlayProfile[]; active: number } {
+  try {
+    const raw = localStorage.getItem(PROFILES_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<OverlayProfile>[];
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const usedUids = new Set<string>();
+        const profiles = parsed.map((p, i) => {
+          const uid = typeof p?.uid === 'string' && p.uid && !usedUids.has(p.uid) ? p.uid : newProfileUid();
+          usedUids.add(uid);
+          return {
+            uid,
+            name: typeof p?.name === 'string' && p.name.trim() ? p.name : `Overlay ${i + 1}`,
+            id: typeof p?.id === 'string' && p.id ? p.id : null,
+            style: clampOverlayStyle({ ...DEFAULT_OVERLAY_STYLE, ...(p?.style ?? {}) } as OverlayStyle),
+            sources: Array.isArray(p?.sources) ? (p.sources as OverlaySource[]) : [],
+          };
+        });
+        // Repair: no two profiles may claim the same published row (a pre-fix
+        // race could stamp one row's id onto two profiles). First claim keeps
+        // the link; later claimants go unpublished so their next publish mints
+        // a fresh row.
+        const seenIds = new Set<string>();
+        for (const p of profiles) {
+          if (!p.id) continue;
+          if (seenIds.has(p.id)) p.id = null;
+          else seenIds.add(p.id);
+        }
+        const stored = parseInt(localStorage.getItem(ACTIVE_PROFILE_KEY) || '0', 10);
+        const active = Math.min(profiles.length - 1, Math.max(0, Number.isFinite(stored) ? stored : 0));
+        return { profiles, active };
+      }
+    }
+  } catch { /* fall through to migration */ }
+  // First run on this build (or unreadable list): adopt the legacy keys.
+  return {
+    profiles: [{ uid: newProfileUid(), name: 'Default', id: loadOverlayId(), style: loadStyle(), sources: loadSources() }],
+    active: 0,
+  };
+}
 
 const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
   <button
@@ -376,9 +452,17 @@ const EMOJI_SAMPLES = [0x1f600, 0x1f602, 0x1f60d].map((cp) => ({
 }));
 
 const OverlaySettings = () => {
-  const [style, setStyle] = useState<OverlayStyle>(loadStyle);
+  // One load, shared by every initializer below (useState initials only read on
+  // the first render, so the snapshot never goes stale).
+  const initial = useMemo(loadProfiles, []);
+  const [profiles, setProfiles] = useState<OverlayProfile[]>(initial.profiles);
+  const [activeIdx, setActiveIdx] = useState(initial.active);
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [style, setStyle] = useState<OverlayStyle>(initial.profiles[initial.active].style);
   const [flow, setFlow] = useState(false);
-  const [sources, setSources] = useState<OverlaySource[]>(loadSources);
+  const [sources, setSources] = useState<OverlaySource[]>(initial.profiles[initial.active].sources);
   const [sceneBg, setSceneBg] = useState<SceneBg>('scene');
   const [previewMode, setPreviewMode] = useState<'sample' | 'live'>('sample');
   const [activeTab, setActiveTab] = useState<OverlayTab>('sources');
@@ -387,9 +471,15 @@ const OverlaySettings = () => {
   const [addError, setAddError] = useState<string | null>(null);
   const [publishState, setPublishState] = useState<'idle' | 'publishing' | 'done' | 'error'>('idle');
   const [publishError, setPublishError] = useState<string | null>(null);
-  const [publishedUrl, setPublishedUrl] = useState<string | null>(null);
-  // Persisted so re-publish updates the same link (see OVERLAY_ID_KEY).
-  const overlayIdRef = useRef<string | null>(loadOverlayId());
+  const [publishedUrl, setPublishedUrl] = useState<string | null>(
+    initial.profiles[initial.active].id ? `https://streamnook.app/overlay/${initial.profiles[initial.active].id}` : null,
+  );
+  // The ACTIVE profile's published id; re-publish updates the same link.
+  const overlayIdRef = useRef<string | null>(initial.profiles[initial.active].id);
+  // Which profile the editor is showing, by stable uid. Publish requests never
+  // read this (they build from their render closure); a response consults it to
+  // decide whether the editor is still on the profile the push was for.
+  const activeUidRef = useRef<string>(initial.profiles[initial.active].uid);
 
   // The scaled stage measures its own width so the overlay canvas fits the pane
   // at true proportions (scaled down when the canvas is wider than the pane).
@@ -423,12 +513,25 @@ const OverlaySettings = () => {
   const STAGE_PAD = 44;
   const scale = Math.min(1, (stageW - STAGE_PAD) / style.width, (maxStageH - STAGE_PAD) / style.height);
 
+  // The working state (style/sources/id) IS the active profile: mirror every
+  // change into the profiles list, and keep writing the legacy single-overlay
+  // keys so anything still reading them sees the overlay being edited.
   useEffect(() => {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(style)); } catch { /* ignore */ }
-  }, [style]);
+    setProfiles((list) =>
+      list.map((p, i) => (i === activeIdx ? { ...p, style, sources } : p)),
+    );
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(style));
+      localStorage.setItem(SOURCES_KEY, JSON.stringify(sources));
+      if (overlayIdRef.current) localStorage.setItem(OVERLAY_ID_KEY, overlayIdRef.current);
+    } catch { /* ignore */ }
+  }, [style, sources, activeIdx]);
   useEffect(() => {
-    try { localStorage.setItem(SOURCES_KEY, JSON.stringify(sources)); } catch { /* ignore */ }
-  }, [sources]);
+    try {
+      localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles));
+      localStorage.setItem(ACTIVE_PROFILE_KEY, String(activeIdx));
+    } catch { /* ignore */ }
+  }, [profiles, activeIdx]);
 
   const set = <K extends keyof OverlayStyle>(key: K, val: OverlayStyle[K]) =>
     setStyle((s) => ({ ...s, [key]: val }));
@@ -530,6 +633,15 @@ const OverlaySettings = () => {
   // update the same link whenever a setting changes, so the published overlay is
   // always a direct mirror of the builder — no need to re-copy after tweaking.
   const pushConfig = async (copy: boolean) => {
+    // The whole request comes from THIS render's closure: profiles/activeIdx/
+    // style/sources are mutually consistent by construction, so the push can
+    // never mix one profile's config with another profile's row id, no matter
+    // when the debounce timer fires or the response lands. The live refs are
+    // only consulted at response time, to decide whether the editor is still
+    // showing this profile.
+    const forProfile = profiles[activeIdx];
+    if (!forProfile) return;
+    const forUid = forProfile.uid;
     if (sources.length === 0) {
       if (copy) { setPublishError('Add at least one source first.'); setPublishState('error'); }
       return;
@@ -542,29 +654,61 @@ const OverlaySettings = () => {
       } catch {
         throw new Error('Sign in to Twitch in StreamNook to publish an overlay.');
       }
+      // With multiple profiles the account-reuse fallback is NEVER safe: it
+      // fires whenever the sent id matches no row owned by the current account
+      // (new profile, concurrent first publishes, Twitch account switch) and
+      // would fold this profile into a sibling's row. create + owned id =
+      // update in place; create + unusable id = mint fresh. Single-profile
+      // installs keep the legacy reuse so a fresh machine adopts the account's
+      // stable link. The profile name rides inside the style so other machines
+      // recover it.
+      const create = profiles.length > 1 ? true : undefined;
       const res = await fetch(PUBLISH_ENDPOINT, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({ id: overlayIdRef.current ?? undefined, channels: sources, style }),
+        body: JSON.stringify({
+          id: forProfile.id ?? undefined,
+          create,
+          channels: sources,
+          style: { ...style, profileName: forProfile.name },
+        }),
       });
       if (!res.ok) {
         const err = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(
           err.error === 'unauthenticated' ? 'Sign in to Twitch in StreamNook to publish an overlay.'
             : err.error === 'no_channels' ? 'Add at least one source first.'
-              : `Publish failed (${err.error || res.status}).`,
+              : err.error === 'overlay_limit' ? 'Overlay limit reached (10 per account). Delete one you no longer use first.'
+                : `Publish failed (${err.error || res.status}).`,
         );
       }
       const data = (await res.json()) as { id: string; url: string };
-      overlayIdRef.current = data.id;
-      try { localStorage.setItem(OVERLAY_ID_KEY, data.id); } catch { /* ignore */ }
-      setPublishedUrl(data.url);
-      if (copy) {
-        try { await navigator.clipboard.writeText(data.url); } catch { /* clipboard may be blocked; URL still shown */ }
-        setPublishState('done');
+      // Stamp the returned id onto the profile this push was for, and strip it
+      // from any other profile that claims the same row (self-heals older
+      // corruption).
+      setProfiles((list) =>
+        list.map((p) =>
+          p.uid === forUid ? { ...p, id: data.id } : p.id === data.id ? { ...p, id: null } : p,
+        ),
+      );
+      if (activeUidRef.current === forUid) {
+        overlayIdRef.current = data.id;
+        try { localStorage.setItem(OVERLAY_ID_KEY, data.id); } catch { /* ignore */ }
+        setPublishedUrl(data.url);
+        if (copy) {
+          try { await navigator.clipboard.writeText(data.url); } catch { /* clipboard may be blocked; URL still shown */ }
+          setPublishState('done');
+        }
+      } else if (copy) {
+        // Finished after the user switched away; don't paint result state onto
+        // the profile now on screen.
+        setPublishState('idle');
       }
     } catch (e) {
-      if (copy) { setPublishError(e instanceof Error ? e.message : 'Publish failed.'); setPublishState('error'); }
+      if (copy && activeUidRef.current === forUid) {
+        setPublishError(e instanceof Error ? e.message : 'Publish failed.');
+        setPublishState('error');
+      }
     }
   };
 
@@ -574,19 +718,96 @@ const OverlaySettings = () => {
   // re-push on any style/source change (debounced), so the streamer never has to
   // re-copy after tweaking a setting.
   useEffect(() => {
-    if (!overlayIdRef.current) return;
+    if (!profiles[activeIdx]?.id) return;
     const t = setTimeout(() => { void pushConfig(false); }, 1500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [style, sources]);
 
-  // Cross-machine link: the overlay is keyed to the Twitch account, so on a fresh
-  // install we ask the server for THIS account's overlay and adopt its id, link,
-  // and (if nothing is configured locally yet) its sources + style — no need to
-  // re-publish or copy a new URL after signing in on another machine.
+  // Load a profile's saved state into the working editor state.
+  const applyProfile = (p: OverlayProfile) => {
+    activeUidRef.current = p.uid;
+    overlayIdRef.current = p.id;
+    setStyle(clampOverlayStyle({ ...DEFAULT_OVERLAY_STYLE, ...p.style } as OverlayStyle));
+    setSources(p.sources);
+    setPublishedUrl(p.id ? `https://streamnook.app/overlay/${p.id}` : null);
+    setPublishState('idle');
+    setPublishError(null);
+    setRenaming(false);
+    setConfirmDelete(false);
+  };
+
+  const switchProfile = (idx: number) => {
+    if (idx === activeIdx || !profiles[idx]) return;
+    // The mirror effect has been keeping profiles[activeIdx] current on every
+    // edit, so switching is just: point at the new one and load it.
+    setActiveIdx(idx);
+    applyProfile(profiles[idx]);
+  };
+
+  const uniqueProfileName = (base: string): string => {
+    const names = new Set(profiles.map((p) => p.name.toLowerCase()));
+    if (!names.has(base.toLowerCase())) return base;
+    for (let n = 2; ; n++) if (!names.has(`${base} ${n}`.toLowerCase())) return `${base} ${n}`;
+  };
+
+  // New = a fresh default-styled overlay; duplicate = a copy of the current
+  // one. Both keep the current sources (the point of multiple overlays is the
+  // same chat in different styles). Either way the profile has NO id yet — its
+  // first publish mints its own link (create-flagged, so it never folds into
+  // another profile's row).
+  const addProfile = (duplicate: boolean) => {
+    const p: OverlayProfile = {
+      uid: newProfileUid(),
+      name: uniqueProfileName(duplicate ? `${profiles[activeIdx].name} copy` : `Overlay ${profiles.length + 1}`),
+      id: null,
+      style: duplicate ? { ...style } : { ...DEFAULT_OVERLAY_STYLE },
+      sources: [...sources],
+    };
+    const idx = profiles.length;
+    setProfiles((list) => [...list, p]);
+    setActiveIdx(idx);
+    applyProfile(p);
+  };
+
+  const commitRename = () => {
+    const name = renameValue.trim();
+    setRenaming(false);
+    if (!name || name === profiles[activeIdx].name) return;
+    setProfiles((list) => list.map((p, i) => (i === activeIdx ? { ...p, name: uniqueProfileName(name) } : p)));
+    // The name travels inside the published style; nudge a silent re-publish.
+    if (overlayIdRef.current) setStyle((s) => ({ ...s }));
+  };
+
+  const deleteProfile = async () => {
+    if (profiles.length <= 1) return;
+    // Local state math runs synchronously BEFORE the await below, so a publish
+    // response landing during the credentials round-trip can't be clobbered by
+    // a stale list.
+    const victim = profiles[activeIdx];
+    const nextList = profiles.filter((_, i) => i !== activeIdx);
+    const nextIdx = Math.max(0, activeIdx - 1);
+    setProfiles(nextList);
+    setActiveIdx(nextIdx);
+    applyProfile(nextList[nextIdx]);
+    // Best-effort soft-delete server-side so the old OBS link stops serving;
+    // signed-out/offline just leaves the row, which is harmless.
+    if (victim.id) {
+      try {
+        const [, token] = await invoke<[string, string]>('get_twitch_credentials');
+        void fetch(`${PUBLISH_ENDPOINT}/${victim.id}`, { method: 'DELETE', headers: { authorization: `Bearer ${token}` } });
+      } catch { /* not signed in */ }
+    }
+  };
+
+  // Cross-machine recovery: overlays are keyed to the Twitch account, so when
+  // no local profile has been published we ask for the account's FULL overlay
+  // list and adopt each row as a profile (names travel inside the style). A
+  // locally-configured-but-unpublished builder keeps its edits as the active
+  // profile and the remote ones append after it.
   const hydratedRef = useRef(false);
   useEffect(() => {
-    if (hydratedRef.current || overlayIdRef.current) return;
+    if (hydratedRef.current || profiles.some((p) => p.id)) return;
     hydratedRef.current = true;
     let cancelled = false;
     void (async () => {
@@ -596,26 +817,42 @@ const OverlaySettings = () => {
       } catch {
         return; // not signed in → nothing to recover
       }
-      let data: { id?: string; url?: string; channels?: unknown; style?: unknown };
+      let rows: Array<{ id?: string; channels?: unknown; style?: unknown }>;
       try {
-        const res = await fetch(PUBLISH_ENDPOINT, { headers: { authorization: `Bearer ${token}` } });
-        if (!res.ok) return; // 404 (no overlay yet) or transient → nothing to adopt
-        data = await res.json();
+        const res = await fetch(`${PUBLISH_ENDPOINT}?all=1`, { headers: { authorization: `Bearer ${token}` } });
+        if (!res.ok) return;
+        rows = ((await res.json()) as { overlays?: typeof rows }).overlays ?? [];
       } catch {
         return;
       }
-      if (cancelled || !data.id) return;
-      overlayIdRef.current = data.id;
-      try { localStorage.setItem(OVERLAY_ID_KEY, data.id); } catch { /* ignore */ }
-      if (data.url) setPublishedUrl(data.url);
-      // Only adopt the account's config on a truly fresh builder; otherwise local
-      // edits win and sync up on the next change.
-      if (sources.length === 0 && Array.isArray(data.channels)) {
-        const valid = (data.channels as Array<{ provider?: unknown; channel?: unknown }>)
-          .filter((c) => typeof c?.channel === 'string' && !!PROVIDERS[c.provider as ProviderId])
-          .map((c) => ({ provider: c.provider as ProviderId, channel: c.channel as string }));
-        if (valid.length > 0) setSources(valid);
-        if (data.style && typeof data.style === 'object') setStyle({ ...DEFAULT_OVERLAY_STYLE, ...(data.style as Record<string, unknown>) });
+      if (cancelled || rows.length === 0) return;
+      const remote: OverlayProfile[] = rows
+        .filter((r) => typeof r.id === 'string' && r.id)
+        .map((r, i) => {
+          const st = (r.style && typeof r.style === 'object' ? r.style : {}) as Record<string, unknown>;
+          const chans = Array.isArray(r.channels)
+            ? (r.channels as Array<{ provider?: unknown; channel?: unknown }>)
+                .filter((c) => typeof c?.channel === 'string' && !!PROVIDERS[c.provider as ProviderId])
+                .map((c) => ({ provider: c.provider as ProviderId, channel: c.channel as string }))
+            : [];
+          return {
+            uid: newProfileUid(),
+            name: typeof st.profileName === 'string' && st.profileName.trim() ? st.profileName : `Overlay ${i + 1}`,
+            id: r.id as string,
+            style: clampOverlayStyle({ ...DEFAULT_OVERLAY_STYLE, ...st } as OverlayStyle),
+            sources: chans,
+          };
+        });
+      if (remote.length === 0) return;
+      const untouched = profiles.length === 1 && !profiles[0].id && profiles[0].sources.length === 0;
+      if (untouched) {
+        setProfiles(remote);
+        setActiveIdx(0);
+        applyProfile(remote[0]);
+      } else {
+        // Local edits win as the active profile; the account's overlays slot in
+        // after it as their own profiles.
+        setProfiles((list) => [...list, ...remote]);
       }
     })();
     return () => { cancelled = true; };
@@ -648,7 +885,11 @@ const OverlaySettings = () => {
       .filter((p) => (PROVIDER_EVENT_CATEGORIES[p] ?? []).length > 0),
     [sourceProviders],
   );
-  const catLabel = (id: string) => EVENT_CATEGORIES.find((c) => c.id === id)?.label ?? id;
+  // Platform-specific first (Bits on Twitch, Super Chats on YouTube), generic after.
+  const catLabel = (provider: ProviderId, id: string) =>
+    PROVIDER_CATEGORY_LABELS[provider]?.[id as EventCategory]
+      ?? EVENT_CATEGORIES.find((c) => c.id === id)?.label
+      ?? id;
   const currencyOptions = useMemo(
     () => [{ value: '', label: 'As sent' }, ...CURRENCY_OPTIONS.map((c) => ({ value: c, label: c }))],
     [],
@@ -687,7 +928,7 @@ const OverlaySettings = () => {
       <div className="space-y-5 min-w-0">
         <div className="flex items-center justify-between px-1">
           <p className="text-[12px] leading-relaxed text-textMuted max-w-[54ch]">
-            Design your chat overlay and paste one link into OBS. Everything you change updates the preview and the published overlay.
+            Design your chat overlay and paste its link into OBS. Every overlay has its own link, and changes sync to it live.
           </p>
           <Tooltip content="Reset to defaults">
             <button
@@ -699,14 +940,83 @@ const OverlaySettings = () => {
           </Tooltip>
         </div>
 
-        {/* Tabs: one focused group at a time instead of one long scroll. */}
-        <div className="flex gap-2">
+        {/* Profiles: each is its own published overlay (own OBS link + style +
+            sources). A compact inline cluster — the picker sizes to its content
+            and the actions are small icon buttons beside it. */}
+        <div className="flex items-center gap-1.5 px-1">
+          <span className="text-[12px] text-textMuted mr-0.5">Overlay</span>
+          {renaming ? (
+            <input
+              autoFocus
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); commitRename(); }
+                if (e.key === 'Escape') setRenaming(false);
+              }}
+              onBlur={commitRename}
+              className="w-[200px] rounded-lg bg-glass border border-borderLight px-2.5 py-1 text-[13px] text-textPrimary focus:outline-none focus:border-accent/60"
+            />
+          ) : (
+            <Dropdown
+              value={String(activeIdx)}
+              options={profiles.map((p, i) => ({ value: String(i), label: p.name }))}
+              onChange={(v) => switchProfile(parseInt(v, 10))}
+              className="max-w-[200px]"
+            />
+          )}
+          {renaming ? (
+            <Tooltip content="Save name">
+              <button onClick={commitRename} className="glass-button rounded-md p-1.5 text-textSecondary hover:text-textPrimary transition-colors">
+                <Check size={13} />
+              </button>
+            </Tooltip>
+          ) : (
+            <Tooltip content="Rename">
+              <button
+                onClick={() => { setRenameValue(profiles[activeIdx]?.name ?? ''); setRenaming(true); }}
+                className="glass-button rounded-md p-1.5 text-textSecondary hover:text-textPrimary transition-colors"
+              >
+                <Pencil size={13} />
+              </button>
+            </Tooltip>
+          )}
+          <Tooltip content="New overlay">
+            <button onClick={() => addProfile(false)} className="glass-button rounded-md p-1.5 text-textSecondary hover:text-textPrimary transition-colors">
+              <Plus size={13} />
+            </button>
+          </Tooltip>
+          <Tooltip content="Duplicate">
+            <button onClick={() => addProfile(true)} className="glass-button rounded-md p-1.5 text-textSecondary hover:text-textPrimary transition-colors">
+              <Copy size={13} />
+            </button>
+          </Tooltip>
+          {profiles.length > 1 && (
+            <Tooltip content={confirmDelete ? 'Click again to delete and retire its link' : 'Delete'}>
+              <button
+                onClick={() => {
+                  if (!confirmDelete) { setConfirmDelete(true); return; }
+                  setConfirmDelete(false);
+                  void deleteProfile();
+                }}
+                onBlur={() => setConfirmDelete(false)}
+                className={`glass-button rounded-md p-1.5 transition-colors ${confirmDelete ? 'text-error' : 'text-textSecondary hover:text-error'}`}
+              >
+                <Trash2 size={13} />
+              </button>
+            </Tooltip>
+          )}
+        </div>
+
+        {/* Tabs: one focused group at a time instead of one long scroll. Sized
+            to their labels — stretched full-width buttons read as oversized. */}
+        <div className="flex flex-wrap gap-1.5">
           {OVERLAY_TABS.map((t) => (
             <button
               key={t.id}
               onClick={() => setActiveTab(t.id)}
               style={{ borderRadius: 8 }}
-              className={`flex-1 px-3 py-2 text-sm font-medium transition-all ${activeTab === t.id ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary hover:text-textPrimary'}`}
+              className={`px-3 py-1.5 text-[13px] font-medium transition-all ${activeTab === t.id ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary hover:text-textPrimary'}`}
             >
               {t.label}
             </button>
@@ -761,7 +1071,7 @@ const OverlaySettings = () => {
                     onClick={() => hasSource && toggleSourceFilter(id)}
                     disabled={!hasSource}
                     style={{ borderRadius: 8 }}
-                    className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed ${active ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary hover:text-textPrimary'}`}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[13px] font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed ${active ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary hover:text-textPrimary'}`}
                   >
                     <ProviderIcon provider={id} size="15px" />
                     {PROVIDERS[id].label}
@@ -796,7 +1106,7 @@ const OverlaySettings = () => {
                     key={p.label}
                     onClick={() => setStyle((s) => ({ ...s, width: p.width, height: p.height }))}
                     style={{ borderRadius: 8 }}
-                    className={`px-3 py-2 text-sm font-medium transition-all ${active ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary hover:text-textPrimary'}`}
+                    className={`px-2.5 py-1.5 text-[13px] font-medium transition-all ${active ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary hover:text-textPrimary'}`}
                   >
                     {p.label}
                   </button>
@@ -818,14 +1128,14 @@ const OverlaySettings = () => {
             />
           </SettingsRow>
           {style.background === 'solid' && (
-            <>
+            <SettingsSubGroup>
               <SettingsRow title="Background color" control={
                 <input type="color" value={style.backgroundColor} onChange={(e) => set('backgroundColor', e.target.value)} className="h-7 w-10 rounded cursor-pointer bg-transparent border border-borderSubtle" />
               } />
               <SettingsRow title="Background opacity">
                 <Slider value={style.backgroundOpacity} min={0} max={1} step={0.05} onChange={(v) => set('backgroundOpacity', v)} format={(v) => `${Math.round(v * 100)}%`} />
               </SettingsRow>
-            </>
+            </SettingsSubGroup>
           )}
         </SettingsSection>
         )}
@@ -841,6 +1151,7 @@ const OverlaySettings = () => {
             />
           } />
           {isCustomFont && (
+            <SettingsSubGroup>
             <SettingsRow title="Custom font" description="Type a font name and it loads automatically, here and on your overlay.">
               <div className="w-full space-y-2">
                 <input
@@ -859,6 +1170,7 @@ const OverlaySettings = () => {
                 </div>
               </div>
             </SettingsRow>
+            </SettingsSubGroup>
           )}
           <SettingsRow title="Font size">
             <Slider value={style.fontSize} min={OVERLAY_LIMITS.fontSize.min} max={OVERLAY_LIMITS.fontSize.max} onChange={(v) => set('fontSize', v)} format={(v) => `${v}px`} />
@@ -869,10 +1181,29 @@ const OverlaySettings = () => {
           <SettingsRow title="Message spacing" description="Gap between messages.">
             <Slider value={style.messageGap} min={OVERLAY_LIMITS.messageGap.min} max={OVERLAY_LIMITS.messageGap.max} onChange={(v) => set('messageGap', v)} format={(v) => `${v}px`} />
           </SettingsRow>
+          <SettingsRow title="Justify text" description="Line messages up on the left, down the middle, or on the right. Events follow too.">
+            <SegmentedSelect value={style.textAlign ?? 'left'} onChange={(v) => set('textAlign', v)} options={OVERLAY_TEXT_ALIGNS} />
+          </SettingsRow>
+          <SettingsRow title="Text weight" description="How heavy the text is. Usernames stay bold either way.">
+            <SegmentedSelect value={String(style.fontWeight ?? 400)} onChange={(v) => set('fontWeight', parseInt(v, 10))} options={OVERLAY_TEXT_WEIGHTS} />
+          </SettingsRow>
+          <SettingsRow title="Italic" description="Slant message text. Actions (/me) are italic either way." control={<Toggle enabled={style.textItalic === true} onChange={() => set('textItalic', style.textItalic !== true)} />} />
+          <SettingsRow title="Strikethrough" description="Draw a line through message text." control={<Toggle enabled={style.textStrikethrough === true} onChange={() => set('textStrikethrough', style.textStrikethrough !== true)} />} />
           <SettingsRow title="Text color" control={
             <input type="color" value={style.bodyTextColor} onChange={(e) => set('bodyTextColor', e.target.value)} className="h-7 w-10 rounded cursor-pointer bg-transparent border border-borderSubtle" />
           } />
-          <SettingsRow title="Text shadow" description="Dark outline behind text so it stays readable over any scene." control={<Toggle enabled={style.textShadow} onChange={() => set('textShadow', !style.textShadow)} />} />
+          <SettingsRow title="Text shadow" description="An outline behind text so it stays readable over any scene." control={<Toggle enabled={style.textShadow} onChange={() => set('textShadow', !style.textShadow)} />} />
+          <SettingsSubGroup>
+            <SettingsRow title="Shadow color" disabled={!style.textShadow} control={
+              <input type="color" value={style.textShadowColor || '#000000'} onChange={(e) => set('textShadowColor', e.target.value)} disabled={!style.textShadow} className="h-7 w-10 rounded cursor-pointer bg-transparent border border-borderSubtle disabled:cursor-not-allowed" />
+            } />
+            <SettingsRow title="Shadow size" description="How far the shadow spreads. 0 turns it off." disabled={!style.textShadow}>
+              <Slider value={style.textShadowSize ?? 2} min={OVERLAY_LIMITS.textShadowSize.min} max={OVERLAY_LIMITS.textShadowSize.max} step={0.5} onChange={(v) => set('textShadowSize', v)} format={(v) => `${v}px`} />
+            </SettingsRow>
+            <SettingsRow title="Shadow strength" description="How solid the shadow is." disabled={!style.textShadow}>
+              <Slider value={style.textShadowOpacity ?? 0.85} min={OVERLAY_LIMITS.textShadowOpacity.min} max={OVERLAY_LIMITS.textShadowOpacity.max} step={0.05} onChange={(v) => set('textShadowOpacity', v)} format={(v) => `${Math.round(v * 100)}%`} />
+            </SettingsRow>
+          </SettingsSubGroup>
           <SettingsRow title="Emoji style" description="Render every platform's emoji in one consistent style. System uses your machine's emoji font." control={<Dropdown value={style.emojiStyle} options={emojiStyleOptions} onChange={(v) => set('emojiStyle', v)} align="right" />} />
         </SettingsSection>
         )}
@@ -883,11 +1214,18 @@ const OverlaySettings = () => {
           <SettingsRow title="Emote size">
             <Slider value={style.emoteScale} min={OVERLAY_LIMITS.emoteScale.min} max={OVERLAY_LIMITS.emoteScale.max} step={0.05} onChange={(v) => set('emoteScale', v)} format={(v) => `${v.toFixed(2)}x`} />
           </SettingsRow>
+          <SettingsRow title="Giant emotes" description={'Render the last emote of a "Gigantify an Emote" power-up message at 4x below the message, like Twitch does.'} control={<Toggle enabled={style.giantEmotes !== false} onChange={() => set('giantEmotes', style.giantEmotes === false)} />} />
+          <SettingsSubGroup>
+            <SettingsRow title="Giant emote placement" description="Left, centered, or right on its own line below the message — or Inline to leave it where it was typed, so an emote-only message shows it right after the name." disabled={style.giantEmotes === false}>
+              <SegmentedSelect value={style.giantEmoteAlign ?? 'center'} onChange={(v) => set('giantEmoteAlign', v)} options={GIANT_EMOTE_ALIGNS} />
+            </SettingsRow>
+          </SettingsSubGroup>
           <SettingsRow title="Show badges" control={<Toggle enabled={style.showBadges} onChange={() => set('showBadges', !style.showBadges)} />} />
           <SettingsRow title="Badge size" disabled={!style.showBadges}>
             <Slider value={style.badgeScale} min={OVERLAY_LIMITS.badgeScale.min} max={OVERLAY_LIMITS.badgeScale.max} step={0.05} onChange={(v) => set('badgeScale', v)} format={(v) => `${v.toFixed(2)}x`} />
           </SettingsRow>
           <SettingsRow title="Third-party badges" description="7TV, FFZ, Chatterino, and more. Native platform badges use the toggle above." control={<Toggle enabled={style.showThirdPartyBadges} onChange={() => set('showThirdPartyBadges', !style.showThirdPartyBadges)} />} />
+          <SettingsSubGroup>
           <SettingsRow title="Badge providers" description="Show or hide each badge provider on its own. StreamNook is the member badge; the rest are third-party.">
             <div className="flex flex-wrap gap-2">
               {THIRD_PARTY_BADGE_PROVIDERS.map((p) => {
@@ -898,7 +1236,7 @@ const OverlaySettings = () => {
                     onClick={() => toggleBadgeProvider(p.id)}
                     disabled={style.showThirdPartyBadges === false}
                     style={{ borderRadius: 8 }}
-                    className={`px-3 py-2 text-sm font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed ${on ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary hover:text-textPrimary'}`}
+                    className={`px-2.5 py-1.5 text-[13px] font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed ${on ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary hover:text-textPrimary'}`}
                   >
                     {p.label}
                   </button>
@@ -906,12 +1244,21 @@ const OverlaySettings = () => {
               })}
             </div>
           </SettingsRow>
+          </SettingsSubGroup>
         </SettingsSection>
         <SettingsSection label="Chatters" description="How the person behind each message shows up: picture, name, and their cosmetics.">
           <SettingsRow title="Profile pictures" titleBadge={<SourceScope sources={['youtube', 'tiktok']} />} description="Chatter avatars next to their names. YouTube and TikTok send them; Twitch and Kick don't have them." control={<Toggle enabled={style.showAvatars} onChange={() => set('showAvatars', !style.showAvatars)} />} />
           <SettingsRow title="@ before usernames" titleBadge={<SourceScope sources={['youtube']} />} description="YouTube names arrive as @handles. Turn off to show every name without the leading @." control={<Toggle enabled={style.showAtSign} onChange={() => set('showAtSign', !style.showAtSign)} />} />
-          <SettingsRow title="7TV paints" description="Colored and animated username gradients." control={<Toggle enabled={style.showPaints} onChange={() => set('showPaints', !style.showPaints)} />} />
-          <SettingsRow title="StreamNook atmospheres" description="A member's equipped atmosphere: the animated wash behind their own message only. Separate from event styles and your overlay's background." control={<Toggle enabled={style.showAtmospheres} onChange={() => set('showAtmospheres', !style.showAtmospheres)} />} />
+          <SettingsRow
+            title={<span className="inline-flex items-center gap-1.5"><SevenTvLogo size={15} className="text-[#29b6f6]" /> Paints</span>}
+            description="Colored and animated username gradients."
+            control={<Toggle enabled={style.showPaints} onChange={() => set('showPaints', !style.showPaints)} />}
+          />
+          <SettingsRow
+            title={<span className="inline-flex items-center gap-1.5"><img src={streamNookLogo} alt="" className="w-4 h-4 object-contain" draggable={false} /> Atmospheres</span>}
+            description="A member's equipped atmosphere: the animated wash behind their own message only. Separate from event styles and your overlay's background."
+            control={<Toggle enabled={style.showAtmospheres} onChange={() => set('showAtmospheres', !style.showAtmospheres)} />}
+          />
           <SettingsRow title="First-time chatters" titleBadge={<SourceScope sources={['twitch']} />} description="Mark someone's first-ever message in the channel. Twitch draws the outline and label Twitch chat uses; StreamNook uses the app chat's purple highlight. Only Twitch sends the signal, so it never fires on other platforms.">
             <SegmentedSelect
               value={style.firstTimeStyle}
@@ -919,6 +1266,7 @@ const OverlaySettings = () => {
               options={[{ value: 'off', label: 'Off' }, { value: 'twitch', label: 'Twitch' }, { value: 'streamnook', label: 'StreamNook' }]}
             />
           </SettingsRow>
+          <SettingsSubGroup>
           <SettingsRow
             title="Highlight color"
             description="One accent drives the outline, fill, bar, and label together. Default matches the style: Twitch pink or StreamNook purple."
@@ -949,13 +1297,14 @@ const OverlaySettings = () => {
             />
           </SettingsRow>
           <SettingsRow title="Repeat the animation" description="Keep it going while the message is on screen, instead of once when it lands. Sheen and Pulse replay every 5 seconds; Chase spins continuously." disabled={style.firstTimeStyle === 'off' || style.firstTimeAnimation === 'none'} control={<Toggle enabled={style.firstTimeAnimateRepeat} onChange={() => set('firstTimeAnimateRepeat', !style.firstTimeAnimateRepeat)} />} />
+          </SettingsSubGroup>
         </SettingsSection>
         <SettingsSection label="Messages" description="How messages render and flow.">
           <SettingsRow title="Reply context" description={'The small "Replying to" line above a reply.'} control={<Toggle enabled={style.showReplies} onChange={() => set('showReplies', !style.showReplies)} />} />
           <SettingsRow title="Show timestamps" control={<Toggle enabled={style.showTimestamps} onChange={() => set('showTimestamps', !style.showTimestamps)} />} />
           <SettingsRow title="Message bubbles" description="Each message sits in its own rounded bubble that hugs the text. Reads better over busy gameplay than bare text. A member's atmosphere replaces the bubble on their rows." control={<Toggle enabled={style.bubble} onChange={() => set('bubble', !style.bubble)} />} />
           {style.bubble && (
-            <>
+            <SettingsSubGroup>
               <SettingsRow title="Bubble shape" description="Rounded uses the corner radius below, Pill fully rounds the ends, Speech tucks in the bottom-left corner like a messenger bubble.">
                 <SegmentedSelect
                   value={style.bubbleShape}
@@ -972,7 +1321,7 @@ const OverlaySettings = () => {
               <SettingsRow title="Bubble opacity">
                 <Slider value={style.bubbleOpacity} min={OVERLAY_LIMITS.bubbleOpacity.min} max={OVERLAY_LIMITS.bubbleOpacity.max} step={0.05} onChange={(v) => set('bubbleOpacity', v)} format={(v) => `${Math.round(v * 100)}%`} />
               </SettingsRow>
-            </>
+            </SettingsSubGroup>
           )}
           <SettingsRow title="Max lines per message" description="Cut a long message off with an ellipsis so one wall of text can't eat the canvas.">
             <Slider value={style.maxMessageLines} min={OVERLAY_LIMITS.maxMessageLines.min} max={OVERLAY_LIMITS.maxMessageLines.max} step={1} onChange={(v) => set('maxMessageLines', Math.round(v))} format={(v) => (v === 0 ? 'No limit' : `${v}`)} />
@@ -1008,9 +1357,11 @@ const OverlaySettings = () => {
           </p>
           <SettingsRow title="Hide command messages" description="Hide chat commands like !title. Pick which below." control={<Toggle enabled={style.hideCommands} onChange={() => set('hideCommands', !style.hideCommands)} />} />
           {style.hideCommands && (
-            <SettingsRow title="Commands to hide">
-              <CommandFilterEditor filters={style.commandFilters ?? []} onAdd={addCommandFilter} onRemove={removeCommandFilter} />
-            </SettingsRow>
+            <SettingsSubGroup>
+              <SettingsRow title="Commands to hide">
+                <CommandFilterEditor filters={style.commandFilters ?? []} onAdd={addCommandFilter} onRemove={removeCommandFilter} />
+              </SettingsRow>
+            </SettingsSubGroup>
           )}
           <SettingsRow title="Hide messages containing" description="A message containing any of these words or phrases never shows, whatever channel moderation does. Case doesn't matter. Events are unaffected.">
             <PhraseEditor phrases={style.hidePhrases ?? []} onAdd={addPhrase} onRemove={removePhrase} />
@@ -1036,6 +1387,9 @@ const OverlaySettings = () => {
 
         {activeTab === 'events' && (
         <SettingsSection label="Events" description="Subs, gifts, raids, and more. How they look, and which ones each source shows.">
+          <SettingsRow title="Bits messages" titleBadge={<SourceScope sources={['twitch']} />} description="Show a cheer inline like a normal message, or as an event card like subs and raids.">
+            <SegmentedSelect value={style.cheerDisplay ?? 'message'} onChange={(v) => set('cheerDisplay', v)} options={CHEER_DISPLAYS} />
+          </SettingsRow>
           <SettingsRow title="Event style" description="Every style shows the sender's badges and paint name. Plain keeps a subtle per-platform tint, Outline draws a thin ring in the platform's color, StreamNook adds our signature multi-color gradient wash.">
             <SegmentedSelect
               value={style.eventStyle}
@@ -1043,6 +1397,7 @@ const OverlaySettings = () => {
               options={[{ value: 'plain', label: 'Plain' }, { value: 'outline', label: 'Outline' }, { value: 'streamnook', label: 'StreamNook' }]}
             />
           </SettingsRow>
+          <SettingsSubGroup>
           <SettingsRow
             title="Outline color"
             description="One fixed ring color for every event. Default gives each event its own platform's color."
@@ -1073,6 +1428,7 @@ const OverlaySettings = () => {
             />
           </SettingsRow>
           <SettingsRow title="Repeat the animation" description="Keep it going while the event is on screen, instead of once when it lands. Sheen and Pulse replay every 5 seconds; Chase spins continuously." disabled={style.eventStyle !== 'outline' || style.eventAnimation === 'none'} control={<Toggle enabled={style.eventAnimateRepeat} onChange={() => set('eventAnimateRepeat', !style.eventAnimateRepeat)} />} />
+          </SettingsSubGroup>
           <SettingsRow
             title="Show events"
             description={sourceProviders.length
@@ -1082,7 +1438,7 @@ const OverlaySettings = () => {
           {eventProviders.map((provider) => (
             <SettingsRow
               key={`pe-${provider}`}
-              title={<span className="inline-flex items-center gap-1.5"><ProviderIcon provider={provider} size="14px" /> {PROVIDERS[provider].label}</span> as unknown as string}
+              title={<span className="inline-flex items-center gap-1.5"><ProviderIcon provider={provider} size="14px" /> {PROVIDERS[provider].label}</span>}
             >
               <div className="flex flex-wrap gap-2">
                 {(PROVIDER_EVENT_CATEGORIES[provider] ?? []).map((cat) => {
@@ -1093,9 +1449,9 @@ const OverlaySettings = () => {
                       key={key}
                       onClick={() => toggleProviderEvent(key)}
                       style={{ borderRadius: 8 }}
-                      className={`px-3 py-2 text-sm font-medium transition-all ${on ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary hover:text-textPrimary'}`}
+                      className={`px-2.5 py-1.5 text-[13px] font-medium transition-all ${on ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary hover:text-textPrimary'}`}
                     >
-                      {catLabel(cat)}
+                      {catLabel(provider, cat)}
                     </button>
                   );
                 })}
@@ -1115,33 +1471,35 @@ const OverlaySettings = () => {
         <div className="settings-card px-4 py-4">
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0">
-              <div className="text-[13px] font-medium text-textPrimary">Overlay URL</div>
+              <div className="text-[13px] font-medium text-textPrimary">
+                Overlay URL{profiles.length > 1 ? <span className="text-textMuted font-normal"> · {profiles[activeIdx]?.name}</span> : null}
+              </div>
               <p className="mt-0.5 text-[12px] leading-relaxed text-textSecondary">
                 {publishState === 'error' ? (
                   <span className="text-red-400">{publishError}</span>
                 ) : publishState === 'done' && publishedUrl ? (
                   <>Copied. Paste into an OBS Browser Source. It stays in sync as you tweak here, no need to re-copy. <span className="text-textPrimary break-all">{publishedUrl}</span></>
                 ) : (
-                  'Publish once to get a permanent OBS Browser Source link. It stays in sync as you tweak here, no need to re-copy.'
+                  `Publish once to get ${profiles.length > 1 ? 'this overlay its own' : 'a permanent'} OBS Browser Source link. It stays in sync as you tweak here, no need to re-copy.`
                 )}
               </p>
-              <div
-                className="mt-2 flex items-start gap-2 rounded-lg px-2.5 py-2 text-[12px] leading-relaxed"
-                style={{ background: 'rgba(245,158,11,0.14)', boxShadow: 'inset 0 0 0 1px rgba(245,158,11,0.45)' }}
-              >
-                <AlertTriangle size={14} className="flex-shrink-0 mt-[1px]" style={{ color: '#f59e0b' }} />
-                <span style={{ color: '#f2b13a' }}>
-                  Set the OBS Browser Source Width &amp; Height to{' '}
-                  <span className="font-semibold tabular-nums" style={{ color: '#ffc23d' }}>{style.width} × {style.height}</span>
-                  , the same as your Layout size above. OBS crops to the source size, it won't grow to fit the overlay.
-                </span>
-              </div>
+              {/* The size reminder only matters once there's a link to paste. */}
+              {publishedUrl && (
+                <p className="mt-1.5 flex items-start gap-1.5 text-[12px] leading-relaxed text-textMuted">
+                  <AlertTriangle size={13} className="flex-shrink-0 mt-[2px]" style={{ color: '#f59e0b' }} />
+                  <span>
+                    Set the OBS Browser Source size to{' '}
+                    <span className="font-semibold tabular-nums text-textSecondary">{style.width} × {style.height}</span>{' '}
+                    (your Layout size). OBS crops to the source size, it won't grow to fit.
+                  </span>
+                </p>
+              )}
             </div>
             <Tooltip content={sources.length === 0 ? 'Add a source first' : 'Publish and copy the OBS link'}>
               <button
                 onClick={publish}
                 disabled={publishState === 'publishing' || sources.length === 0}
-                className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium glass-button text-textPrimary flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] font-medium glass-button text-textPrimary flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Link2 size={14} /> {publishState === 'publishing' ? 'Publishing…' : publishState === 'done' ? 'Copied!' : 'Copy overlay URL'}
               </button>

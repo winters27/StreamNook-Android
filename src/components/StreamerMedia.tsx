@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Heart, Loader2, Search, Users, X } from 'lucide-react';
 
-import { useAppStore } from '../stores/AppStore';
+import { useAppStore, clipSourceOf } from '../stores/AppStore';
 import type { TwitchClip, TwitchVideo } from '../types';
 import { GlassSelect } from './ui/GlassSelect';
 import { Logger } from '../utils/logger';
@@ -234,7 +234,7 @@ export default function StreamerMedia({
       <div
         key={clip.id}
         className="glass-panel media-card group relative cursor-pointer overflow-hidden transition-all duration-200 hover:bg-glass-hover"
-        onClick={() => openClipModal(clip.url, clip)}
+        onClick={() => openClipModal(clip.url, { ...clip, clip_source: clipSourceOf(clip) })}
       >
         <div className="relative overflow-hidden rounded">
           <img

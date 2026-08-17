@@ -26,6 +26,7 @@ import { usemultiNookStore } from '../../stores/multiNookStore';
 import { useTutorialStore } from '../../stores/tutorialStore';
 import { acquireChannel, releaseChannel } from '../../stores/chatConnectionStore';
 import { Logger } from '../../utils/logger';
+import { useVisibleInterval } from '../../utils/useVisibleInterval';
 import { useMultiNookSync } from './useMultiNookSync';
 
 const DOCK_DROP_ID = 'dock-drop-zone';
@@ -41,7 +42,7 @@ export const MultiNookView: React.FC = () => {
   // any store mutation at all.
   const slots = usemultiNookStore((s) => s.slots);
   const maximizedSlotId = usemultiNookStore((s) => s.maximizedSlotId);
-  const { reorderSlots, dockSlot, undockSlot, batchLoadMissingStreams, setMaximizedSlot } =
+  const { reorderSlots, dockSlot, undockSlot, batchLoadMissingStreams, refreshSlotMetadata, setMaximizedSlot } =
     usemultiNookStore.getState();
   const visibleSlots = useMemo(() => slots.filter((s) => !s.isMinimized), [slots]);
   const minimizedSlots = useMemo(() => slots.filter((s) => s.isMinimized), [slots]);
@@ -125,6 +126,27 @@ export const MultiNookView: React.FC = () => {
       batchLoadMissingStreams();
     }
   }, [slots, batchLoadMissingStreams]);
+
+  // Titles and categories change mid-stream, so poll them. Keyed on the tile set
+  // rather than on `slots` itself: volume drags and focus changes mutate slots
+  // constantly and would restart the interval each time.
+  const loginKey = useMemo(
+    () => slots.map((s) => s.channelLogin.toLowerCase()).sort().join(','),
+    [slots],
+  );
+  useEffect(() => {
+    if (!loginKey) return;
+    // Hold this off the mount frame. Opening a grid already starts up to 25 HLS
+    // proxies at once, and the patch re-renders every tile that gains a title;
+    // landing both together is what starves the main thread and stalls the MSE
+    // appends. Also covers preset loads, which build slots from cached data with
+    // no Twitch round-trip at all.
+    const first = setTimeout(() => void refreshSlotMetadata(), 3_000);
+    return () => clearTimeout(first);
+  }, [loginKey, refreshSlotMetadata]);
+  // Steady-state poll. Purely an on-screen surface, so it pauses while the
+  // window is hidden rather than hitting Helix from the tray.
+  useVisibleInterval(refreshSlotMetadata, 120_000);
 
   // Build a map of slot id -> visual order index for CSS-based reordering.
   const orderMap = useMemo(() => {

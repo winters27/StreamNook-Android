@@ -20,22 +20,33 @@ import UserOverridesSettings from './UserOverridesSettings';
 import UserCommandsSettings from './UserCommandsSettings';
 import RemindersSettings from './RemindersSettings';
 import { SettingsSection, SettingsRow, SegmentedSelect } from './_primitives';
+import { Toggle } from '../ui/Toggle';
+import type {
+  UserCardSettings,
+  MessageRepeatSettings,
+  RepeatDisplayMode,
+  RepeatMatchMode,
+} from '../../types';
+
+// Muted grey, so the counter reads as chrome rather than competing with the
+// message. Matches --color-text-secondary in the default theme.
+const REPEAT_DEFAULT_COLOR = '#8b8b8b';
+
+// Rows the user card can show, in the order they appear on the card itself.
+// Everything defaults to on; the toggle stores `false` to hide.
+const USER_CARD_ROWS: { key: keyof UserCardSettings; title: string; description: string }[] = [
+  { key: 'show_join_date', title: 'Joined Twitch', description: 'When the account was created.' },
+  { key: 'show_followage', title: 'Following since', description: 'When they followed this channel, or that they are not following.' },
+  { key: 'show_follows_count', title: 'Channels they follow', description: 'How many channels this person follows.' },
+  { key: 'show_chatter_count', title: 'Chatters', description: "How many people are in this person's own chat right now." },
+  { key: 'show_past_subscriber', title: 'Past subscriber', description: 'Total months subscribed, for people who are not subscribed now.' },
+  { key: 'show_last_live', title: 'Last live', description: 'When they last streamed, if they ever have.' },
+  { key: 'show_relative_time', title: 'Show "how long ago"', description: 'Adds a plain-English age next to dates, so "Mar 3, 2019" also reads "(6y ago)".' },
+  { key: 'show_seventv_link', title: '7TV profile link', description: 'A 7TV chip next to their name that opens their 7TV profile in your browser.' },
+];
 import { useChatUserStore } from '../../stores/chatUserStore';
 import { getUserCosmetics, computePaintStyle } from '../../services/seventvService';
 import { StyledChatName, type NameSeparator, type NameStyle } from '../chat/StyledChatName';
-
-const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
-  <button
-    onClick={onChange}
-    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${enabled ? 'bg-accent' : 'bg-gray-600'
-      }`}
-  >
-    <span
-      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${enabled ? 'translate-x-6' : 'translate-x-1'
-        }`}
-    />
-  </button>
-);
 
 // Native color swatch matching the mod-log Log Highlights control: clicking it
 // opens the OS picker (always on top, unlike an in-app popover that can render
@@ -287,6 +298,8 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
     paint_mentions_in_body: stored?.paint_mentions_in_body ?? true,
     compact_emote_tooltips: stored?.compact_emote_tooltips ?? false,
     ffz_emote_effects: stored?.ffz_emote_effects ?? true,
+    bttv_emote_modifiers: stored?.bttv_emote_modifiers ?? true,
+    giant_emotes: stored?.giant_emotes ?? true,
     user_card_opens_messages: stored?.user_card_opens_messages ?? true,
     seventv_emote_notices: stored?.seventv_emote_notices ?? true,
     link_previews: stored?.link_previews ?? true,
@@ -304,6 +317,22 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
       chat_design: { ...cd, ...patch },
     });
   };
+
+  const rp = settings.message_repeat;
+  const repeatMode: RepeatDisplayMode = rp?.mode ?? 'collapse';
+  const repeatThreshold = Math.max(2, rp?.threshold ?? 2);
+  const repeatWindow = rp?.window_seconds ?? 60;
+  const setRepeat = (patch: Partial<MessageRepeatSettings>) =>
+    updateSettings({
+      ...settings,
+      message_repeat: { ...settings.message_repeat, ...patch },
+    });
+
+  const setUserCard = (patch: Partial<UserCardSettings>) =>
+    updateSettings({
+      ...settings,
+      user_card: { ...settings.user_card, ...patch },
+    });
 
   const setInput = (patch: Partial<NonNullable<typeof settings.chat_input>>) =>
     updateSettings({
@@ -443,6 +472,21 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
             />
           }
         />
+        {(settings.show_polls ?? true) && (settings.show_predictions ?? true) && (
+          <SettingsRow
+            title="When both are running"
+            description="A channel can run a poll and a prediction at the same time. Both cards show either way, stacked. Pick which one sits on top."
+          >
+            <SegmentedSelect<'prediction-first' | 'poll-first'>
+              value={settings.chat_overlay_order ?? 'prediction-first'}
+              onChange={(order) => updateSettings({ ...settings, chat_overlay_order: order })}
+              options={[
+                { value: 'prediction-first', label: 'Prediction on top' },
+                { value: 'poll-first', label: 'Poll on top' },
+              ]}
+            />
+          </SettingsRow>
+        )}
         <SettingsRow
           title="Channel point redemptions"
           description="Drop a chat row when someone redeems a reward that doesn't post its own message (for example a no-input reward). Rewards that already post to chat are unaffected."
@@ -466,6 +510,18 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
               enabled={settings.collapse_gift_subs ?? true}
               onChange={() =>
                 updateSettings({ ...settings, collapse_gift_subs: !(settings.collapse_gift_subs ?? true) })
+              }
+            />
+          }
+        />
+        <SettingsRow
+          title="Chat replay on clips"
+          description="Show the chat that was live while a clip was recorded, beside the clip. Needs the original broadcast to still be up, so older clips may have none."
+          control={
+            <Toggle
+              enabled={settings.clip_chat_replay ?? true}
+              onChange={() =>
+                updateSettings({ ...settings, clip_chat_replay: !(settings.clip_chat_replay ?? true) })
               }
             />
           }
@@ -937,6 +993,36 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
             }
           />
         )}
+        <SettingsRow
+          title="Hide the placeholder text"
+          description="Leaves the message box empty instead of prompting you to send a message. Notices you can act on, like read-only or subscriber-only mode, still show."
+          control={
+            <Toggle
+              enabled={settings.chat_input?.hide_placeholder ?? false}
+              onChange={() => setInput({ hide_placeholder: !(settings.chat_input?.hide_placeholder ?? false) })}
+            />
+          }
+        />
+        <SettingsRow
+          title="Hide the emote button"
+          description="Removes the smiley from inside the message box. The emote picker is still reachable from its keyboard shortcut and from tab completion."
+          control={
+            <Toggle
+              enabled={settings.chat_input?.hide_emote_button ?? false}
+              onChange={() => setInput({ hide_emote_button: !(settings.chat_input?.hide_emote_button ?? false) })}
+            />
+          }
+        />
+        <SettingsRow
+          title="Hide the points balance"
+          description="Removes the channel points button next to the message box. It comes back on its own whenever a bonus chest is waiting, so you never miss one."
+          control={
+            <Toggle
+              enabled={settings.chat_input?.hide_points_balance ?? false}
+              onChange={() => setInput({ hide_points_balance: !(settings.chat_input?.hide_points_balance ?? false) })}
+            />
+          }
+        />
       </SettingsSection>
 
       {/* Shown on both now. It used to be hidden on the phone because the
@@ -1074,6 +1160,28 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
         />
 
         <SettingsRow
+          title="BetterTTV emote modifiers"
+          description="Apply BetterTTV modifiers (w! wide, h!/v! flips, c! cursed, p! party, s! shake) to the emote after them, like BetterTTV does. Off shows the modifiers as plain emotes."
+          control={
+            <Toggle
+              enabled={cd.bttv_emote_modifiers}
+              onChange={() => setDesign({ bttv_emote_modifiers: !cd.bttv_emote_modifiers })}
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Giant emotes"
+          description={'Render the last emote of a "Gigantify an Emote" power-up message at 4x below the message, like Twitch does. Off shows the emote inline at its normal size.'}
+          control={
+            <Toggle
+              enabled={cd.giant_emotes}
+              onChange={() => setDesign({ giant_emotes: !cd.giant_emotes })}
+            />
+          }
+        />
+
+        <SettingsRow
           title="7TV emote update notices"
           description="Show a chat notice when a channel's 7TV emote set changes live (a mod adds, removes, or renames an emote). The new emote is usable right away either way."
           control={
@@ -1113,6 +1221,110 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
         </SettingsRow>
       </SettingsSection>
 
+      <SettingsSection
+        id="settings-section-repeated-messages"
+        label="Repeated Messages"
+        description="When several people post the same thing at once, fold the run into one row with a count instead of repeating it down the whole chat."
+      >
+        <SettingsRow
+          title="When a message repeats"
+          description={
+            repeatMode === 'collapse'
+              ? 'Keeps the first one and counts the rest onto it.'
+              : repeatMode === 'label'
+                ? 'Leaves every message in chat and just numbers them, so nothing is hidden.'
+                : 'Repeats are left completely alone.'
+          }
+        >
+          <SegmentedSelect<RepeatDisplayMode>
+            value={repeatMode}
+            onChange={(mode) => setRepeat({ mode })}
+            options={[
+              { value: 'collapse', label: 'Fold into one' },
+              { value: 'label', label: 'Just count them' },
+              { value: 'off', label: 'Off' },
+            ]}
+          />
+        </SettingsRow>
+        {repeatMode !== 'off' && (
+          <>
+            <SettingsRow
+              title="How closely they must match"
+              description='"Nearly the same" ignores capitals, extra spaces and trailing punctuation, so "LULW!!" joins "lulw".'
+            >
+              <SegmentedSelect<RepeatMatchMode>
+                value={rp?.match ?? 'normalized'}
+                onChange={(match) => setRepeat({ match })}
+                options={[
+                  { value: 'normalized', label: 'Nearly the same' },
+                  { value: 'exact', label: 'Exactly the same' },
+                ]}
+              />
+            </SettingsRow>
+            <SettingsRow
+              title={`Show the count from ${repeatThreshold} copies`}
+              description="How many copies it takes before the counter appears."
+            >
+              <input
+                type="range"
+                min={2}
+                max={10}
+                step={1}
+                value={repeatThreshold}
+                onChange={(e) => setRepeat({ threshold: Number(e.target.value) })}
+                className="w-full accent-accent cursor-pointer"
+              />
+            </SettingsRow>
+            <SettingsRow
+              title={`Group copies sent within ${repeatWindow}s`}
+              description="After this long, the next copy starts a fresh run instead of joining the old one."
+            >
+              <input
+                type="range"
+                min={10}
+                max={300}
+                step={5}
+                value={repeatWindow}
+                onChange={(e) => setRepeat({ window_seconds: Number(e.target.value) })}
+                className="w-full accent-accent cursor-pointer"
+              />
+            </SettingsRow>
+            <SettingsRow
+              title="Counter colour"
+              description="The colour of the little x12 next to the message."
+              control={
+                <ColorSwatch
+                  value={rp?.color || REPEAT_DEFAULT_COLOR}
+                  defaultValue={REPEAT_DEFAULT_COLOR}
+                  onChange={(color) => setRepeat({ color })}
+                  tooltip="Pick the counter colour"
+                />
+              }
+            />
+            <SettingsRow
+              title="Never fold mods, VIPs or the streamer"
+              description="Their messages always stay on their own row, so you can see exactly who said what."
+              control={
+                <Toggle
+                  enabled={rp?.exempt_privileged !== false}
+                  onChange={() => setRepeat({ exempt_privileged: rp?.exempt_privileged === false })}
+                />
+              }
+            />
+            <SettingsRow
+              title="Show everything in channels you moderate"
+              description="Turns folding off wherever you're a mod, so a hidden copy can never be a message you needed to action."
+              control={
+                <Toggle
+                  enabled={rp?.keep_all_when_moderator !== false}
+                  onChange={() => setRepeat({ keep_all_when_moderator: rp?.keep_all_when_moderator === false })}
+                />
+              }
+            />
+          </>
+        )}
+      </SettingsSection>
+
       {/* Desktop only, and the WHOLE section, not just the row: it holds one
           setting, so guarding the row alone would leave a titled section with
           nothing in it. `user_card_opens_messages` is read solely by
@@ -1134,6 +1346,19 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
             />
           }
         />
+        {USER_CARD_ROWS.map(({ key, title, description }) => (
+          <SettingsRow
+            key={key}
+            title={title}
+            description={description}
+            control={
+              <Toggle
+                enabled={settings.user_card?.[key] !== false}
+                onChange={() => setUserCard({ [key]: settings.user_card?.[key] === false })}
+              />
+            }
+          />
+        ))}
       </SettingsSection>
       )}
 

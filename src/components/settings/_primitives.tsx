@@ -35,7 +35,7 @@ export const SettingsSection = ({
 );
 
 interface SettingsRowProps {
-  title: string;
+  title: ReactNode;
   /** Small inline element after the title (e.g. a source-scope indicator). */
   titleBadge?: ReactNode;
   description?: string;
@@ -73,6 +73,14 @@ export const SettingsRow = ({
     </div>
     {children && <div className="mt-3">{children}</div>}
   </div>
+);
+
+/** Visually nests the rows that exist only to configure the row above them
+ *  (a toggle's color/animation/etc.): a thin left rule + inset, so they read as
+ *  that setting's sub-settings instead of more top-level rows. The pl-4 exactly
+ *  absorbs each row's -mx-4 bleed, so row separators start at the rule. */
+export const SettingsSubGroup = ({ children }: { children: ReactNode }) => (
+  <div className="ml-1 border-l border-borderSubtle pl-4">{children}</div>
 );
 
 interface SegmentedOption<T extends string> {

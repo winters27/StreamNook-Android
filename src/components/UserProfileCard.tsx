@@ -63,6 +63,9 @@ interface UserProfileCardProps {
   channelName?: string;
   onStartWhisper?: (user: { id: string; login: string; display_name: string; profile_image_url?: string }) => void;
   isModerator?: boolean;
+  /** Whether the VIEWER owns this channel. Broadcasters may act on their own
+   *  moderators; moderators may not act on each other. */
+  viewerIsBroadcaster?: boolean;
   broadcasterId?: string;
   onPreFillCommand?: (cmd: string) => void;
 }
@@ -181,6 +184,77 @@ interface SevenTVBadge {
   selected: boolean;
 }
 
+const formatDate = (ds: string) => new Date(ds).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+
+// Compact relative-time helper. Returns short forms like "3d ago" / "5w ago" /
+// "2mo ago" / "1y ago" that fit cleanly in the tight stats panel. Falls back to
+// the absolute date if anything fails.
+const formatRelative = (ds: string) => {
+  try {
+    const date = new Date(ds);
+    const diffMs = Date.now() - date.getTime();
+    const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    if (days < 1) return 'today';
+    if (days < 7) return `${days}d ago`;
+    if (days < 30) return `${Math.floor(days / 7)}w ago`;
+    if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+    const years = Math.floor(days / 365);
+    return years === 1 ? '1y ago' : `${years}y ago`;
+  } catch {
+    return formatDate(ds);
+  }
+};
+
+/** Grant or revoke a channel role. The four Tauri commands behind these share a
+ *  shape, so one button covers all of them. */
+const RoleActionButton = ({
+  label,
+  tooltip,
+  command,
+  broadcasterId,
+  userId,
+  successText,
+}: {
+  label: string;
+  tooltip: string;
+  command: string;
+  broadcasterId?: string;
+  userId: string;
+  successText: string;
+}) => {
+  const [busy, setBusy] = useState(false);
+  return (
+    <Tooltip content={tooltip} side="top">
+      <button
+        disabled={busy}
+        onClick={async () => {
+          if (busy || !broadcasterId) return;
+          setBusy(true);
+          try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            await invoke(command, { broadcasterId, userId });
+            useAppStore.getState().addToast(successText, 'success');
+          } catch (err) {
+            Logger.error(`[UserProfileCard] ${command} failed:`, err);
+            useAppStore.getState().addToast(typeof err === 'string' ? err : `Could not ${label.toLowerCase()}`, 'error');
+          } finally {
+            setBusy(false);
+          }
+        }}
+        className="py-1.5 glass-button-secondary text-xs font-semibold text-textSecondary hover:text-textPrimary rounded flex items-center justify-center transition-colors disabled:opacity-50"
+      >
+        {label}
+      </button>
+    </Tooltip>
+  );
+};
+
+/** Muted "(6y ago)" appended to an absolute date, when the user wants both. */
+const RelativeSuffix = ({ iso, show }: { iso: string | null | undefined; show: boolean }) => {
+  if (!show || !iso) return null;
+  return <span className="ml-1 text-textSecondary font-normal">({formatRelative(iso)})</span>;
+};
+
 interface IVRData {
   created_at: string | null;
   following_since: string | null;
@@ -196,6 +270,8 @@ interface IVRData {
   last_broadcast_at: string | null;
   last_broadcast_title: string | null;
   follows_count: number | null;
+  banned: boolean;
+  chatter_count: number | null;
   sub_tier: string | null;
   sub_type: string | null;
   sub_gifter_login: string | null;
@@ -414,6 +490,9 @@ const UserProfileCard = ({
   username,
   displayName,
   color,
+  // Badges from the chat message this card was opened from. Synchronous, so it
+  // can gate moderation UI without a flash; see targetIsModerator below.
+  badges: messageBadges,
   messageHistory,
   onClose,
   position,
@@ -421,6 +500,7 @@ const UserProfileCard = ({
   channelName: propChannelName,
   onStartWhisper,
   isModerator = false,
+  viewerIsBroadcaster = false,
   broadcasterId,
   onPreFillCommand,
 }: UserProfileCardProps) => {
@@ -442,6 +522,37 @@ const UserProfileCard = ({
   const [showMessages, setShowMessages] = useState(
     () => useAppStore.getState().settings.chat_design?.user_card_opens_messages !== false,
   );
+  // Which rows this card shows. Subscribed (not a one-shot read) so toggling a
+  // row in Settings updates an open card.
+  const cardPrefs = useAppStore((s) => s.settings.user_card);
+  const showRelative = cardPrefs?.show_relative_time !== false;
+  // Twitch-suspended account. Worth marking because their messages stay in
+  // chat history long after the account is gone.
+  const isBanned = !!profileData?.ivr_data?.banned;
+  // Resolved by the cosmetics cache alongside paints/badges. The Rust profile
+  // path asks 7TV for the id but drops it, so read it from the cache.
+  const seventvUserId = cachedProfile?.seventvCosmetics?.seventvUserId;
+
+  // Whether the person this card is about is themselves privileged here. Read
+  // from the badges on the message we were opened from: synchronous and
+  // first-party, unlike ivrData, which arrives later (so the buttons would
+  // flash) and comes from a third-party service (so moderation UI would depend
+  // on its uptime).
+  const targetIsBroadcaster =
+    (!!broadcasterId && userId === broadcasterId) ||
+    (messageBadges ?? []).some((b) => String(b.key ?? '').startsWith('broadcaster/'));
+  const targetIsModerator = (messageBadges ?? []).some((b) =>
+    String(b.key ?? '').startsWith('moderator/'),
+  );
+  // Twitch rejects a moderator acting on another moderator or on the channel
+  // owner. The broadcaster keeps full reach over their own channel, so only the
+  // moderator case is blocked here; nothing the broadcaster could legitimately
+  // do is taken away.
+  const blockedTarget = !viewerIsBroadcaster && (targetIsModerator || targetIsBroadcaster);
+
+  // First saved reason is the one we prefill; the rest are just there to copy.
+  const savedBanReasons = useAppStore((s) => s.settings.moderation?.saved_ban_reasons);
+  const defaultBanReason = savedBanReasons?.[0]?.trim() || '';
   // In-session messages that arrive WHILE the card is open, polled from the Rust
   // history service so the timeline stays live (works across the popout-window
   // boundary — the service is a shared backend singleton). Same shape as the
@@ -808,26 +919,6 @@ const UserProfileCard = ({
     }
   }, [cachedProfile?.seventvCosmetics?.badges, profileData?.seventv_cosmetics?.badges, selectedPaint]);
 
-  const formatDate = (ds: string) => new Date(ds).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
-  // Compact relative-time helper for the "Last live" row. Returns short forms
-  // like "3d ago" / "5w ago" / "2mo ago" / "1y ago" that fit cleanly in the
-  // tight stats panel. Falls back to the absolute date if anything fails.
-  const formatRelative = (ds: string) => {
-    try {
-      const date = new Date(ds);
-      const diffMs = Date.now() - date.getTime();
-      const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-      if (days < 1) return 'today';
-      if (days < 7) return `${days}d ago`;
-      if (days < 30) return `${Math.floor(days / 7)}w ago`;
-      if (days < 365) return `${Math.floor(days / 30)}mo ago`;
-      const years = Math.floor(days / 365);
-      return years === 1 ? '1y ago' : `${years}y ago`;
-    } catch {
-      return formatDate(ds);
-    }
-  };
-
   useEffect(() => {
     // cardWidth MUST match the `w-[402px]` className on the card root below
     // (matches DEFAULT_CHAT_WIDTH from App.tsx, same as the popout window).
@@ -1158,6 +1249,26 @@ const UserProfileCard = ({
           </button>
         </Tooltip>
       )}
+      {seventvUserId && cardPrefs?.show_seventv_link !== false && (
+        <Tooltip content="Open 7TV profile" side="top">
+          <button
+            onClick={async (e) => {
+              e.stopPropagation();
+              try {
+                const { open } = await import('@tauri-apps/plugin-shell');
+                await open(`https://7tv.app/users/${seventvUserId}`);
+              } catch (err) {
+                Logger.error('Failed to open 7TV profile:', err);
+              }
+            }}
+            className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-white/5 border border-transparent shadow-[inset_1px_1px_0_0_rgba(255,255,255,0.10),inset_-1px_-1px_0_0_rgba(0,0,0,0.18)] cursor-pointer hover:ring-1 hover:ring-accent/50 transition-all"
+          >
+            {/* 7TV brand blue is deliberately not tokenized — brand marks stay
+                the same in every theme. */}
+            <span className="text-[11px] font-bold tracking-wide" style={{ color: '#29b6f6' }}>7TV</span>
+          </button>
+        </Tooltip>
+      )}
     </>
   );
 
@@ -1190,10 +1301,21 @@ const UserProfileCard = ({
             style={prefersReducedMotion ? undefined : { scale: avatarScale, y: avatarLift, transformOrigin: 'left bottom' }}
           >
             {avatarUrl ? (
-              <img src={avatarUrl} alt={displayName} className="w-full h-full object-cover" />
+              <img
+                src={avatarUrl}
+                alt={displayName}
+                className={`w-full h-full object-cover ${isBanned ? 'grayscale' : ''}`}
+              />
             ) : (
               <div className="w-full h-full flex items-center justify-center bg-accent/20">
                 <span className="text-2xl font-bold text-textPrimary">{displayName[0].toUpperCase()}</span>
+              </div>
+            )}
+            {isBanned && (
+              <div className="absolute inset-0 flex items-end justify-center bg-black/45">
+                <span className="mb-1 rounded px-1.5 py-px bg-error/90 text-[9px] font-bold tracking-wider text-white">
+                  BANNED
+                </span>
               </div>
             )}
           </motion.div>
@@ -1478,56 +1600,78 @@ const UserProfileCard = ({
                     Logger.error('Failed to open gift sub URL:', err);
                   }
                 };
-                const hasAnyStat = !!twitchProfile
-                  || !!ivrData?.following_since
-                  || !!ivrData?.status_hidden
-                  || !!ivrData?.last_broadcast_at
-                  || (ivrData?.follows_count ?? 0) > 0
-                  || (!ivrData?.is_subscribed && (ivrData?.sub_cumulative ?? 0) > 0);
+                // Every row defaults to on, so a user who never opens the
+                // visibility settings sees the card exactly as before.
+                const rows = {
+                  joinDate: cardPrefs?.show_join_date !== false && !!twitchProfile,
+                  followage: cardPrefs?.show_followage !== false
+                    && !!ivrData
+                    && (!!ivrData.following_since || ivrData.status_hidden || !isLoadingProfile),
+                  followsCount: cardPrefs?.show_follows_count !== false && (ivrData?.follows_count ?? 0) > 0,
+                  chatterCount: cardPrefs?.show_chatter_count !== false && (ivrData?.chatter_count ?? 0) > 0,
+                  pastSub: cardPrefs?.show_past_subscriber !== false
+                    && !!ivrData && !ivrData.is_subscribed && (ivrData.sub_cumulative ?? 0) > 0,
+                  lastLive: cardPrefs?.show_last_live !== false && !!ivrData?.last_broadcast_at,
+                };
+                const hasAnyStat = Object.values(rows).some(Boolean);
                 return (
                   <>
                     {hasAnyStat && (
                       <div className="glass-panel rounded-md px-3 py-2 space-y-1">
-                        {twitchProfile && (
+                        {rows.joinDate && (
                           <div className="flex items-baseline justify-between gap-3 text-[11px]">
                             <span className="text-textSecondary">Joined Twitch</span>
-                            <span className="text-textPrimary font-medium tabular-nums">{formatDate(twitchProfile.created_at)}</span>
+                            <span className="text-textPrimary font-medium tabular-nums">
+                              {formatDate(twitchProfile!.created_at)}
+                              <RelativeSuffix iso={twitchProfile!.created_at} show={showRelative} />
+                            </span>
                           </div>
                         )}
-                        {ivrData && (ivrData.following_since || ivrData.status_hidden) ? (
+                        {rows.followage && (ivrData!.following_since || ivrData!.status_hidden) ? (
                           <div className="flex items-baseline justify-between gap-3 text-[11px]">
                             <span className="text-textSecondary">Following since</span>
-                            {ivrData.status_hidden ? (
+                            {ivrData!.status_hidden ? (
                               <span className="text-textSecondary italic">Hidden</span>
                             ) : (
-                              <span className="text-textPrimary font-medium tabular-nums">{formatDate(ivrData.following_since!)}</span>
+                              <span className="text-textPrimary font-medium tabular-nums">
+                                {formatDate(ivrData!.following_since!)}
+                                <RelativeSuffix iso={ivrData!.following_since!} show={showRelative} />
+                              </span>
                             )}
                           </div>
-                        ) : ivrData && !isLoadingProfile && (
+                        ) : rows.followage && !isLoadingProfile && (
                           <div className="flex items-baseline justify-between gap-3 text-[11px]">
                             <span className="text-textSecondary">Following</span>
                             <span className="text-textSecondary italic">Not following</span>
                           </div>
                         )}
-                        {(ivrData?.follows_count ?? 0) > 0 && (
+                        {rows.followsCount && (
                           <div className="flex items-baseline justify-between gap-3 text-[11px]">
                             <span className="text-textSecondary">Follows</span>
                             <span className="text-textPrimary font-medium tabular-nums">{ivrData!.follows_count!.toLocaleString()} channels</span>
                           </div>
                         )}
-                        {ivrData && !ivrData.is_subscribed && (ivrData.sub_cumulative ?? 0) > 0 && (
+                        {rows.chatterCount && (
+                          <Tooltip content="People currently in this user's own chat" side="top">
+                            <div className="flex items-baseline justify-between gap-3 text-[11px] cursor-default">
+                              <span className="text-textSecondary">Chatters</span>
+                              <span className="text-textPrimary font-medium tabular-nums">{ivrData!.chatter_count!.toLocaleString()}</span>
+                            </div>
+                          </Tooltip>
+                        )}
+                        {rows.pastSub && (
                           <div className="flex items-baseline justify-between gap-3 text-[11px]">
                             <span className="text-textSecondary">Past subscriber</span>
                             <span className="text-textPrimary font-medium tabular-nums">
-                              {ivrData.sub_cumulative === 1 ? '1mo total' : `${ivrData.sub_cumulative}mo total`}
+                              {ivrData!.sub_cumulative === 1 ? '1mo total' : `${ivrData!.sub_cumulative}mo total`}
                             </span>
                           </div>
                         )}
-                        {ivrData?.last_broadcast_at && (
-                          <Tooltip content={ivrData.last_broadcast_title ?? formatDate(ivrData.last_broadcast_at)} side="top">
+                        {rows.lastLive && (
+                          <Tooltip content={ivrData!.last_broadcast_title ?? formatDate(ivrData!.last_broadcast_at!)} side="top">
                             <div className="flex items-baseline justify-between gap-3 text-[11px] cursor-default">
                               <span className="text-textSecondary">Last live</span>
-                              <span className="text-textPrimary font-medium tabular-nums">{formatRelative(ivrData.last_broadcast_at)}</span>
+                              <span className="text-textPrimary font-medium tabular-nums">{formatRelative(ivrData!.last_broadcast_at!)}</span>
                             </div>
                           </Tooltip>
                         )}
@@ -1552,13 +1696,23 @@ const UserProfileCard = ({
                         {ivrData?.is_mod && (
                           <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-success/10 border border-success/20 text-[11px] text-success">
                             <span className="font-semibold">Moderator</span>
-                            {ivrData.mod_since && <span className="text-success/70">since {formatIVRDate(ivrData.mod_since)}</span>}
+                            {ivrData.mod_since && (
+                              <span className="text-success/70">
+                                since {formatIVRDate(ivrData.mod_since)}
+                                {showRelative && ` (${formatRelative(ivrData.mod_since)})`}
+                              </span>
+                            )}
                           </span>
                         )}
                         {ivrData?.is_vip && (
                           <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-highlight-pink/10 border border-highlight-pink/20 text-[11px] text-highlight-pink">
                             <span className="font-semibold">VIP</span>
-                            {ivrData.vip_since && <span className="text-pink-300/70">since {formatIVRDate(ivrData.vip_since)}</span>}
+                            {ivrData.vip_since && (
+                              <span className="text-pink-300/70">
+                                since {formatIVRDate(ivrData.vip_since)}
+                                {showRelative && ` (${formatRelative(ivrData.vip_since)})`}
+                              </span>
+                            )}
                           </span>
                         )}
                       </div>
@@ -1792,6 +1946,14 @@ const UserProfileCard = ({
                   <svg className="w-3.5 h-3.5 text-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
                   <span className="text-[10px] uppercase font-bold text-error tracking-wider">Moderator Actions</span>
                 </div>
+                {blockedTarget && (
+                  <p className="mb-2.5 text-[11px] text-textSecondary">
+                    {targetIsBroadcaster
+                      ? "This is the channel's owner, so there's nothing to action here."
+                      : 'Twitch does not let one moderator action another. Only the broadcaster can.'}
+                  </p>
+                )}
+                {!blockedTarget && (
                 <div className="grid grid-cols-4 gap-2">
                   <Tooltip content="Purge recent messages" side="top">
                     <button
@@ -1814,7 +1976,7 @@ const UserProfileCard = ({
                   <Tooltip content="Timeout for 10 minutes" side="top">
                     <button
                       onClick={async () => {
-                        if (onPreFillCommand) { onPreFillCommand(`/timeout ${login} 600 `); onClose(); return; }
+                        if (onPreFillCommand) { onPreFillCommand(`/timeout ${login} 600 ${defaultBanReason}`); onClose(); return; }
                         try {
                           const { invoke } = await import('@tauri-apps/api/core');
                           await invoke('ban_user', { broadcasterId, targetUserId: userId, duration: 600, reason: null });
@@ -1832,7 +1994,7 @@ const UserProfileCard = ({
                   <Tooltip content="Timeout for 24 hours" side="top">
                     <button
                       onClick={async () => {
-                        if (onPreFillCommand) { onPreFillCommand(`/timeout ${login} 86400 `); onClose(); return; }
+                        if (onPreFillCommand) { onPreFillCommand(`/timeout ${login} 86400 ${defaultBanReason}`); onClose(); return; }
                         try {
                           const { invoke } = await import('@tauri-apps/api/core');
                           await invoke('ban_user', { broadcasterId, targetUserId: userId, duration: 86400, reason: null });
@@ -1850,7 +2012,7 @@ const UserProfileCard = ({
                   <Tooltip content="Permanently Ban User" side="top">
                     <button
                       onClick={async () => {
-                        if (onPreFillCommand) { onPreFillCommand(`/ban ${login} `); onClose(); return; }
+                        if (onPreFillCommand) { onPreFillCommand(`/ban ${login} ${defaultBanReason}`); onClose(); return; }
                         if (window.confirm(`Are you sure you want to permanently ban ${login}?`)) {
                           try {
                             const { invoke } = await import('@tauri-apps/api/core');
@@ -1869,6 +2031,30 @@ const UserProfileCard = ({
                     </button>
                   </Tooltip>
                 </div>
+                )}
+                {/* Role controls. Twitch restricts these to the channel owner,
+                    so they only appear for the broadcaster. The commands and
+                    scopes already existed; this is the button surface. */}
+                {viewerIsBroadcaster && !targetIsBroadcaster && (
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <RoleActionButton
+                      label={targetIsModerator ? 'Unmod' : 'Mod'}
+                      tooltip={targetIsModerator ? `Remove ${login} as a moderator` : `Make ${login} a moderator`}
+                      command={targetIsModerator ? 'remove_channel_moderator' : 'add_channel_moderator'}
+                      broadcasterId={broadcasterId}
+                      userId={userId}
+                      successText={targetIsModerator ? `Removed ${login} as moderator` : `${login} is now a moderator`}
+                    />
+                    <RoleActionButton
+                      label={ivrData?.is_vip ? 'Remove VIP' : 'VIP'}
+                      tooltip={ivrData?.is_vip ? `Remove VIP from ${login}` : `Give ${login} VIP`}
+                      command={ivrData?.is_vip ? 'remove_channel_vip' : 'add_channel_vip'}
+                      broadcasterId={broadcasterId}
+                      userId={userId}
+                      successText={ivrData?.is_vip ? `Removed VIP from ${login}` : `${login} is now a VIP`}
+                    />
+                  </div>
+                )}
                 <div className="mt-2 text-right">
                   <button
                     onClick={async () => {

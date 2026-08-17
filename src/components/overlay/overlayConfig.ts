@@ -20,6 +20,16 @@ export const EVENT_CATEGORIES: { id: EventCategory; label: string }[] = [
   { id: 'announcement', label: 'Announcements' },
 ];
 
+/** How a bits cheer renders. A cheer arrives as an ordinary chat message carrying a
+ *  bit count, so 'message' is Twitch's own layout; 'event' promotes it to the same
+ *  card subs and raids get. */
+export type CheerDisplay = 'message' | 'event';
+
+export const CHEER_DISPLAYS: { value: CheerDisplay; label: string }[] = [
+  { value: 'message', label: 'Message' },
+  { value: 'event', label: 'Event card' },
+];
+
 export type SourceTagMode = 'none' | 'dot' | 'label' | 'icon';
 export type OverlayBackground = 'transparent' | 'solid';
 export type OverlayDirection = 'newBottom' | 'newTop';
@@ -34,6 +44,39 @@ export const OVERLAY_ENTRANCES: { value: OverlayEntrance; label: string }[] = [
   { value: 'pop', label: 'Pop' },
   { value: 'stamp', label: 'Stamp' },
 ];
+export type OverlayTextAlign = 'left' | 'center' | 'right';
+
+export const OVERLAY_TEXT_ALIGNS: { value: OverlayTextAlign; label: string }[] = [
+  { value: 'left', label: 'Left' },
+  { value: 'center', label: 'Center' },
+  { value: 'right', label: 'Right' },
+];
+
+/** Text weights the control offers. Values are strings because SegmentedSelect is
+ *  generic over `T extends string`; the setter parses back to a number. Capped at
+ *  700 because that is the heaviest real face every preset family ships — past it
+ *  the browser fakes the weight instead of loading one. */
+export const OVERLAY_TEXT_WEIGHTS: { value: string; label: string }[] = [
+  { value: '300', label: 'Light' },
+  { value: '400', label: 'Regular' },
+  { value: '500', label: 'Medium' },
+  { value: '600', label: 'Semibold' },
+  { value: '700', label: 'Bold' },
+];
+
+/** Where a gigantified emote lands. The three block modes pluck it out of the
+ *  message onto its own line below; 'inline' leaves it where the sender typed it,
+ *  at 4x — so an emote-only message shows it right after the name, like a normal
+ *  message body. */
+export type GiantEmoteAlign = 'left' | 'center' | 'right' | 'inline';
+
+export const GIANT_EMOTE_ALIGNS: { value: GiantEmoteAlign; label: string }[] = [
+  { value: 'left', label: 'Left' },
+  { value: 'center', label: 'Center' },
+  { value: 'right', label: 'Right' },
+  { value: 'inline', label: 'Inline' },
+];
+
 export type EmojiStyle = 'system' | 'apple' | 'google' | 'twitter' | 'facebook';
 export type FirstTimeStyle = 'off' | 'twitch' | 'streamnook';
 export type BubbleShape = 'rounded' | 'pill' | 'speech';
@@ -85,6 +128,23 @@ export interface OverlayStyle {
   bodyTextColor: string;
   /** Drop a subtle dark outline behind text so it stays legible over any scene. */
   textShadow: boolean;
+  /** Text shadow color. Used when textShadow is on. */
+  textShadowColor: string;
+  /** Text shadow blur in px at the configured font size (0 = no shadow). */
+  textShadowSize: number;
+  /** Text shadow strength, 0 to 1. */
+  textShadowOpacity: number;
+
+  /** Horizontal justification of message and event text. */
+  textAlign: OverlayTextAlign;
+  /** Text weight, 300-700. Names and the other deliberately-bold bits set their own
+   *  weight and are unaffected. Capped at 700: the heaviest real face every preset
+   *  family ships. */
+  fontWeight: number;
+  /** Slant the message body. /me actions render italic either way. */
+  textItalic: boolean;
+  /** Strike a line through message body text. */
+  textStrikethrough: boolean;
 
   background: OverlayBackground;
   /** Used when background === 'solid'. */
@@ -105,6 +165,8 @@ export interface OverlayStyle {
   eventAnimation: OverlayAnimation;
   /** Replay the event animation every ~5 seconds while the event is on screen. */
   eventAnimateRepeat: boolean;
+  /** How a bits cheer renders: inline as a normal message, or as an event card. */
+  cheerDisplay: CheerDisplay;
   /** Hide messages from known bot accounts / users carrying a bot badge. */
   hideBots: boolean;
   /** Legacy global event hides (e.g. 'raid', 'cheer'), applied to every platform.
@@ -206,6 +268,11 @@ export interface OverlayStyle {
   /** Restore the last on-screen messages after an OBS/browser source reload.
    *  Off (default) = the overlay comes back cleared on reload / stream start. */
   restoreOnReload: boolean;
+  /** Render the last emote of a "Gigantify an Emote" power-up message at 4x
+   *  below the message, like Twitch does. Off shows it inline at normal size. */
+  giantEmotes: boolean;
+  /** Where the gigantified emote lands. See GiantEmoteAlign. */
+  giantEmoteAlign: GiantEmoteAlign;
 }
 
 // Which event categories each platform can actually emit — drives the per-platform
@@ -216,6 +283,15 @@ export const PROVIDER_EVENT_CATEGORIES: Partial<Record<ProviderId, EventCategory
   kick: ['subscription', 'gift', 'follow', 'raid'],
   youtube: ['subscription', 'gift', 'cheer'],
   tiktok: ['gift', 'cheer', 'follow'],
+};
+
+// A category's name on a SPECIFIC platform, where the generic label would name
+// another platform's feature: the money category is Bits on Twitch, Super Chats
+// on YouTube, coins on TikTok. Fall back to EVENT_CATEGORIES for the rest.
+export const PROVIDER_CATEGORY_LABELS: Partial<Record<ProviderId, Partial<Record<EventCategory, string>>>> = {
+  twitch: { cheer: 'Bits' },
+  youtube: { cheer: 'Super Chats' },
+  tiktok: { cheer: 'Coins' },
 };
 
 // Badge providers the overlay resolves, each independently toggleable under the
@@ -272,6 +348,13 @@ export const DEFAULT_OVERLAY_STYLE: OverlayStyle = {
   showTimestamps: false,
   bodyTextColor: '#ffffff',
   textShadow: true,
+  textShadowColor: '#000000',
+  textShadowSize: 2,
+  textShadowOpacity: 0.85,
+  textAlign: 'left',
+  fontWeight: 400,
+  textItalic: false,
+  textStrikethrough: false,
   background: 'transparent',
   backgroundColor: '#0e0e10',
   backgroundOpacity: 0.8,
@@ -279,6 +362,7 @@ export const DEFAULT_OVERLAY_STYLE: OverlayStyle = {
   eventFill: false,
   eventAnimation: 'none',
   eventAnimateRepeat: false,
+  cheerDisplay: 'message',
   hideBots: false,
   hiddenEvents: [],
   hiddenProviderEvents: [],
@@ -311,6 +395,8 @@ export const DEFAULT_OVERLAY_STYLE: OverlayStyle = {
   direction: 'newBottom',
   entrance: 'fade',
   restoreOnReload: false,
+  giantEmotes: true,
+  giantEmoteAlign: 'center',
 };
 
 // Clamp ranges so a builder (or a hand-edited saved config) can't produce a
@@ -323,6 +409,9 @@ export const OVERLAY_LIMITS = {
   messageGap: { min: 0, max: 28 },
   emoteScale: { min: 0.5, max: 3 },
   badgeScale: { min: 0.5, max: 2.5 },
+  fontWeight: { min: 300, max: 700 },
+  textShadowSize: { min: 0, max: 12 },
+  textShadowOpacity: { min: 0, max: 1 },
   backgroundOpacity: { min: 0, max: 1 },
   bubbleOpacity: { min: 0.05, max: 1 },
   bubbleRadius: { min: 0, max: 24 },
@@ -403,5 +492,22 @@ export const clampOverlayStyle = (s: OverlayStyle): OverlayStyle => {
     emoteScale: clamp(s.emoteScale, OVERLAY_LIMITS.emoteScale.min, OVERLAY_LIMITS.emoteScale.max),
     badgeScale: clamp(s.badgeScale, OVERLAY_LIMITS.badgeScale.min, OVERLAY_LIMITS.badgeScale.max),
     backgroundOpacity: clamp(s.backgroundOpacity, OVERLAY_LIMITS.backgroundOpacity.min, OVERLAY_LIMITS.backgroundOpacity.max),
+    // Absent on configs saved before the field existed → on (the Twitch-faithful default).
+    giantEmotes: s.giantEmotes !== false,
+    // Absent on configs saved before these existed → today's look, so an overlay
+    // published before the update renders exactly as it did.
+    giantEmoteAlign:
+      s.giantEmoteAlign === 'left' || s.giantEmoteAlign === 'right' || s.giantEmoteAlign === 'inline'
+        ? s.giantEmoteAlign
+        : 'center',
+    textAlign: s.textAlign === 'center' || s.textAlign === 'right' ? s.textAlign : 'left',
+    cheerDisplay: s.cheerDisplay === 'event' ? 'event' : 'message',
+    fontWeight:
+      Math.round(clamp(s.fontWeight ?? 400, OVERLAY_LIMITS.fontWeight.min, OVERLAY_LIMITS.fontWeight.max) / 100) * 100,
+    textItalic: s.textItalic === true,
+    textStrikethrough: s.textStrikethrough === true,
+    textShadowColor: (s.textShadowColor || '').trim() || '#000000',
+    textShadowSize: clamp(s.textShadowSize ?? 2, OVERLAY_LIMITS.textShadowSize.min, OVERLAY_LIMITS.textShadowSize.max),
+    textShadowOpacity: clamp(s.textShadowOpacity ?? 0.85, OVERLAY_LIMITS.textShadowOpacity.min, OVERLAY_LIMITS.textShadowOpacity.max),
   };
 };

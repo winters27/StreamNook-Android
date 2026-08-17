@@ -11,7 +11,7 @@ use crate::services::twitch_service::TwitchService;
 use crate::services::user_message_history_service::UserMessageHistoryService;
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
-use log::{debug, error};
+use log::{debug, error, info, warn};
 use rand::Rng;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -36,6 +36,12 @@ static MESSAGE_BROADCASTER: OnceLock<Mutex<Option<Arc<broadcast::Sender<String>>
     OnceLock::new();
 static MESSAGE_QUEUE: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
 static IRC_HANDLE: OnceLock<Mutex<Option<tokio::task::JoinHandle<()>>>> = OnceLock::new();
+// Abort handles for the keepalive tasks spawned INSIDE the IRC task (ping +
+// frontend heartbeat). Aborting IRC_HANDLE alone orphans them: the ping task's
+// writer Arc keeps the socket's write half alive, so it would keep PINGing a
+// half-open connection indefinitely after stop().
+static IRC_PING_ABORT: OnceLock<Mutex<Option<tokio::task::AbortHandle>>> = OnceLock::new();
+static IRC_HEARTBEAT_ABORT: OnceLock<Mutex<Option<tokio::task::AbortHandle>>> = OnceLock::new();
 static IRC_WRITER: OnceLock<Mutex<Option<Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>>>> =
     OnceLock::new();
 static SHARED_CHAT_ROOMS: OnceLock<Mutex<HashMap<String, Vec<String>>>> = OnceLock::new();
@@ -97,6 +103,110 @@ static PERSONAL_EMOTES_PRESENT: std::sync::atomic::AtomicBool =
 const IRC_SERVER: &str = "irc.chat.twitch.tv";
 const IRC_PORT: u16 = 6667;
 
+// Serializes start()'s check-then-spawn body. Two concurrent fresh starts
+// (boot storm, or two windows' watchdogs escalating together) could each
+// spawn a supervisor, leaking one forever on a duplicate socket.
+static START_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+// Monotonic read-age clock. Wall clock would misreport after NTP or
+// sleep/resume jumps; a backwards jump could make a dead connection look
+// freshly read.
+static PROCESS_EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
+static LAST_IRC_READ_ELAPSED_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+// Ring of recent connection-lifecycle events, pullable from a packaged build
+// (which has no stderr) via the get_chat_lifecycle_log command.
+static LIFECYCLE_LOG: OnceLock<std::sync::Mutex<VecDeque<String>>> = OnceLock::new();
+const LIFECYCLE_LOG_CAP: usize = 100;
+
+// We PING every 30s and the server answers, so a healthy link never goes 75s
+// without a completed read. Reference clients ping every 5s, so Twitch has
+// ample tolerance for this cadence.
+const IRC_PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+const IRC_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(75);
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const HANDSHAKE_STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+// Read timeout plus slack: past this the frontend must be allowed to see
+// silence so its own watchdog can act.
+const HEARTBEAT_SUPPRESS_AFTER_MS: u64 = 90_000;
+const RECONNECT_DELAY_AFTER_DROP: std::time::Duration = std::time::Duration::from_secs(5);
+// Twitch caps JOINs at 20 per rolling 10s per connection. Burst this many at
+// handshake, pace the rest; the headroom absorbs concurrent ensure_joined
+// JOINs from user actions.
+const JOIN_BURST_BUDGET: usize = 15;
+const JOIN_PACE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(12_500);
+
+fn get_start_lock() -> &'static Mutex<()> {
+    START_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn mono_ms() -> u64 {
+    PROCESS_EPOCH
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis() as u64
+}
+
+fn mark_irc_read() {
+    LAST_IRC_READ_ELAPSED_MS.store(mono_ms(), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn irc_read_age_ms() -> u64 {
+    mono_ms().saturating_sub(LAST_IRC_READ_ELAPSED_MS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+// 2s, 4s, 8s, 16s, 32s, 60s cap for transient failures; flat 300s when
+// Twitch rejected our credentials so an expired login never hot-loops.
+fn reconnect_delay(consecutive_failures: u32, auth_failure: bool) -> std::time::Duration {
+    if auth_failure {
+        return std::time::Duration::from_secs(300);
+    }
+    let n = consecutive_failures.clamp(1, 6);
+    std::time::Duration::from_secs((2u64 << (n - 1)).min(60))
+}
+
+// ":tmi.twitch.tv RECONNECT" as the command token. Strips a tag prefix
+// defensively; a PRIVMSG whose text contains the word can never match
+// because its command token is PRIVMSG.
+fn is_server_reconnect(line: &str) -> bool {
+    let mut t = line.trim();
+    if t.starts_with('@') {
+        t = t.split_once(' ').map(|(_, rest)| rest).unwrap_or(t);
+    }
+    t == "RECONNECT" || (t.starts_with(':') && t.split_whitespace().nth(1) == Some("RECONNECT"))
+}
+
+pub fn record_lifecycle(event: &str) {
+    info!("[IRC Chat] {}", event);
+    let buf = LIFECYCLE_LOG
+        .get_or_init(|| std::sync::Mutex::new(VecDeque::with_capacity(LIFECYCLE_LOG_CAP)));
+    if let Ok(mut b) = buf.lock() {
+        if b.len() >= LIFECYCLE_LOG_CAP {
+            b.pop_front();
+        }
+        b.push_back(format!("{} {}", chrono::Utc::now().to_rfc3339(), event));
+    }
+}
+
+pub fn lifecycle_snapshot() -> Vec<String> {
+    LIFECYCLE_LOG
+        .get()
+        .and_then(|m| m.lock().ok().map(|b| b.iter().cloned().collect()))
+        .unwrap_or_default()
+}
+
+enum SessionError {
+    Auth(anyhow::Error),
+    Transient(anyhow::Error),
+}
+
+impl From<std::io::Error> for SessionError {
+    fn from(e: std::io::Error) -> Self {
+        SessionError::Transient(e.into())
+    }
+}
+
 fn get_ws_server_handle() -> &'static Mutex<Option<tokio::task::JoinHandle<()>>> {
     WS_SERVER_HANDLE.get_or_init(|| Mutex::new(None))
 }
@@ -119,6 +229,24 @@ fn get_message_queue() -> &'static Mutex<VecDeque<String>> {
 
 fn get_irc_handle() -> &'static Mutex<Option<tokio::task::JoinHandle<()>>> {
     IRC_HANDLE.get_or_init(|| Mutex::new(None))
+}
+
+fn get_irc_ping_abort() -> &'static Mutex<Option<tokio::task::AbortHandle>> {
+    IRC_PING_ABORT.get_or_init(|| Mutex::new(None))
+}
+
+fn get_irc_heartbeat_abort() -> &'static Mutex<Option<tokio::task::AbortHandle>> {
+    IRC_HEARTBEAT_ABORT.get_or_init(|| Mutex::new(None))
+}
+
+/// Abort the ping + heartbeat keepalive tasks, if running. Idempotent.
+async fn abort_keepalive_tasks() {
+    if let Some(h) = get_irc_ping_abort().lock().await.take() {
+        h.abort();
+    }
+    if let Some(h) = get_irc_heartbeat_abort().lock().await.take() {
+        h.abort();
+    }
 }
 
 fn get_irc_writer() -> &'static Mutex<Option<Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>>> {
@@ -241,6 +369,11 @@ impl IrcService {
         reattach: bool,
         window: &str,
     ) -> Result<u16> {
+        // Serialize the whole check-then-spawn body: without this, two
+        // concurrent fresh starts could each spawn an IRC supervisor and leak
+        // one forever on a duplicate socket.
+        let _start_guard = get_start_lock().lock().await;
+
         let layout_service = state.layout_service.clone();
         let emote_service = state.emote_service.clone();
         let _ = PLUGIN_HOST.set(state.plugin_host.clone());
@@ -254,8 +387,29 @@ impl IrcService {
         // main app's connection here every popout would freeze the main app's
         // chat.
         {
-            let irc_alive = get_irc_handle().lock().await.is_some();
-            let ws_alive = get_ws_server_handle().lock().await.is_some();
+            // A JoinHandle stays Some after its task finishes; is_some() alone
+            // reported a finished IRC task as alive forever, so every later
+            // start_chat short-circuited onto the corpse (a webview reload
+            // could never revive chat). Same check for the WS bridge task.
+            let irc_alive = {
+                let mut handle = get_irc_handle().lock().await;
+                match handle.as_ref() {
+                    Some(h) if !h.is_finished() => true,
+                    Some(_) => {
+                        record_lifecycle("previous IRC task is dead; restarting");
+                        handle.take();
+                        false
+                    }
+                    None => false,
+                }
+            };
+            if !irc_alive {
+                *get_irc_writer().lock().await = None;
+            }
+            let ws_alive = matches!(
+                get_ws_server_handle().lock().await.as_ref(),
+                Some(h) if !h.is_finished()
+            );
             let existing_port = *get_ws_port().lock().await;
             if irc_alive && ws_alive {
                 if let Some(port) = existing_port {
@@ -301,12 +455,16 @@ impl IrcService {
             }
         }
 
-        // Stop any partially-alive remnants before fresh setup. But if a
-        // non-Twitch provider is currently using the shared local-WS bridge, only
-        // clear the Twitch IRC remnants - a full stop() would tear the bridge
-        // down and drop every provider consumer. With no providers active this is
-        // the original full stop(), so the Twitch-only path is unchanged.
-        if crate::services::providers::has_active_bridge_users() {
+        // Stop any partially-alive remnants before fresh setup. When the WS
+        // bridge is healthy (dead-IRC restart) or a non-Twitch provider is
+        // using it, only clear the Twitch IRC remnants - a full stop() would
+        // tear the bridge down and drop every window's live WS connection
+        // along with any provider consumers.
+        let bridge_healthy = matches!(
+            get_ws_server_handle().lock().await.as_ref(),
+            Some(h) if !h.is_finished()
+        );
+        if bridge_healthy || crate::services::providers::has_active_bridge_users() {
             Self::stop_irc_only().await;
         } else {
             Self::stop().await?;
@@ -345,14 +503,12 @@ impl IrcService {
             }
         }
 
-        let token = match TwitchService::get_token().await {
-            Ok(t) => t,
-            Err(_) => {
-                return Err(anyhow::anyhow!(
-                    "Not authenticated. Please log in to Twitch first."
-                ));
-            }
-        };
+        // Fast fail for the caller; the supervisor re-fetches per attempt.
+        if TwitchService::get_token().await.is_err() {
+            return Err(anyhow::anyhow!(
+                "Not authenticated. Please log in to Twitch first."
+            ));
+        }
 
         // Get user info
         let user_info = TwitchService::get_user_info().await?;
@@ -375,18 +531,14 @@ impl IrcService {
         let initial_channel = channel.to_string();
 
         let irc_handle = tokio::spawn(async move {
-            if let Err(e) = Self::run_irc_connection(
+            Self::run_irc_connection(
                 &username,
-                &token,
                 &initial_channel,
                 tx_for_irc,
                 layout_service,
                 Arc::clone(&emote_service),
             )
-            .await
-            {
-                error!("[IRC Chat] Connection error: {}", e);
-            }
+            .await;
         });
 
         *get_irc_handle().lock().await = Some(irc_handle);
@@ -396,140 +548,284 @@ impl IrcService {
         Ok(port)
     }
 
+    // Supervisor: never returns. Every failure mode retries with capped
+    // backoff; nothing can permanently kill chat short of stop()'s abort.
+    // The old single-function loop let any handshake `?` escape the task,
+    // which died silently and left start_chat vouching for a corpse.
     async fn run_irc_connection(
         username: &str,
-        token: &str,
         initial_channel: &str,
         tx: Arc<broadcast::Sender<String>>,
         layout_service: Arc<LayoutService>,
         emote_service: Arc<tokio::sync::RwLock<EmoteService>>,
-    ) -> Result<()> {
+    ) {
+        let mut consecutive_failures: u32 = 0;
         loop {
-            debug!("[IRC Chat] Connecting to Twitch IRC...");
-
-            // Connect to Twitch IRC
-            let stream = TcpStream::connect((IRC_SERVER, IRC_PORT)).await?;
-            let (reader, writer) = tokio::io::split(stream);
-            let mut reader = BufReader::new(reader);
-            let writer = Arc::new(Mutex::new(writer));
-
-            // Store writer globally for sending messages
-            *get_irc_writer().lock().await = Some(writer.clone());
-
-            // IMPORTANT: CAP negotiation must happen BEFORE authentication
-            // Step 1: Request capabilities first
-            {
-                let mut w = writer.lock().await;
-                debug!("[IRC Chat] Requesting capabilities...");
-                w.write_all(b"CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership\r\n")
-                    .await?;
-                w.flush().await?;
-            }
-
-            // Step 2: Wait for CAP ACK before authenticating
-            let mut line = String::new();
-            let mut cap_acknowledged = false;
-
-            while !cap_acknowledged {
-                line.clear();
-                if reader.read_line(&mut line).await? == 0 {
-                    return Err(anyhow::anyhow!(
-                        "Connection closed during capability negotiation"
+            // Re-fetched every attempt: get_token refreshes an expiring token.
+            // The old loop reused the token captured at start and died on auth
+            // once it expired. A fetch error is transient (network / refresh
+            // endpoint), not proof of a bad login; only a PASS rejection is.
+            let token = match TwitchService::get_token().await {
+                Ok(t) => t,
+                Err(e) => {
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    let d = reconnect_delay(consecutive_failures, false);
+                    record_lifecycle(&format!(
+                        "token fetch failed (attempt {}): {}; retry in {}s",
+                        consecutive_failures,
+                        e,
+                        d.as_secs()
                     ));
+                    let _ = tx.send("IRC_RECONNECTING".to_string());
+                    tokio::time::sleep(d).await;
+                    continue;
                 }
+            };
 
-                debug!("[IRC Chat] Server response: {}", line.trim());
+            let outcome = Self::irc_session(
+                username,
+                &token,
+                initial_channel,
+                &tx,
+                &layout_service,
+                &emote_service,
+            )
+            .await;
 
-                if line.contains("CAP * ACK") {
-                    cap_acknowledged = true;
-                    debug!("[IRC Chat] Capabilities acknowledged");
+            // Between sessions: fail sends/JOINs fast instead of writing into
+            // a dead socket, and retire this session's keepalive tasks.
+            *get_irc_writer().lock().await = None;
+            abort_keepalive_tasks().await;
+
+            let delay = match outcome {
+                Ok(reason) => {
+                    consecutive_failures = 0;
+                    record_lifecycle(&format!("session ended: {}; reconnecting in 5s", reason));
+                    let _ = tx.send("IRC_RECONNECTING".to_string());
+                    RECONNECT_DELAY_AFTER_DROP
                 }
-            }
-
-            // Step 3: Now authenticate with PASS and NICK
-            {
-                let mut w = writer.lock().await;
-                // IRC requires "oauth:" prefix for the password
-                let auth_token = format!("oauth:{}", token);
-
-                debug!("[IRC Chat] Authenticating with username: {}", username);
-                debug!(
-                    "[IRC Chat] Using token: oauth:{}...",
-                    &token[..10.min(token.len())]
-                );
-
-                w.write_all(format!("PASS {}\r\n", auth_token).as_bytes())
-                    .await?;
-                w.write_all(format!("NICK {}\r\n", username.to_lowercase()).as_bytes())
-                    .await?;
-                w.flush().await?;
-            }
-
-            // Step 4: Wait for authentication confirmation
-            let mut authenticated = false;
-
-            while !authenticated {
-                line.clear();
-                if reader.read_line(&mut line).await? == 0 {
-                    return Err(anyhow::anyhow!("Connection closed during authentication"));
-                }
-
-                debug!("[IRC Chat] Auth response: {}", line.trim());
-
-                if line.contains("001") {
-                    authenticated = true;
-                    debug!("[IRC Chat] Successfully authenticated");
-                } else if line.contains("NOTICE")
-                    && (line.contains("Login unsuccessful")
-                        || line.contains("Login authentication failed"))
-                {
-                    return Err(anyhow::anyhow!(
-                        "IRC authentication failed - token may be invalid or expired. Try logging out and back in."
+                Err(SessionError::Transient(e)) => {
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    let d = reconnect_delay(consecutive_failures, false);
+                    record_lifecycle(&format!(
+                        "connect failed (attempt {}): {}; retry in {}s",
+                        consecutive_failures,
+                        e,
+                        d.as_secs()
                     ));
+                    let _ = tx.send("IRC_RECONNECTING".to_string());
+                    d
                 }
+                Err(SessionError::Auth(e)) => {
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    record_lifecycle(&format!("authentication rejected: {}", e));
+                    let _ = tx.send(
+                        "CONNECTION_WARNING:Chat sign-in failed. Your Twitch session may have expired; try signing out and back in."
+                            .to_string(),
+                    );
+                    reconnect_delay(consecutive_failures, true)
+                }
+            };
+            tokio::time::sleep(delay).await;
+        }
+    }
+
+    // One connect-handshake-read lifetime. Ok(reason) = the established
+    // session later dropped (normal reconnect); Err = it never established.
+    async fn irc_session(
+        username: &str,
+        token: &str,
+        initial_channel: &str,
+        tx: &Arc<broadcast::Sender<String>>,
+        layout_service: &Arc<LayoutService>,
+        emote_service: &Arc<tokio::sync::RwLock<EmoteService>>,
+    ) -> std::result::Result<&'static str, SessionError> {
+        debug!("[IRC Chat] Connecting to Twitch IRC...");
+
+        let stream = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            TcpStream::connect((IRC_SERVER, IRC_PORT)),
+        )
+        .await
+        .map_err(|_| SessionError::Transient(anyhow::anyhow!("connect timed out")))??;
+        let (reader, writer) = tokio::io::split(stream);
+        let mut reader = BufReader::new(reader);
+        // The global IRC_WRITER is published only after auth succeeds, so
+        // ensure_joined/send_message can never write into an unauthenticated
+        // or mid-handshake socket.
+        let writer = Arc::new(Mutex::new(writer));
+
+        // IMPORTANT: CAP negotiation must happen BEFORE authentication
+        // Step 1: Request capabilities first
+        {
+            let mut w = writer.lock().await;
+            debug!("[IRC Chat] Requesting capabilities...");
+            w.write_all(b"CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership\r\n")
+                .await?;
+            w.flush().await?;
+        }
+
+        // Step 2: Wait for CAP ACK before authenticating
+        let mut line = String::new();
+        let mut cap_acknowledged = false;
+
+        while !cap_acknowledged {
+            line.clear();
+            let n = tokio::time::timeout(HANDSHAKE_STEP_TIMEOUT, reader.read_line(&mut line))
+                .await
+                .map_err(|_| {
+                    SessionError::Transient(anyhow::anyhow!("timed out waiting for CAP ACK"))
+                })??;
+            if n == 0 {
+                return Err(SessionError::Transient(anyhow::anyhow!(
+                    "connection closed during capability negotiation"
+                )));
             }
 
-            // Join every channel we're tracking — not just the initial one. On a
-            // fresh connect `current_channels` holds only the initial channel; on a
-            // reconnect it also holds every additional channel added during the
-            // session (MultiNook tiles, MultiChat tabs) via `join_channel`. Those
-            // must be re-JOINed here or they stay silently PARTed after a reconnect:
-            // `join_channel` won't re-issue a JOIN for them because their refcount
-            // is still > 0, and `run_irc_connection` previously only re-joined the
-            // initial channel. That left every extra channel dead after the first
-            // IRC drop.
+            debug!("[IRC Chat] Server response: {}", line.trim());
+
+            if line.contains("CAP * ACK") {
+                cap_acknowledged = true;
+                debug!("[IRC Chat] Capabilities acknowledged");
+            }
+        }
+
+        // Step 3: Now authenticate with PASS and NICK
+        {
+            let mut w = writer.lock().await;
+            // IRC requires "oauth:" prefix for the password
+            let auth_token = format!("oauth:{}", token);
+
+            debug!("[IRC Chat] Authenticating with username: {}", username);
+
+            w.write_all(format!("PASS {}\r\n", auth_token).as_bytes())
+                .await?;
+            w.write_all(format!("NICK {}\r\n", username.to_lowercase()).as_bytes())
+                .await?;
+            w.flush().await?;
+        }
+
+        // Step 4: Wait for authentication confirmation
+        let mut authenticated = false;
+
+        while !authenticated {
+            line.clear();
+            let n = tokio::time::timeout(HANDSHAKE_STEP_TIMEOUT, reader.read_line(&mut line))
+                .await
+                .map_err(|_| {
+                    SessionError::Transient(anyhow::anyhow!(
+                        "timed out waiting for auth confirmation"
+                    ))
+                })??;
+            if n == 0 {
+                return Err(SessionError::Transient(anyhow::anyhow!(
+                    "connection closed during authentication"
+                )));
+            }
+
+            debug!("[IRC Chat] Auth response: {}", line.trim());
+
+            if line.contains("001") {
+                authenticated = true;
+            } else if line.contains("NOTICE")
+                && (line.contains("Login unsuccessful")
+                    || line.contains("Login authentication failed"))
             {
-                let mut channels: Vec<String> = get_current_channels()
-                    .lock()
-                    .await
-                    .iter()
-                    .cloned()
-                    .collect();
-                // On a fresh connect the set already holds the initial channel;
-                // this fallback only covers the unexpected-empty case so we never
-                // connect with zero joins.
-                if channels.is_empty() {
-                    channels.push(initial_channel.to_lowercase());
-                }
+                return Err(SessionError::Auth(anyhow::anyhow!(
+                    "IRC authentication failed - token may be invalid or expired"
+                )));
+            }
+        }
+
+        *get_irc_writer().lock().await = Some(writer.clone());
+        mark_irc_read();
+        record_lifecycle("authenticated");
+
+        // Join every channel we're tracking — not just the initial one. On a
+        // fresh connect `current_channels` holds only the initial channel; on a
+        // reconnect it also holds every additional channel added during the
+        // session (MultiNook tiles, MultiChat tabs) via `join_channel`, plus
+        // any JOINs deferred while the connection was down. Those must be
+        // re-JOINed here or they stay silently PARTed after a reconnect:
+        // `join_channel` won't re-issue a JOIN for them because their refcount
+        // is still > 0.
+        {
+            let mut channels: Vec<String> = get_current_channels()
+                .lock()
+                .await
+                .iter()
+                .cloned()
+                .collect();
+            // On a fresh connect the set already holds the initial channel;
+            // this fallback only covers the unexpected-empty case so we never
+            // connect with zero joins.
+            if channels.is_empty() {
+                channels.push(initial_channel.to_lowercase());
+            }
+            // The initial channel joins in the first burst so the visible chat
+            // is never the one waiting on a paced batch.
+            let initial_key = initial_channel.to_lowercase();
+            if let Some(pos) = channels.iter().position(|c| *c == initial_key) {
+                channels.swap(0, pos);
+            }
+            let remainder = channels.split_off(channels.len().min(JOIN_BURST_BUDGET));
+            {
                 let mut w = writer.lock().await;
                 for ch in &channels {
                     w.write_all(format!("JOIN #{}\r\n", ch).as_bytes()).await?;
                 }
                 w.flush().await?;
-                debug!(
-                    "[IRC Chat] Joined {} channel(s): {:?}",
-                    channels.len(),
-                    channels
-                );
             }
+            record_lifecycle(&format!(
+                "joined {} channel(s): {:?}",
+                channels.len(),
+                channels
+            ));
+            if !remainder.is_empty() {
+                // Pace the overflow instead of tripping the JOIN rate limit.
+                // The task holds this session's writer half, so its writes
+                // fail and it exits once the socket dies; the channels stay in
+                // CURRENT_CHANNELS either way, so the next session retries.
+                record_lifecycle(&format!("pacing {} remaining JOIN(s)", remainder.len()));
+                let writer_join = writer.clone();
+                tokio::spawn(async move {
+                    for chunk in remainder.chunks(JOIN_BURST_BUDGET) {
+                        tokio::time::sleep(JOIN_PACE_INTERVAL).await;
+                        let mut w = writer_join.lock().await;
+                        for ch in chunk {
+                            if w.write_all(format!("JOIN #{}\r\n", ch).as_bytes())
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
+                        }
+                        if w.flush().await.is_err() {
+                            return;
+                        }
+                        record_lifecycle(&format!("paced JOIN batch: {:?}", chunk));
+                    }
+                });
+            }
+        }
 
-            // Fetch channel emotes
+        // Fetch channel emotes + per-channel subscriptions for the captured
+        // initial channel — but only while it is still joined. The supervisor
+        // keeps this channel name for the life of the process, so after the
+        // user switches away a reconnect must not re-fetch or re-subscribe a
+        // departed channel. Channels joined later keep their own emote maps
+        // and EventAPI subscriptions across IRC sessions, so they need no
+        // per-reconnect setup here.
+        if get_current_channels()
+            .lock()
+            .await
+            .contains(&initial_channel.to_lowercase())
+        {
             let initial_channel_id =
-                Self::fetch_and_store_emotes(initial_channel, Arc::clone(&emote_service)).await;
+                Self::fetch_and_store_emotes(initial_channel, Arc::clone(emote_service)).await;
 
-            // Subscribe the initial channel to the 7TV EventAPI (live emote set
-            // updates). Idempotent, so the IRC reconnect loop re-calling this is
-            // a no-op for an already-subscribed channel.
+            // Idempotent, so a reconnect re-calling this is a no-op for an
+            // already-subscribed channel.
             if let Some(cid) = initial_channel_id {
                 crate::services::seventv_eventapi::subscribe_channel(initial_channel, &cid).await;
                 // Subscribe the moderator view (channel.moderate) for this chat.
@@ -537,77 +833,105 @@ impl IrcService {
                 crate::services::eventsub_moderation::subscribe_channel(initial_channel, &cid)
                     .await;
             }
+        }
 
-            // Send connection success notification
-            let _ = tx.send("IRC_CONNECTED".to_string());
+        // Send connection success notification
+        let _ = tx.send("IRC_CONNECTED".to_string());
 
-            // Flush queued messages
-            let mut queue = get_message_queue().lock().await;
-            if !queue.is_empty() {
-                debug!("[IRC Chat] Flushing {} queued messages", queue.len());
-                while let Some(msg) = queue.pop_front() {
-                    let _ = tx.send(msg);
+        // Flush queued messages
+        let mut queue = get_message_queue().lock().await;
+        if !queue.is_empty() {
+            debug!("[IRC Chat] Flushing {} queued messages", queue.len());
+            while let Some(msg) = queue.pop_front() {
+                let _ = tx.send(msg);
+            }
+        }
+        drop(queue);
+
+        // Start ping task to keep IRC connection alive. The cadence also
+        // bounds dead-connection detection: every PING elicits a PONG read,
+        // so the read timeout can sit just above this interval.
+        let writer_clone = writer.clone();
+        let ping_handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(IRC_PING_INTERVAL);
+            loop {
+                interval.tick().await;
+                let mut w = writer_clone.lock().await;
+                if w.write_all(b"PING :tmi.twitch.tv\r\n").await.is_err() {
+                    break;
                 }
             }
-            drop(queue);
+        });
 
-            // Start ping task to keep IRC connection alive (every 240s = 4 min)
-            let writer_clone = writer.clone();
-            let ping_handle = tokio::spawn(async move {
-                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(240));
-                loop {
-                    interval.tick().await;
-                    let mut w = writer_clone.lock().await;
-                    if w.write_all(b"PING :tmi.twitch.tv\r\n").await.is_err() {
-                        break;
-                    }
-                }
-            });
-
-            // Start heartbeat task to notify frontend that connection is alive (every 30s)
-            // This prevents false "stale connection" warnings when chat is quiet
-            let tx_heartbeat = tx.clone();
-            let heartbeat_handle = tokio::spawn(async move {
-                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
-                loop {
-                    interval.tick().await;
-                    if tx_heartbeat.send("HEARTBEAT".to_string()).is_err() {
-                        // No receivers, stop heartbeat
-                        break;
-                    }
-                }
-            });
-
-            // Listen for messages
+        // Start heartbeat task to notify frontend that connection is alive
+        // (every 30s), preventing false "stale connection" warnings when chat
+        // is quiet. It suppresses itself when the reader has heard nothing for
+        // longer than the read timeout: a heartbeat must not vouch for a deaf
+        // connection, and going silent is what lets the frontend watchdog
+        // recover a wedged backend.
+        let tx_heartbeat = Arc::clone(tx);
+        let heartbeat_handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
             loop {
-                line.clear();
-                let should_reconnect = match reader.read_line(&mut line).await {
-                    Ok(0) => {
-                        debug!("[IRC Chat] Connection closed by server");
-                        true
+                interval.tick().await;
+                let age = irc_read_age_ms();
+                if age > HEARTBEAT_SUPPRESS_AFTER_MS {
+                    warn!(
+                        "[IRC Chat] suppressing heartbeat: no IRC read for {}s",
+                        age / 1000
+                    );
+                    continue;
+                }
+                if tx_heartbeat.send("HEARTBEAT".to_string()).is_err() {
+                    // No receivers, stop heartbeat
+                    break;
+                }
+            }
+        });
+
+        // Register the keepalive tasks so stop()/stop_irc_only() and the
+        // supervisor's between-sessions cleanup can abort them; aborting only
+        // the parent IRC task leaves them orphaned (tokio::spawn children are
+        // independent of their parent).
+        *get_irc_ping_abort().lock().await = Some(ping_handle.abort_handle());
+        *get_irc_heartbeat_abort().lock().await = Some(heartbeat_handle.abort_handle());
+
+        // Listen for messages. The timeout is the half-open detector: we PING
+        // every 30s and the server answers, so 75s without a completed read
+        // means the socket is dead even if the OS never reports it.
+        loop {
+            line.clear();
+            let end_reason: Option<&'static str> =
+                match tokio::time::timeout(IRC_READ_TIMEOUT, reader.read_line(&mut line)).await {
+                    Err(_) => {
+                        warn!(
+                            "[IRC Chat] no IRC traffic for {}s, connection presumed dead",
+                            IRC_READ_TIMEOUT.as_secs()
+                        );
+                        Some("read liveness timeout")
                     }
-                    Ok(_) => {
-                        if let Err(e) =
-                            Self::handle_irc_message(&line, &tx, &writer, &layout_service).await
-                        {
-                            error!("[IRC Chat] Error handling message: {}", e);
+                    Ok(Ok(0)) => Some("closed by server"),
+                    Ok(Ok(_)) => {
+                        mark_irc_read();
+                        if is_server_reconnect(&line) {
+                            Some("server RECONNECT")
+                        } else {
+                            if let Err(e) =
+                                Self::handle_irc_message(&line, tx, &writer, layout_service).await
+                            {
+                                error!("[IRC Chat] Error handling message: {}", e);
+                            }
+                            None
                         }
-                        false
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         error!("[IRC Chat] Read error: {}", e);
-                        true
+                        Some("read error")
                     }
                 };
 
-                if should_reconnect {
-                    ping_handle.abort();
-                    heartbeat_handle.abort();
-                    debug!("[IRC Chat] Reconnecting in 5 seconds...");
-                    let _ = tx.send("IRC_RECONNECTING".to_string());
-                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                    break;
-                }
+            if let Some(reason) = end_reason {
+                return Ok(reason);
             }
         }
     }
@@ -1510,19 +1834,29 @@ impl IrcService {
         // bailing here would also skip the per-channel mod-view / 7TV
         // subscriptions below, which is exactly why a second chat opened in the
         // same burst would silently receive no moderator events.
-        let writer = match Self::wait_for_irc_writer(100).await {
-            Some(w) => w,
+        let supervisor_alive = matches!(
+            get_irc_handle().lock().await.as_ref(),
+            Some(h) if !h.is_finished()
+        );
+        match Self::wait_for_irc_writer(100).await {
+            Some(writer) => {
+                let mut w = writer.lock().await;
+                w.write_all(format!("JOIN #{}\r\n", key).as_bytes()).await?;
+                w.flush().await?;
+                debug!("[IRC Chat] Joined channel: #{}", key);
+            }
+            // Between supervisor sessions (reconnect/backoff) there is no
+            // writer. Record the channel anyway: CURRENT_CHANNELS is the
+            // desired-state set and the next session JOINs everything in it.
+            // Without this, a channel switch during a reconnect window lost
+            // its JOIN permanently.
+            None if supervisor_alive => {
+                record_lifecycle(&format!("JOIN #{} deferred to next session", key));
+            }
             None => return Err(anyhow::anyhow!("IRC connection not established")),
-        };
-
-        let mut w = writer.lock().await;
-        w.write_all(format!("JOIN #{}\r\n", key).as_bytes()).await?;
-        w.flush().await?;
-        drop(w);
+        }
 
         get_current_channels().lock().await.insert(key.to_string());
-
-        debug!("[IRC Chat] Joined channel: #{}", key);
 
         // Check for shared chat in the new channel, and subscribe it to the 7TV
         // EventAPI for live emote set updates. Both reuse the same lookup.
@@ -1642,17 +1976,16 @@ impl IrcService {
     /// Send the IRC PART for `key` (lowercase) and tear down its per-channel
     /// caches and subscriptions. Consumer accounting is the caller's job.
     async fn part_channel(key: &str) -> Result<()> {
-        let writer_lock = get_irc_writer().lock().await;
-        let writer = writer_lock
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("IRC connection not established"))?
-            .clone();
-        drop(writer_lock);
-
-        let mut w = writer.lock().await;
-        w.write_all(format!("PART #{}\r\n", key).as_bytes()).await?;
-        w.flush().await?;
-        drop(w);
+        // Best-effort wire PART: between supervisor sessions there is no
+        // writer, and the socket may be dead anyway. Membership bookkeeping
+        // must happen regardless; removal from CURRENT_CHANNELS is what
+        // guarantees the next session does not re-JOIN a channel nobody
+        // watches.
+        if let Some(writer) = get_irc_writer().lock().await.as_ref().cloned() {
+            let mut w = writer.lock().await;
+            let _ = w.write_all(format!("PART #{}\r\n", key).as_bytes()).await;
+            let _ = w.flush().await;
+        }
 
         get_current_channels().lock().await.remove(key);
 
@@ -2842,10 +3175,12 @@ impl IrcService {
     pub async fn stop() -> Result<()> {
         debug!("[IRC Chat] Stopping chat service");
 
-        // Stop IRC connection
+        // Stop IRC connection + its keepalive children (ping / heartbeat),
+        // which aborting the parent alone would orphan.
         if let Some(handle) = get_irc_handle().lock().await.take() {
             handle.abort();
         }
+        abort_keepalive_tasks().await;
 
         // Clear IRC writer
         *get_irc_writer().lock().await = None;
@@ -2894,6 +3229,7 @@ impl IrcService {
         if let Some(handle) = get_irc_handle().lock().await.take() {
             handle.abort();
         }
+        abort_keepalive_tasks().await;
         *get_irc_writer().lock().await = None;
         get_current_channels().lock().await.clear();
         get_shared_chat_rooms().lock().await.clear();
@@ -2921,7 +3257,26 @@ impl IrcService {
         let _guard = get_bridge_bringup_lock().lock().await;
 
         {
-            let ws_alive = get_ws_server_handle().lock().await.is_some();
+            // is_finished: a bridge task that died (e.g. bind panic) must not
+            // be reported alive forever, or every start_chat would return a
+            // port nothing serves. Clear the stale pieces so this call falls
+            // through to a fresh bring-up.
+            let ws_alive = {
+                let mut handle = get_ws_server_handle().lock().await;
+                match handle.as_ref() {
+                    Some(h) if !h.is_finished() => true,
+                    Some(_) => {
+                        record_lifecycle("WS bridge task is dead; rebuilding bridge");
+                        handle.take();
+                        false
+                    }
+                    None => false,
+                }
+            };
+            if !ws_alive {
+                *get_message_broadcaster().lock().await = None;
+                *get_ws_port().lock().await = None;
+            }
             let has_tx = get_message_broadcaster().lock().await.is_some();
             let port = *get_ws_port().lock().await;
             if ws_alive && has_tx {
@@ -2974,11 +3329,45 @@ impl IrcService {
     pub async fn broadcaster() -> Option<Arc<broadcast::Sender<String>>> {
         get_message_broadcaster().lock().await.clone()
     }
+
+    /// Dev-only failure lever: force-FIN the live IRC socket so the full
+    /// drop-reconnect-rejoin-backfill path can be exercised on demand.
+    pub async fn debug_shutdown_socket() -> Result<()> {
+        let writer = get_irc_writer()
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("no IRC connection"))?;
+        writer.lock().await.shutdown().await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconnect_delay_backs_off_and_caps() {
+        let secs: Vec<u64> = (1..=8).map(|n| reconnect_delay(n, false).as_secs()).collect();
+        assert_eq!(secs, vec![2, 4, 8, 16, 32, 60, 60, 60]);
+        assert_eq!(reconnect_delay(0, false).as_secs(), 2);
+        assert_eq!(reconnect_delay(1, true).as_secs(), 300);
+        assert_eq!(reconnect_delay(9, true).as_secs(), 300);
+    }
+
+    #[test]
+    fn server_reconnect_matches_command_token_only() {
+        assert!(is_server_reconnect(":tmi.twitch.tv RECONNECT\r\n"));
+        assert!(is_server_reconnect("RECONNECT"));
+        assert!(is_server_reconnect("@x=y :tmi.twitch.tv RECONNECT\r\n"));
+        assert!(!is_server_reconnect(
+            ":nick!nick@nick.tmi.twitch.tv PRIVMSG #chan :please RECONNECT now\r\n"
+        ));
+        assert!(!is_server_reconnect(
+            "@msg-id=slow_on :tmi.twitch.tv NOTICE #chan :We will RECONNECT shortly\r\n"
+        ));
+    }
 
     // Doubled/leading spaces must never emit empty Text segments: the
     // frontend's zero-width/modifier grouping looks back past exactly one

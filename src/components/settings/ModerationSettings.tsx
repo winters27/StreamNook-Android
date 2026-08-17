@@ -130,6 +130,45 @@ const ModerationSettings = () => {
       </SettingsSection>
 
       <SettingsSection
+        id="settings-section-mod-reasons"
+        label="Reasons"
+        description="What gets recorded against a ban or timeout. Twitch shows these in the channel's mod view."
+      >
+        <SettingsRow
+          title="Reason for /nuke"
+          description="Written against every ban and timeout a /nuke issues. Leave empty to record just “/nuke”."
+        >
+          <input
+            type="text"
+            value={mod.nuke_reason ?? ''}
+            onChange={(e) => setMod({ nuke_reason: e.target.value })}
+            placeholder="/nuke"
+            maxLength={140}
+            className="glass-input w-full px-3 py-2 text-sm text-textPrimary placeholder-textSecondary"
+          />
+        </SettingsRow>
+        <SettingsRow
+          title="Saved reasons"
+          description="Offered when you ban or time someone out from their card or a message. One per line; the first is filled in for you."
+        >
+          <textarea
+            rows={4}
+            value={(mod.saved_ban_reasons ?? []).join('\n')}
+            onChange={(e) =>
+              setMod({
+                saved_ban_reasons: e.target.value
+                  .split('\n')
+                  .map((s) => s.trim())
+                  .filter(Boolean),
+              })
+            }
+            placeholder={'Spam\nHate speech\nBackseating\nBan evasion'}
+            className="glass-input w-full px-3 py-2 text-sm text-textPrimary placeholder-textSecondary resize-y scrollbar-thin"
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection
         label="Mod Logs"
         description="Recent moderation activity surface."
       >

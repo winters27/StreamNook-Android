@@ -8,6 +8,7 @@ import { usemultiNookStore } from '../../stores/multiNookStore';
 import { useChannelSocial } from '../../hooks/useChannelSocial';
 import StreamTitleWithEmojis from '../StreamTitleWithEmojis';
 import { Tooltip } from '../ui/Tooltip';
+import { TwitchVerifiedMark } from '../ui/TwitchGlyph';
 import { GripHorizontal, Undo2, Loader2, RefreshCcw, EyeOff, WifiOff, Maximize2, Minimize2 } from 'lucide-react';
 import { Heart, HeartBreak, X as XIcon } from 'phosphor-react';
 import { Logger } from '../../utils/logger';
@@ -34,7 +35,7 @@ const clearPendingFocusToggle = () => {
 };
 
 const MultiNookCellInner: React.FC<MultiNookCellProps> = ({ slot, cssOrder, gridSpanClass = '', customStyle = {}, isMaximized = false }) => {
-  const { id, channelLogin, channelName, channelId, volume, muted, isFocused, streamUrl, isMinimized = false, loadError, profileImageUrl } = slot;
+  const { id, channelLogin, channelName, channelId, volume, muted, isFocused, streamUrl, isMinimized = false, loadError, profileImageUrl, title, broadcasterType } = slot;
   // Actions only, so read them without subscribing. A bare `usemultiNookStore()`
   // here subscribed this tile to the WHOLE store, which meant any mutation
   // (including a volume drag on a sibling tile) re-rendered every tile in the
@@ -382,18 +383,49 @@ const MultiNookCellInner: React.FC<MultiNookCellProps> = ({ slot, cssOrder, grid
             </div>
           )}
 
-          {/* Left: Title */}
+          {/* Left: channel identity, then the stream title beneath it */}
           <div className="flex-1 min-w-0 pr-12 z-10">
-            <Tooltip content={channelName || channelLogin} delay={200} side="top">
-              <h3 className="text-sm font-medium truncate drop-shadow-lg flex items-center gap-1.5 select-none text-white/90 mt-1">
-                <StreamTitleWithEmojis title={channelName || channelLogin} />
-                {isFocused && (
-                  <Tooltip content="Focused Stream" delay={200} side="right">
-                    <i className="ri-focus-3-line text-white/80 text-[12px] ml-1 shrink-0" />
-                  </Tooltip>
-                )}
-              </h3>
-            </Tooltip>
+            {/* Sized to match the full player's identity row. No live ring on the
+                avatar though — a tile can be offline. */}
+            <div className="flex items-center gap-2 min-w-0 mt-1">
+              {profileImageUrl ? (
+                <img
+                  src={profileImageUrl}
+                  alt=""
+                  draggable={false}
+                  className="w-7 h-7 rounded-full object-cover shrink-0 bg-black/20"
+                />
+              ) : (
+                <div className="w-7 h-7 rounded-full bg-white/15 shrink-0 flex items-center justify-center text-[12px] font-bold text-white">
+                  {(channelName || channelLogin || '?').charAt(0).toUpperCase()}
+                </div>
+              )}
+              <Tooltip content={channelName || channelLogin} delay={200} side="top">
+                {/* Plain text, not StreamTitleWithEmojis: that component makes a
+                    Tauri round-trip per string, and a Twitch display name is the
+                    login re-cased or a CJK localization — never emoji. */}
+                {/* min-w-0: a flex item won't shrink below its content width by
+                    default, which makes `truncate` a no-op and overflows instead. */}
+                <h3 className="text-[15px] font-semibold truncate min-w-0 drop-shadow-lg select-none text-white/90">
+                  {channelName || channelLogin}
+                </h3>
+              </Tooltip>
+              {broadcasterType === 'partner' && (
+                <TwitchVerifiedMark size={14} className="text-[#9146FF] shrink-0" />
+              )}
+              {isFocused && (
+                <Tooltip content="Focused Stream" delay={200} side="right">
+                  <i className="ri-focus-3-line text-white/80 text-[13px] shrink-0" />
+                </Tooltip>
+              )}
+            </div>
+            {title?.trim() && (
+              <Tooltip content={title} delay={200} side="top">
+                <p className="text-white/70 text-[13px] mt-1 line-clamp-1 drop-shadow-md select-none">
+                  <StreamTitleWithEmojis title={title} />
+                </p>
+              </Tooltip>
+            )}
           </div>
 
           {/* Controls Overlay - Top Right */}

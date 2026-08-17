@@ -28,30 +28,9 @@ import { EMOJI_CATEGORIES, EMOJI_KEYWORDS } from '../../services/emojiCategories
 import { getAppleEmojiUrl } from '../../services/emojiService';
 import { useAppStore } from '../../stores/AppStore';
 import { Logger } from '../../utils/logger';
+import { MOD_PREFIX, staticModifierStyle } from '../../utils/emoteModifiers';
 
 type ProviderTab = 'twitch' | 'bttv' | '7tv' | 'ffz' | 'favorites' | 'emoji' | 'kick';
-
-// Static preview styling for FFZ modifier emotes in the hover card, so the
-// card shows what the effect DOES instead of the placeholder art alone.
-// Animated effects are deliberately left out of the preview.
-const ffzPreviewStyle = (flags?: number): React.CSSProperties => {
-  if (!flags) return {};
-  const transforms: string[] = [];
-  if (flags & 2) transforms.push('scaleX(-1)'); // FlipX
-  if (flags & 4) transforms.push('scaleY(-1)'); // FlipY
-  if (flags & 8) transforms.push('scaleX(2)'); // GrowX (preview-only stretch)
-  const filters: string[] = [];
-  if (flags & 512) filters.push('grayscale(1)'); // Greyscale
-  if (flags & 1024) filters.push('sepia(1)'); // Sepia
-  if (flags & 16384) filters.push('grayscale(1) brightness(0.7) contrast(2.5)'); // Cursed
-  if (flags & 4096) {
-    filters.push('brightness(0.2) sepia(1) brightness(2.2) contrast(3) saturate(8)'); // HyperRed
-  }
-  return {
-    ...(transforms.length ? { transform: transforms.join(' ') } : {}),
-    ...(filters.length ? { filter: filters.join(' ') } : {}),
-  };
-};
 
 // ── swapping smiley (shared trigger icon) ────────────────────────────────────
 const SMILEY_POOL = ['😀', '😄', '😁', '😆', '🤣', '😂', '😊', '😇', '🙂', '😉', '😌', '😍', '🥰', '😜', '🤪', '😎', '🤩', '🥳', '😏', '😋', '🤗', '🫠', '🫡', '😺'];
@@ -88,6 +67,9 @@ const EmoteGridItem = memo(
     const is7tv = emote.provider === '7tv';
     const ffzIsSubwoofer = useAppStore((s) => s.ffzIsSubwoofer);
     const isModifier = emote.modifierFlags != null;
+    // BetterTTV modifiers attach to the emote after them, FFZ ones to the
+    // emote before, so the hint has to say which.
+    const isPrefixModifier = ((emote.modifierFlags ?? 0) & MOD_PREFIX) !== 0;
     // Subscriber-only FFZ effects are visible but locked for non-subscribers
     // (composition gating; effects in incoming messages render for everyone).
     const lockedSub = !!emote.ffzSubOnly && !ffzIsSubwoofer;
@@ -108,7 +90,7 @@ const EmoteGridItem = memo(
               src={emote.provider === '7tv' ? `https://cdn.7tv.app/emote/${emote.id}/4x.avif` : emote.localUrl || emote.url}
               alt={emote.name}
               className="w-auto object-contain mx-auto drop-shadow-md"
-              style={{ height: hoverPreviewSize, maxWidth: hoverPreviewSize * 2, ...ffzPreviewStyle(emote.modifierFlags) }}
+              style={{ height: hoverPreviewSize, maxWidth: hoverPreviewSize * 2, ...staticModifierStyle(emote.modifierFlags) }}
               onError={(e) => {
                 const t = e.currentTarget;
                 if (emote.provider === '7tv') {
@@ -134,7 +116,9 @@ const EmoteGridItem = memo(
               </span>
               {isModifier ? (
                 <span className="text-[9px] font-bold tracking-wider uppercase text-purple-300 mt-0.5 mix-blend-screen drop-shadow-sm">
-                  Modifier - applies to the previous emote
+                  {isPrefixModifier
+                    ? 'Modifier - applies to the next emote'
+                    : 'Modifier - applies to the previous emote'}
                 </span>
               ) : (
                 emote.isZeroWidth && (

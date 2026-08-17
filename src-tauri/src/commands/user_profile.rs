@@ -211,6 +211,12 @@ pub struct IVRData {
     // stat for the profile card. Note: this is NOT a count of messages or
     // chat activity — Twitch / IVR don't expose lifetime message counts.
     pub follows_count: Option<i32>,
+    // True when the account is suspended by Twitch. Worth surfacing on the card
+    // because a suspended user's messages still sit in chat history.
+    pub banned: bool,
+    // How many chatters are currently in THIS user's own channel. Present
+    // whether or not they're live, and unrelated to the channel you're viewing.
+    pub chatter_count: Option<i32>,
     // Subscription tier ("1" / "2" / "3" / "Prime"), type ("paid" / "prime" /
     // "gift"), and the gifter's login + display name when the sub is a gift.
     // All optional — only present when the user is currently subscribed and
@@ -301,6 +307,8 @@ pub async fn get_user_profile_complete(
             last_broadcast_at: None,
             last_broadcast_title: None,
             follows_count: None,
+            banned: false,
+            chatter_count: None,
             sub_tier: None,
             sub_type: None,
             sub_gifter_login: None,
@@ -921,6 +929,8 @@ async fn fetch_ivr_data(username: &str, channel_name: &str) -> Result<IVRData, S
         last_broadcast_at: None,
         last_broadcast_title: None,
         follows_count: None,
+        banned: false,
+        chatter_count: None,
         sub_tier: None,
         sub_type: None,
         sub_gifter_login: None,
@@ -948,6 +958,16 @@ async fn fetch_ivr_data(username: &str, channel_name: &str) -> Result<IVRData, S
 
         ivr_data.follows_count = user
             .get("follows")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32);
+
+        ivr_data.banned = user
+            .get("banned")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        ivr_data.chatter_count = user
+            .get("chatterCount")
             .and_then(|v| v.as_i64())
             .map(|v| v as i32);
     }

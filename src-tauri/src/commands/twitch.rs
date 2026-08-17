@@ -1968,6 +1968,83 @@ pub async fn start_commercial(broadcaster_id: String, length: u32) -> Result<(),
 }
 
 #[tauri::command]
+pub async fn create_poll(
+    broadcaster_id: String,
+    title: String,
+    choices: Vec<String>,
+    duration: u32,
+    points_per_vote: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    TwitchService::create_poll(&broadcaster_id, &title, &choices, duration, points_per_vote)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn add_blocked_term(
+    broadcaster_id: String,
+    text: String,
+) -> Result<serde_json::Value, String> {
+    TwitchService::add_blocked_term(&broadcaster_id, &text)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn remove_blocked_term(broadcaster_id: String, text: String) -> Result<(), String> {
+    TwitchService::remove_blocked_term(&broadcaster_id, &text)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_active_poll(broadcaster_id: String) -> Result<Option<serde_json::Value>, String> {
+    TwitchService::get_active_poll(&broadcaster_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn end_poll(
+    broadcaster_id: String,
+    poll_id: String,
+    status: String,
+) -> Result<serde_json::Value, String> {
+    TwitchService::end_poll(&broadcaster_id, &poll_id, &status)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn create_prediction(
+    broadcaster_id: String,
+    title: String,
+    outcomes: Vec<String>,
+    window: u32,
+) -> Result<serde_json::Value, String> {
+    TwitchService::create_prediction(&broadcaster_id, &title, &outcomes, window)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn end_prediction(
+    broadcaster_id: String,
+    prediction_id: String,
+    status: String,
+    winning_outcome_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    TwitchService::end_prediction(
+        &broadcaster_id,
+        &prediction_id,
+        &status,
+        winning_outcome_id.as_deref(),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn start_raid(broadcaster_id: String, target_user_id: String) -> Result<(), String> {
     TwitchService::start_raid(&broadcaster_id, &target_user_id)
         .await

@@ -19,7 +19,7 @@
 // the matcher at query time.
 
 import { invoke } from '@tauri-apps/api/core';
-import { useAppStore, type SettingsTab } from '../stores/AppStore';
+import { useAppStore, clipSourceOf, type SettingsTab } from '../stores/AppStore';
 import { useChatUserStore } from '../stores/chatUserStore';
 import { useSnippetStore } from '../stores/snippetStore';
 import { usePluginUiRegistry } from '../plugins-ui/registry';
@@ -242,6 +242,21 @@ function buildQuickActions(): PaletteItem[] {
       subtitle: 'Fill the whole screen (over the taskbar) with the app, chat and all',
       keywords: 'fullscreen full screen borderless taskbar immersive window maximize theater theatre cinema',
       run: () => useAppStore.getState().toggleWindowFullscreen(),
+    },
+    {
+      id: 'window.toggleKeepOnTop',
+      section: 'Quick Actions',
+      title: 'Keep compact player on top',
+      subtitle: 'Float the Compact View player above other apps',
+      keywords: 'always on top pin float above stay in front behind browser buried cover overlay compact mini player',
+      run: () => {
+        const state = useAppStore.getState();
+        if (!state.isTheaterMode) {
+          state.addToast('Enter Compact View first', 'warning');
+          return;
+        }
+        return state.toggleKeepOnTop();
+      },
     },
     {
       id: 'qa.goHome',
@@ -550,6 +565,9 @@ function buildQuickActions(): PaletteItem[] {
             created_at: top.created_at,
             game_id: top.game_id,
             language: top.language,
+            // Chat-replay coordinates. Helix supplies these natively; dropping them
+            // here is what used to leave a palette-played clip without chat.
+            clip_source: clipSourceOf(top),
           });
         } catch (e) {
           Logger.warn('[CommandPalette] top clip fetch failed:', e);
@@ -780,16 +798,25 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   { tab: 'Chat', section: 'Chat Events', sectionId: 'settings-section-chat-events', keywords: 'chat events live activity overlay show hide toggle turn off in chat' },
   { tab: 'Chat', section: 'Chat Events', sectionId: 'settings-section-chat-events', label: 'Polls', keywords: 'polls poll vote voting live poll overlay chat event show hide toggle turn off' },
   { tab: 'Chat', section: 'Chat Events', sectionId: 'settings-section-chat-events', label: 'Predictions', keywords: 'predictions prediction bet outcome channel points overlay chat event show hide toggle turn off' },
+  { tab: 'Chat', section: 'Chat Events', sectionId: 'settings-section-chat-events', label: 'Poll and prediction order', keywords: 'poll prediction both at once same time overlap stack order priority which on top first card overlay position' },
   { tab: 'Chat', section: 'Chat Events', sectionId: 'settings-section-chat-events', label: 'Channel Point Redemptions', keywords: 'channel point redemptions redeem reward no input chat row show hide toggle turn off' },
   { tab: 'Chat', section: 'Chat Events', sectionId: 'settings-section-chat-events', label: 'Collapse gift-sub floods', keywords: 'gift subs gifted collapse flood mystery bomb community batch spam one liner recipients sub gift show hide toggle turn off' },
+  { tab: 'Chat', section: 'Chat Events', sectionId: 'settings-section-chat-events', label: 'Chat replay on clips', keywords: 'clip chat replay historical past chat vod comments beside clip player show hide toggle' },
   { tab: 'Chat', section: 'Chat Logging', keywords: 'chat logging save logs text files folder per channel timestamps events moderation record history' },
   { tab: 'Chat', section: 'Chat Design', keywords: 'chat design font size weight spacing dividers timestamps seconds mention colors reply name separator style prefix colon dot arrow pipe dash chip bracket accent bar pinned message collapse bar alternating backgrounds' },
   { tab: 'Chat', section: 'Link Previews', keywords: 'link preview previews load card url unfurl embed trusted sources shorten links domains clean' },
   { tab: 'Chat', section: 'Emotes', keywords: 'emotes emote size hover preview spacing inline scale 7tv bttv ffz' },
   { tab: 'Chat', section: 'Chat Input', keywords: 'chat input composer bypass duplicate message quick send ctrl enter keep message repeat' },
+  { tab: 'Chat', section: 'Chat Input', label: 'Hide the placeholder text', keywords: 'hide placeholder prompt send a message empty input box composer text grey ghost hint clean minimal' },
+  { tab: 'Chat', section: 'Chat Input', label: 'Hide the emote button', keywords: 'hide emote emoji button smiley face icon input box composer picker clean minimal remove' },
+  { tab: 'Chat', section: 'Chat Input', label: 'Hide the points balance', keywords: 'hide channel points balance number counter button input box composer clean minimal remove' },
   { tab: 'Chat', section: 'Emote Tab Completion', sectionId: 'settings-section-emote-tab-completion', keywords: 'emote tab completion autocomplete carousel kappa cycle shift starts contains match include chat users' },
-  { tab: 'Chat', section: 'Render Style', keywords: 'render style deleted messages strikethrough dimmed hidden shared chat paint mentions inline compact emote tooltips 7tv update notices smooth scroll resume message buffer scrollback ffz emote effects modifier wide flip rainbow shake frankerfacez' },
+  { tab: 'Chat', section: 'Render Style', keywords: 'render style deleted messages strikethrough dimmed hidden shared chat paint mentions inline compact emote tooltips 7tv update notices smooth scroll resume message buffer scrollback ffz emote effects modifier wide flip rainbow shake frankerfacez bttv betterttv emote modifiers cursed party rotate zero space giant emotes gigantify gigantified power-up powerup big huge large' },
+  { tab: 'Chat', section: 'Chat Events', sectionId: 'settings-section-chat-events', label: 'Start a poll or prediction', keywords: 'poll prediction create start new make run builder composer outcomes choices duration channel points vote bet broadcaster streamer' },
+  { tab: 'Chat', section: 'Repeated Messages', sectionId: 'settings-section-repeated-messages', keywords: 'repeated messages repeat counter duplicate copypasta spam wave combo collapse fold group x2 x3 x12 count same message emote flood dedupe condense' },
+  { tab: 'Chat', section: 'Repeated Messages', sectionId: 'settings-section-repeated-messages', label: 'Repeat counter colour and threshold', keywords: 'repeat counter colour color threshold window seconds sensitivity match exact nearly identical mods vips streamer exempt moderator' },
   { tab: 'Chat', section: 'User Cards', sectionId: 'settings-section-user-cards', keywords: 'user card profile popup click username open messages chat history first badges stats view default landing' },
+  { tab: 'Chat', section: 'User Cards', sectionId: 'settings-section-user-cards', label: 'User card details', keywords: 'user card fields rows details show hide joined twitch account age followage following since follows channels chatters chatter count past subscriber last live relative time how long ago 7tv profile link banned suspended' },
   { tab: 'Chat', section: '7TV Cosmetics', keywords: '7tv cosmetics paint drop shadows username paints shadow readability' },
   { tab: 'Chat', section: 'Highlight Appearance', keywords: 'highlight appearance display style tint opacity flash window title unfocused look' },
   { tab: 'Chat', section: 'Highlight Phrases', keywords: 'highlights phrases keywords alerts words names patterns flash match' },
@@ -802,6 +829,7 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
 
   // Moderation
   { tab: 'Moderation', keywords: 'moderation mod ban timeout delete chat actions logs nuke purge mass visibility highlights' },
+  { tab: 'Moderation', section: 'Reasons', sectionId: 'settings-section-mod-reasons', label: 'Ban and nuke reasons', keywords: 'reason reasons ban timeout nuke saved preset prefill default text why mod view record note' },
   { tab: 'Moderation', section: 'Moderation Actions', keywords: 'moderation actions action style mod drag moderate grab buttons both ban timeout delete whisper profile buckets pin pinned message inline column bar above beside chat layout' },
   { tab: 'Moderation', section: 'Mod Rooms', keywords: 'mod rooms room private encrypted team chat consent connect disconnect connected account moderator backchannel' },
   { tab: 'Moderation', section: 'Mod Logs', keywords: 'mod logs panel recent moderation actions timeouts bans deletions sidebar' },
@@ -812,9 +840,12 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   // Overlay
   { tab: 'Overlay', keywords: 'stream overlay chat overlay obs streamelements streamlabs browser source on-stream chat box widget multi-platform merged chat emotes 7tv paints badges cosmetics stream chat on screen' },
   { tab: 'Overlay', section: 'Sources', keywords: 'overlay sources platforms twitch kick youtube tiktok merge source tag which platform label dot' },
-  { tab: 'Overlay', section: 'Typography', keywords: 'overlay font family size line height message spacing typography text' },
+  { tab: 'Overlay', section: 'Typography', keywords: 'overlay font family size line height message spacing typography text justify align alignment left center centre right bold italic strikethrough weight light slant crossed out' },
+  { tab: 'Overlay', section: 'Typography', label: 'Justify text', keywords: 'overlay justify align alignment text left center centre right middle position messages' },
+  { tab: 'Overlay', section: 'Typography', label: 'Text style', keywords: 'overlay bold italic strikethrough font weight light regular medium semibold slant crossed out line through message text style' },
   { tab: 'Overlay', section: 'Emotes & Badges', keywords: 'overlay emote size badges show hide scale third-party 7tv ffz chatterino paints streamnook member badge atmosphere cosmetics disable' },
-  { tab: 'Overlay', section: 'Appearance', keywords: 'overlay appearance text color shadow legibility timestamps transparent solid background opacity scene' },
+  { tab: 'Overlay', section: 'Emotes & Badges', label: 'Giant emote placement', keywords: 'overlay giant emote placement gigantify power up align left center right inline below next to username colon position big emote' },
+  { tab: 'Overlay', section: 'Appearance', keywords: 'overlay appearance text color shadow legibility timestamps transparent solid background opacity scene size blur spread strength outline stroke drop shadow contrast readable' },
   { tab: 'Overlay', section: 'Chatters', label: 'Profile pictures', keywords: 'overlay profile pictures avatars pfp youtube tiktok chatter photo show hide toggle' },
   { tab: 'Overlay', section: 'Chatters', label: '@ before usernames', keywords: 'overlay at sign @ username handle youtube strip remove show hide toggle' },
   { tab: 'Overlay', section: 'Messages', label: 'Reply context', keywords: 'overlay replying to reply context line thread show hide toggle remove' },
@@ -822,6 +853,7 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   { tab: 'Overlay', section: 'Chatters', label: 'Fill the highlight', keywords: 'overlay first time chatter fill tint background highlight transparent color matched' },
   { tab: 'Overlay', section: 'Chatters', label: 'First-time highlight animation', keywords: 'overlay first time chatter animate animation sheen pulse chase sweep shimmer border flash spark highlight one shot repeat loop every 5 seconds' },
   { tab: 'Overlay', section: 'Events', label: 'Event style', keywords: 'overlay event style plain outline streamnook ring tint gradient wash subs gifts raids design look' },
+  { tab: 'Overlay', section: 'Events', label: 'Bits messages', keywords: 'overlay bits cheer message event card display inline promote subs style gem tier' },
   { tab: 'Overlay', section: 'Events', label: 'Show events', keywords: 'overlay show hide events per source per platform twitch youtube tiktok kick filter subs gifts raids bits cheer follows milestones announcements event type toggle' },
   { tab: 'Overlay', section: 'Events', label: 'Fill the outline', keywords: 'overlay event outline fill tint background transparent color matched ring' },
   { tab: 'Overlay', section: 'Chatters', label: 'Highlight color', keywords: 'overlay first time chatter highlight color custom accent pink purple recolor tint' },
@@ -838,6 +870,8 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   { tab: 'Interface', keywords: 'interface sidebar motion animations settings window compact view chrome layout' },
   { tab: 'Interface', section: 'Sidebar', sectionId: 'settings-section-sidebar', keywords: 'sidebar nav navigation rail display mode expanded compact hidden disabled expand on hover recommended streams' },
   { tab: 'Interface', section: 'Motion', sectionId: 'settings-section-motion', keywords: 'motion animations reduce motion accessibility performance disable transitions full reduced off snappy' },
+  { tab: 'Interface', section: 'Closing the Window', sectionId: 'settings-section-window-close', label: 'Close button', keywords: 'close button minimize to tray system tray close to tray quit exit x button background keep running notification area popouts' },
+  { tab: 'Interface', section: 'Keep on Top', sectionId: 'settings-section-window-on-top', keywords: 'always on top pin keep window above float stay in front overlay floating player behind browser buried sinks disappears compact view mini player picture in picture alternative' },
   { tab: 'Interface', section: 'Settings Window', sectionId: 'settings-section-settings-window', keywords: 'settings window compact centered full page layout fills app' },
   { tab: 'Interface', section: 'Compact View', sectionId: 'settings-section-compact', keywords: 'compact view mini small window size second monitor preset' },
 
