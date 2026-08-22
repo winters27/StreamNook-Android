@@ -949,6 +949,7 @@ pub fn run() {
             get_stream_low_latency,
             set_experimental_low_latency,
             set_codec_preference,
+            set_max_video_height,
             start_ll_diag,
             append_ll_diag,
             stop_ll_diag,

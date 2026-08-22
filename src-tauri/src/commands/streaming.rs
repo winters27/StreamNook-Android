@@ -334,6 +334,26 @@ pub fn set_codec_preference(prefs: Vec<String>) {
     crate::services::twitch_resolver::set_codec_preference(prefs);
 }
 
+/// Report the tallest rendition this display can actually show, in pixels.
+/// 0 clears the cap.
+///
+/// Mobile only. A phone was resolving to Twitch's 2560x1440 source and scaling
+/// it into a band roughly 1080x608 - several times the pixels the screen can
+/// display, at about double the bitrate, which is decoder power, memory
+/// bandwidth, GPU scaling and radio time all spent on pixels that get thrown
+/// away. The resolver had no concept of the display, and hls.js cannot help
+/// because we resolve to a single variant before the player sees a manifest.
+///
+/// Re-callable: an Android device can switch display mode (FHD+ / QHD+) at
+/// runtime, so the shell pushes this again on every display change. It applies
+/// at the NEXT resolve; no reload is forced on an already-playing stream.
+///
+/// Only affects "best"/auto. An explicitly chosen rendition still wins.
+#[tauri::command]
+pub fn set_max_video_height(height: u32) {
+    crate::services::twitch_resolver::set_max_video_height(height);
+}
+
 /// Start a low-latency diagnostic recording session. Returns the full path of the
 /// JSONL file the frontend (and origin) will append timestamped records to, so a
 /// live drift/A-V-sync session can be analyzed from recorded facts. Rotates files.
