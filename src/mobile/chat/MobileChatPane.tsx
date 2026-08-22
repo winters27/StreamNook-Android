@@ -33,6 +33,12 @@ import { ChatFanOut, type FanAction, type FanTarget } from './ChatFanOut';
 import { useLongPressDrag } from './useLongPressDrag';
 import { usePinStore } from '../../stores/pinStore';
 import { formatDuration } from '../../utils/timeoutRamp';
+import { scrollChatToMessage } from '../../utils/scrollChatToMessage';
+
+// How long a pause/resume transition is protected from being reversed. Matches
+// desktop's ChatWidget, and is what stops a touchmove and the compositor scroll
+// it causes from fighting each other frame by frame. See `pause` below.
+const PAUSE_SETTLE_MS = 120;
 
 export const MobileChatPane: React.FC = () => {
   const currentStream = useAppStore((s) => s.currentStream);
@@ -121,6 +127,9 @@ export const MobileChatPane: React.FC = () => {
   // (which is a cascading-render error under react-hooks v7), and coming back to
   // a room restores nothing stale because the key simply stops matching.
   const [pausedChannel, setPausedChannel] = useState<string | null>(null);
+  // Briefly marks the message a reply jumped to, so it is findable after the
+  // glide lands. ChatMessageList already renders this; mobile just never set it.
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const isPaused = !!activeChannel && pausedChannel === activeChannel;
 
   const [sheetUser, setSheetUser] = useState<SheetUser | null>(null);
@@ -249,32 +258,106 @@ export const MobileChatPane: React.FC = () => {
     return idMatch ? idMatch[1] : null;
   }, []);
 
+  // Pause transitions are GUARDED, and the guards are the whole fix for the
+  // "chat thrashes up and down and takes a few swipes to register" bug.
+  //
+  // The loop that produced it: a 6px read-back drag fires onPauseIntent ->
+  // pause(true); the compositor scrolls 6px; ChatMessageList's handleScroll sees
+  // distance < 100, clears its own up-intent flag, and reports back; this
+  // handler saw `distance < 24 && isPaused` and immediately un-paused; the
+  // auto-scroll effect then re-ran with the intent flag already cleared and did
+  // `scrollTop = scrollHeight` WITH THE FINGER STILL DOWN. Next touchmove, same
+  // again. It only broke out when a single frame cleared the window, which is
+  // exactly why a slow deliberate swipe never registered but a hard flick did.
+  //
+  // Desktop never had this because ChatWidget wraps the same transition in an
+  // idempotence check and a settle window. Porting those two is what breaks the
+  // oscillation: pause at t=0, the resume attempt ~5ms later is refused, and by
+  // the time 120ms has passed a real swipe is well clear of the resume
+  // threshold.
+  //
+  // NOTE we deliberately do NOT port desktop's 150px *pause* threshold. Desktop
+  // pauses from scroll distance; mobile pauses from INTENT (the first downward
+  // touchmove), which is the better trigger and the one that makes a slow
+  // read-back pause on the first gesture. A 150px gate here would mean a
+  // deliberate 60-80px read-back never paused at all.
+  const isPausedRef = useRef(false);
+  const lastPauseToggleRef = useRef(0);
+  useEffect(() => {
+    isPausedRef.current = isPaused;
+  }, [isPaused]);
+
   const pause = useCallback(
-    (p: boolean) => {
+    (p: boolean, opts?: { force?: boolean }) => {
       if (!activeChannel) return;
+      // Idempotent. Without this, onPauseIntent fired pause(true) on EVERY touch
+      // frame, and each call reached setChannelPaused -> bumpRevision -> a
+      // zustand setState -> a full re-render of every chat subscriber. That was
+      // a per-frame re-render storm on top of the visual glitch.
+      if (isPausedRef.current === p) return;
+      const now = Date.now();
+      if (!opts?.force && now - lastPauseToggleRef.current < PAUSE_SETTLE_MS) return;
+      lastPauseToggleRef.current = now;
+      isPausedRef.current = p;
       setPausedChannel(p ? activeChannel : null);
       setChannelPaused(activeChannel, p);
     },
     [activeChannel],
   );
 
+  // `isUserScroll` is computed by ChatMessageList (up-intent AND more than 50px
+  // from the bottom) and was previously DISCARDED here, which is the other half
+  // of why a compositor scroll could un-pause. Resume only on a real user scroll
+  // that has actually arrived at the bottom; 30px matches desktop.
   const onScroll = useCallback(
-    (distanceToBottom: number) => {
-      if (distanceToBottom < 24 && isPaused) pause(false);
+    (distanceToBottom: number, isUserScroll?: boolean) => {
+      if (!isPausedRef.current) return;
+      if (isUserScroll === false) return;
+      if (distanceToBottom < 30) pause(false);
     },
-    [isPaused, pause],
+    [pause],
   );
 
   // Returning to live: unpause, then let the list glide smoothly to the bottom
   // (ChatMessageList exposes its eased scroll for exactly this).
   const resumeLive = useCallback(() => {
-    pause(false);
+    // `force`: this is an explicit tap on the Resume control, so it must never
+    // be swallowed by the settle window the way a stray scroll report should be.
+    pause(false, { force: true });
     requestAnimationFrame(() => {
       (
         window as Window & typeof globalThis & { __chatScrollToBottom?: () => void }
       ).__chatScrollToBottom?.();
     });
   }, [pause]);
+
+  // Tapping the "replying to" line jumps to the message being replied to.
+  //
+  // Everything except this handler already existed: ChatMessage has carried the
+  // onClick since the desktop build, ChatMessageList forwards the callback, and
+  // rows already carry data-message-id. Mobile was passing a no-op, so the line
+  // looked tappable and did nothing.
+  //
+  // Pausing FIRST is load-bearing, not politeness. Auto-scroll re-pins the list
+  // to the bottom on every incoming message, so in a busy channel an unpaused
+  // jump gets undone before the glide finishes. `force` because a deliberate
+  // navigation must beat the settle window that exists to swallow stray scroll
+  // reports.
+  const handleReplyClick = useCallback(
+    (parentMsgId: string) => {
+      pause(true, { force: true });
+      const ok = scrollChatToMessage(parentMsgId, { align: 'center' });
+      if (!ok) {
+        addToast('Original message is no longer in chat history', 'info');
+        return;
+      }
+      setHighlightedMessageId(parentMsgId);
+      // Long enough to find the message by eye after the glide lands, short
+      // enough that it does not linger as a permanent-looking selection.
+      window.setTimeout(() => setHighlightedMessageId(null), 2000);
+    },
+    [pause, addToast],
+  );
 
   const onUsernameClick = useCallback(
     (userId: string, username: string, displayName: string, color: string) => {
@@ -465,11 +548,11 @@ export const MobileChatPane: React.FC = () => {
           onPauseIntent={() => pause(true)}
           onScroll={onScroll}
           onUsernameClick={onUsernameClick}
-          onReplyClick={() => {}}
+          onReplyClick={handleReplyClick}
           onEmoteRightClick={() => {}}
           onUsernameRightClick={() => {}}
           onBadgeClick={() => {}}
-          highlightedMessageId={null}
+          highlightedMessageId={highlightedMessageId}
           deletedMessageIds={deletedMessageIds}
           clearedUserContexts={clearedUserContexts}
           emotes={emotes}

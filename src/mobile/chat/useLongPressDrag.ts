@@ -112,6 +112,19 @@ export function useLongPressDrag({ resolve, onArm, scrollLockRef }: Options) {
   // natively because React's synthetic touchmove is passive and cannot
   // preventDefault, and attached for the component's lifetime rather than on arm
   // so the listener is already in place when the gesture begins.
+  //
+  // KNOWN COST, deliberately left in place: a lifetime non-passive touchmove on
+  // an ancestor of the scroller takes this subtree off Chromium's compositor
+  // scrolling fast path, so every touchmove round-trips to the main thread. That
+  // contributed to chat swipes dropping their first few pixels. The dominant
+  // cause of that symptom was the pause/resume re-render storm in
+  // MobileChatPane, now fixed there, which leaves this a secondary cost.
+  //
+  // Moving the attach to arm-time LOOKS free and is not: Chromium fixes a
+  // gesture's disposition at touchstart and does not re-read handler regions
+  // mid-sequence, so a listener added 420ms into a hold can simply be ignored
+  // for the in-flight touch. Do not change this without device-verifying that
+  // the fan still freezes the list.
   useEffect(() => {
     const el = scrollLockRef.current;
     if (!el) return;

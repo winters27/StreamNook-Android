@@ -14,6 +14,7 @@ import { getCosmeticsWithFallback } from '../services/cosmeticsCache';
 import type { ThirdPartyBadge as ThirdPartyBadgeType } from '../services/thirdPartyBadges';
 import { useAppStore } from '../stores/AppStore';
 import { openBadgesWithBadgeInMain } from '../utils/openBadgesInMain';
+import { openExternal } from '../utils/openExternal';
 import { useChatUserStore } from '../stores/chatUserStore';
 import { useGiftBombRecipients } from '../stores/giftBombStore';
 import { useMessageRepeat } from '../stores/messageRepeatStore';
@@ -1636,15 +1637,15 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
             // No target="_blank": the webview opens _blank links externally on
             // its own, which would stack a second tab on top of the open() below.
             className="text-info hover:text-info/80 underline cursor-pointer"
-            onClick={async (e) => {
+            onClick={(e) => {
+              // preventDefault runs BEFORE the open attempt, so if the open
+              // fails there is no fallback navigation left - which is why this
+              // has to route through a helper that actually works on both
+              // platforms. The shell plugin's `open` rejects on Android (no
+              // xdg-open), and the rejection used to be swallowed by a catch
+              // that only logged: a dead tap on every chat link on the phone.
               e.preventDefault();
-              try {
-                // Use Tauri's shell plugin to open URL in default browser
-                const { open } = await import('@tauri-apps/plugin-shell');
-                await open(url);
-              } catch (err) {
-                Logger.error('[ChatMessage] Failed to open URL:', err);
-              }
+              void openExternal(url);
             }}
           >
             {label}
@@ -3038,6 +3039,13 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
         <Tooltip content="Click to view parent message" side="top">
           <div
             className="mb-1.5 pl-2 border-l-2 border-textSecondary/40 cursor-pointer hover:border-textSecondary/60 transition-colors"
+            // This line owns its own tap. Without the marker, a tap on mobile
+            // ALSO reaches MobileChatPane's tap-to-reply handler on the list, so
+            // jumping to the parent would simultaneously start a reply to the
+            // child. `data-no-drag` is the existing repo convention for exactly
+            // this (see the mod-drag handles below and StyledChatName), and it
+            // is inert on desktop, which has no competing parent click handler.
+            data-no-drag="true"
             onClick={() => onReplyClick?.(parsed.replyInfo!.parentMsgId)}
           >
             <div
