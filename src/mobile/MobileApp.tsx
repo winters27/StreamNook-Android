@@ -13,6 +13,7 @@ import { useKeyboardInsets } from './ui/useKeyboardInsets';
 import { useCurrentStreamStats } from '../utils/useCurrentStreamStats';
 import { installBackHandler, useMobileNavStore } from './navStore';
 import { installLifecycle } from './lifecycle';
+import { installVideoCap } from './videoCap';
 import { MobileTabBar } from './MobileTabBar';
 import { MobileOnboarding } from './MobileOnboarding';
 // The real wizard, not a phone-shaped rewrite of it. SetupWizard is already
@@ -30,6 +31,7 @@ import { SettingsScreen } from './screens/SettingsScreen';
 import { CategoryStreamsScreen } from './screens/CategoryStreamsScreen';
 import { RewardsScreen } from './screens/RewardsScreen';
 import { CosmeticsScreen } from './screens/CosmeticsScreen';
+import { MobileClipSheet } from './watch/MobileClipSheet';
 import LoadingWidget from '../components/LoadingWidget';
 import DeviceLoginOverlay from '../components/DeviceLoginOverlay';
 import ToastManager from '../components/ToastManager';
@@ -77,6 +79,8 @@ const MobileApp: React.FC = () => {
 
   useEffect(() => installBackHandler(), []);
   useEffect(() => installLifecycle(), []);
+  // Teach the resolver what this screen can show, before any stream resolves.
+  useEffect(() => installVideoCap(), []);
   useEffect(() => {
     applyNativeInsetsOnce();
   }, []);
@@ -138,6 +142,12 @@ const MobileApp: React.FC = () => {
           <WatchScreen />
           <CosmeticsScreen />
           <SettingsScreen />
+          {/* Consumes the same `clipModal` store field the desktop <ClipModal />
+              does. Without a mobile consumer, tapping a clip in chat flipped
+              that state and rendered nothing. Portals to z-[9000] via
+              MobileSheet, so it clears the watch layer regardless of position
+              here. */}
+          <MobileClipSheet />
         </>
       )}
 

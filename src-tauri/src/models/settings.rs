@@ -102,6 +102,24 @@ pub struct VideoPlayerSettings {
     /// bundled pool, which is what almost everyone should use.
     #[serde(default)]
     pub ad_bypass_proxies: String,
+    /// What leaving the app does while a stream is playing (Android only).
+    ///
+    /// "pip"   - float the video in a system picture-in-picture window. Default,
+    ///           and the behaviour the phone app has always had.
+    /// "audio" - no floating window: the stream drops to its audio-only
+    ///           rendition and keeps playing behind a media notification, which
+    ///           taps back into the app.
+    ///
+    /// The audio path is not merely a preference. Backgrounding without PiP
+    /// destroys the activity's window surface, and Chromium tears down a media
+    /// pipeline that has a video track and nowhere to render it. Audio-only has
+    /// nothing to render, so it survives.
+    #[serde(default = "default_background_mode")]
+    pub background_mode: String,
+}
+
+fn default_background_mode() -> String {
+    "pip".to_string()
 }
 
 fn default_ll_target_latency() -> f32 {
@@ -123,6 +141,7 @@ impl Default for VideoPlayerSettings {
             ll_target_latency: 6.0,
             ad_bypass_enabled: true,
             ad_bypass_proxies: String::new(),
+            background_mode: default_background_mode(),
         }
     }
 }

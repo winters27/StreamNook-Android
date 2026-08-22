@@ -11,6 +11,13 @@
          APK, so it is available to us. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- Lock-screen audio. FOREGROUND_SERVICE_MEDIA_PLAYBACK is REQUIRED from
+         Android 14 (API 34) for a mediaPlayback service; without it
+         startForeground THROWS at runtime rather than failing quietly. Neither
+         is a runtime permission, so there is no prompt to handle. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
@@ -49,6 +56,16 @@
             <action android:name="com.google.firebase.MESSAGING_EVENT" />
           </intent-filter>
         </service>
+
+        <!-- Keeps stream audio alive with the screen off, and owns the lock
+             screen / shade transport controls. `mediaPlayback` is the sanctioned
+             type for exactly this; without a foreground service the OS freezes
+             the process and the audio dies with it. Not exported: only this app
+             ever starts it. -->
+        <service
+          android:name=".MediaPlaybackService"
+          android:exported="false"
+          android:foregroundServiceType="mediaPlayback" />
 
         <provider
           android:name="androidx.core.content.FileProvider"

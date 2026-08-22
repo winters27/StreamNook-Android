@@ -54,6 +54,14 @@ export interface VideoPlayerSettings {
   ad_bypass_enabled?: boolean;
   /** Relay bases to prefer, comma or newline separated. Empty = bundled pool. */
   ad_bypass_proxies?: string;
+  /**
+   * What leaving the app does while a stream plays. Android only.
+   *
+   * 'pip'   - float the video in a system picture-in-picture window (default).
+   * 'audio' - no floating window; drop to the audio-only rendition and keep
+   *           playing behind a media notification that taps back into the app.
+   */
+  background_mode?: 'pip' | 'audio';
 }
 
 export interface CacheSettings {

@@ -23,6 +23,9 @@ interface SNBridge {
   cancelBackgroundChecks?(): void;
   runNotifyCheckNow?(): void;
   consumePendingChannel?(): string;
+  mediaSessionStart?(title: string, artist: string, artUrl: string, playing: boolean): void;
+  mediaSessionStop?(): void;
+  displayShortEdge?(): number;
 }
 
 function bridge(): SNBridge | undefined {
@@ -276,5 +279,37 @@ export function consumePendingChannel(): string | null {
     return channel && channel.length > 0 ? channel : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Start or update the lock-screen media session.
+ *
+ * Also the thing that KEEPS AUDIO ALIVE with the screen off: the foreground
+ * service it starts is what stops Android freezing the process, and its running
+ * state is what tells MainActivity to undo wry's `WebView.onPause()`.
+ *
+ * Call on every play/pause too - the web layer is the source of truth for the
+ * play state, and the notification button only sends a command.
+ */
+export function mediaSessionStart(
+  title: string,
+  artist: string,
+  artUrl: string,
+  playing: boolean,
+): void {
+  try {
+    bridge()?.mediaSessionStart?.(title, artist, artUrl, playing);
+  } catch {
+    /* bridge absent */
+  }
+}
+
+/** Tear the session down. Audio no longer survives the screen going off. */
+export function mediaSessionStop(): void {
+  try {
+    bridge()?.mediaSessionStop?.();
+  } catch {
+    /* bridge absent */
   }
 }

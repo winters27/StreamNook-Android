@@ -8,6 +8,7 @@ import { Logger, setDiagnosticsEnabled } from '../utils/logger';
 import { getPlayerControls } from '../keybindings/playerControls';
 import { qualitiesEquivalent } from '../utils/quality';
 import { reportCodecPreference } from '../utils/codecPreference';
+import { setInlineEmoteScale } from '../services/emoteService';
 import { upsertUser, claimLoginAccolades, grantAtmosphereOwnership } from '../services/supabaseService';
 import { emitSettingsUpdated } from '../utils/settingsBroadcast';
 
@@ -409,6 +410,8 @@ interface AppState {
   reloadStreamAndChat: () => Promise<void>;  // Hard refresh: restart the stream AND reconnect/reload chat
   getAvailableQualities: () => Promise<string[]>;
   changeStreamQuality: (quality: string) => Promise<void>;
+  /** Swap rendition without persisting or notifying. See the implementation. */
+  applyTransientQuality: (quality: string) => Promise<void>;
   /** Apply a backend ad auto-pivot: the relay already hot-swapped to a clean
    *  region, so point the player at the fresh URL to resync cleanly. */
   applyAdPivot: (url: string, region?: string) => void;
@@ -1083,6 +1086,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     // stream resolves, so the resolver can prefer AV1/HEVC where decodable.
     reportCodecPreference(settings.streamlink?.enhanced_codecs ?? true);
 
+    // On mobile the emote size tier is chosen from the RENDERED glyph size, so
+    // it needs the user's emote scale. Desktop keeps its DPR ladder and ignores
+    // this. Must run before chat renders, or the first frame picks the default.
+    setInlineEmoteScale(settings.chat_design?.emote_scale ?? 1);
+
     // Sync the experimental parts-based low-latency switch to the backend runtime
     // kill switch. Off by default = the stable whole-segment path. Must run before a
     // stream resolves so the origin probe honors it at the next start.
@@ -1717,6 +1725,44 @@ export const useAppStore = create<AppState>((set, get) => ({
       streamUrl: url,
       adSource: cur ? { ...cur, region } : { mode: 'plugin', entitled: false, region },
     });
+  },
+
+  applyTransientQuality: async (quality: string) => {
+    // A quality swap the USER did not ask for, so it must leave no trace:
+    // no settings write, no toast, no "quality changed" feedback.
+    //
+    // Mobile uses this to drop to `audio_only` when the screen goes off. That
+    // is not an optimisation, it is what makes lock-screen audio work at all:
+    // turning the screen off destroys the activity's window surface, and
+    // Chromium tears down the media pipeline for a WebContents that has a video
+    // track and nowhere to render it. Audio-only media has nothing to render, so
+    // it survives. (Xtra does the same thing by disabling the video track; we
+    // resolve to a single muxed variant, so swapping renditions is our
+    // equivalent.)
+    //
+    // Deliberately NOT changeStreamQuality: that persists the choice to
+    // settings, which would leave the user permanently on audio_only after one
+    // screen lock.
+    const currentStream = get().currentStream;
+    if (!currentStream) return;
+    try {
+      const { currentMediaType, originalMediaUrl } = get();
+      const targetUrl =
+        currentMediaType !== 'live' && originalMediaUrl
+          ? originalMediaUrl
+          : `https://twitch.tv/${currentStream.user_login}`;
+      const result = await invoke<StreamStartResult>('change_stream_quality', {
+        url: targetUrl,
+        quality,
+      });
+      // streamUrl only. activeQuality is left alone on purpose so the UI keeps
+      // showing what the VIEWER chose, not the state we swapped in behind them.
+      set({ streamUrl: result.url });
+      Logger.info(`[TransientQuality] swapped to ${result.quality} (no settings write)`);
+    } catch (e) {
+      // Non-fatal: failing to downshift means the stream keeps playing as it is.
+      Logger.warn('[TransientQuality] swap failed, leaving playback alone:', e);
+    }
   },
 
   changeStreamQuality: async (quality: string) => {

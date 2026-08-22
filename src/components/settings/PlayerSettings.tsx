@@ -287,6 +287,37 @@ const PlayerSettings = () => {
           }
         />
 
+        {/* Phone-only: a desktop has nothing to leave the app INTO, and no
+            picture-in-picture window to choose against. */}
+        {IS_MOBILE && (
+          <SettingsRow
+            title="Keep playing in the background"
+            description={
+              (videoPlayer?.background_mode ?? 'pip') === 'audio'
+                ? 'Leaving the app keeps the audio going behind a media notification. Tap it to come back.'
+                : 'Leaving the app floats the video in a picture-in-picture window.'
+            }
+            control={
+              <Toggle
+                // On = audio only. Framed around the audio because that is what
+                // the viewer is choosing; losing the floating window is the
+                // consequence, not the point.
+                enabled={(videoPlayer?.background_mode ?? 'pip') === 'audio'}
+                onChange={() =>
+                  updateSettings({
+                    ...settings,
+                    video_player: {
+                      ...videoPlayer,
+                      background_mode:
+                        (videoPlayer?.background_mode ?? 'pip') === 'audio' ? 'pip' : 'audio',
+                    },
+                  })
+                }
+              />
+            }
+          />
+        )}
+
         <SettingsRow
           title="Live Edge Gap"
           description="How far behind the live edge to ride. Lower is closer to live; the lowest gaps need Low Latency on (and a capable connection) to stay smooth. Reopen the stream to apply."

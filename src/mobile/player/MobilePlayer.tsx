@@ -8,6 +8,8 @@ import { useVisibleInterval } from '../../utils/useVisibleInterval';
 import { buildShareUrl } from '../../utils/shareLink';
 import { useAppStore } from '../../stores/AppStore';
 import { useMobileHlsEngine } from './useMobileHlsEngine';
+import { setLiveVideo } from './liveVideo';
+import { attachLockScreenAudio, releaseLockScreenAudio } from './lockScreenAudio';
 import { QualitySheet } from './QualitySheet';
 import PenroseMarch from '../../components/PenroseMarch';
 
@@ -83,6 +85,27 @@ export const MobilePlayer: React.FC<{
     // to re-run the origin probe that reads it.
     if (currentStream) void restartStream();
   }, [lowLatency, currentStream, restartStream]);
+
+  // Lock-screen audio + media controls.
+  //
+  // Bound here rather than in WatchScreen because this is where the <video>
+  // lives, and the binding has to follow the element. Keyed on the channel so a
+  // channel switch re-publishes the metadata; the helper is idempotent for the
+  // re-renders in between.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !currentStream) return;
+    return attachLockScreenAudio(video, {
+      title: currentStream.title || currentStream.user_name,
+      artist: currentStream.user_name,
+      artUrl: currentStream.profile_image_url ?? '',
+    });
+  }, [currentStream?.user_login, currentStream?.title, currentStream?.user_name, currentStream?.profile_image_url, currentStream]);
+
+  // Leaving the stream entirely must drop the session. Otherwise the foreground
+  // service keeps the WebView awake in the background for audio that has ended,
+  // which is the exact battery cost this feature is meant to be worth paying.
+  useEffect(() => () => releaseLockScreenAudio(), []);
 
   // Manual restart feedback: the icon spins from the tap until the reload has
   // been THROUGH loading and out the other side. A simple "clear when not
@@ -197,7 +220,13 @@ export const MobilePlayer: React.FC<{
       onClick={onSurfaceTap}
     >
       <video
-        ref={videoRef}
+        // Callback ref so the clip sheet can duck this element's audio while a
+        // clip plays. Assigns the same ref object the engine reads, then
+        // publishes it; both are cleared on unmount when React passes null.
+        ref={(el) => {
+          (videoRef as React.MutableRefObject<HTMLVideoElement | null>).current = el;
+          setLiveVideo(el);
+        }}
         className="w-full h-full object-contain"
         playsInline
         autoPlay

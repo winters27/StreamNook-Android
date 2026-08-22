@@ -12,6 +12,7 @@ import android.content.IntentFilter
 import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.drawable.Icon
+import android.hardware.display.DisplayManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -44,6 +45,8 @@ class MainActivity : TauriActivity() {
   // `SNInsets` bridge (covers boot and page reloads, when the pushed CSS vars
   // have not been applied to the fresh document yet).
   @Volatile private var insetsJson: String = "{}"
+  private var displayListener: DisplayManager.DisplayListener? = null
+  private var screenReceiver: BroadcastReceiver? = null
 
   // Whether a stream is playing, so leaving the app enters system
   // picture-in-picture. Pushed from JS.
@@ -183,6 +186,70 @@ class MainActivity : TauriActivity() {
   inner class InsetsBridge {
     @JavascriptInterface
     fun get(): String = insetsJson
+
+    /**
+     * Short edge of the ACTIVE display mode, in real pixels.
+     *
+     * This is the tallest video rendition the screen can actually show, and the
+     * resolver uses it to stop resolving a 1440p source onto a screen that
+     * cannot display it.
+     *
+     * Read from `display.mode`, NOT from DisplayMetrics or the WebView, because
+     * those report the mode Android is CURRENTLY driving and this phone ships a
+     * 1440x3168 panel that runs at 1080x2376 unless the user says otherwise.
+     * Both numbers are real and they are not interchangeable: pick the wrong one
+     * and you either cap a QHD display down to FHD, or fail to cap at all.
+     *
+     * `mode` is API 23+. minSdk is 26, so there is no fallback branch to write.
+     */
+    /**
+     * Start or update the lock-screen media session.
+     *
+     * Called when a stream starts and on every play/pause, because the WEB LAYER
+     * is the source of truth for `playing` - the notification button only sends
+     * a command and waits to be told what happened.
+     */
+    @JavascriptInterface
+    fun mediaSessionStart(title: String, artist: String, artUrl: String, playing: Boolean) {
+      val i = Intent(this@MainActivity, MediaPlaybackService::class.java).apply {
+        action = if (MediaPlaybackService.isRunning) {
+          MediaPlaybackService.ACTION_UPDATE
+        } else {
+          MediaPlaybackService.ACTION_START
+        }
+        putExtra(MediaPlaybackService.EXTRA_TITLE, title)
+        putExtra(MediaPlaybackService.EXTRA_ARTIST, artist)
+        putExtra(MediaPlaybackService.EXTRA_ART_URL, artUrl)
+        putExtra(MediaPlaybackService.EXTRA_PLAYING, playing)
+      }
+      // startForegroundService, not startService: from Android O a background
+      // start of a plain service is illegal, and this can legitimately be called
+      // while the activity is already pausing.
+      ContextCompat.startForegroundService(this@MainActivity, i)
+    }
+
+    /** Tear the session down when playback ends or the stream is closed. */
+    @JavascriptInterface
+    fun mediaSessionStop() {
+      if (!MediaPlaybackService.isRunning) return
+      val i = Intent(this@MainActivity, MediaPlaybackService::class.java).apply {
+        action = MediaPlaybackService.ACTION_STOP
+      }
+      // Plain startService: STOP does not foreground anything, and calling
+      // startForegroundService without a matching startForeground would ANR.
+      try {
+        startService(i)
+      } catch (_: IllegalStateException) {
+        /* already gone */
+      }
+    }
+
+    @JavascriptInterface
+    fun displayShortEdge(): Int {
+      val mode = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) display else windowManager.defaultDisplay)?.mode
+        ?: return 0
+      return minOf(mode.physicalWidth, mode.physicalHeight)
+    }
 
     /**
      * Icon colour for the system bars, chosen by the active StreamNook theme.
@@ -568,6 +635,13 @@ class MainActivity : TauriActivity() {
   override fun onPause() {
     super.onPause()
     if (isInPictureInPictureMode) webView?.onResume()
+    // Same trick, second reason. `WryActivity.onPause` calls `mWebView.onPause()`,
+    // which suspends the WebView's media along with its rendering - that is
+    // precisely why locking the phone killed the audio. While the media service
+    // is foregrounded we undo it, so the <video> keeps decoding audio with the
+    // screen off. `WebView.onResume()` is idempotent, so overlapping with the
+    // PiP case above is harmless.
+    if (MediaPlaybackService.isRunning) webView?.onResume()
   }
 
   override fun onPictureInPictureModeChanged(
@@ -683,6 +757,20 @@ class MainActivity : TauriActivity() {
     this.webView = webView
     webView.addJavascriptInterface(InsetsBridge(), "SNInsets")
     observeFoldPosture(webView)
+    observeDisplayMode(webView)
+    observeScreenState(webView)
+
+    // Transport controls (lock screen, shade, headset button, audio-focus loss)
+    // arrive on a binder thread inside the service. Hand them to the web layer,
+    // which owns the <video> and will report the resulting state back.
+    MediaPlaybackService.commandSink = { cmd ->
+      webView.post {
+        webView.evaluateJavascript(
+          "window.dispatchEvent(new CustomEvent('sn:media-cmd',{detail:'" + cmd + "'}))",
+          null,
+        )
+      }
+    }
 
     // Native inset bridge: Android WebView's env(safe-area-inset-*) is
     // unreliable under edge-to-edge (0 for the top without a display cutout,
@@ -695,6 +783,20 @@ class MainActivity : TauriActivity() {
         WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
       )
       val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+      // Gesture insets, which are NOT the system bars and are what the floating
+      // mini player has to stay clear of.
+      //
+      // mandatorySystemGestures = the home / quick-switch strips (top and
+      // bottom). An app CANNOT opt out of those the way it can opt out of back,
+      // so the only workable answer is to keep draggable UI out of them -
+      // otherwise a swipe meant for the system gets eaten by the mini player, or
+      // the reverse.
+      //
+      // systemGestures additionally covers the left and right BACK strips. Those
+      // an app may claim via setSystemGestureExclusionRects, but simply staying
+      // clear of them is cheaper and cannot be silently ignored by the system.
+      val gest = insets.getInsets(WindowInsetsCompat.Type.systemGestures())
+      val mand = insets.getInsets(WindowInsetsCompat.Type.mandatorySystemGestures())
       fun px(v: Int): Int = (v / density).toInt()
       val kb = maxOf(0, px(ime.bottom) - px(bars.bottom))
       insetsJson = JSONObject()
@@ -703,6 +805,10 @@ class MainActivity : TauriActivity() {
         .put("bottom", px(bars.bottom))
         .put("left", px(bars.left))
         .put("kb", kb)
+        .put("gestureLeft", px(gest.left))
+        .put("gestureRight", px(gest.right))
+        .put("gestureTop", px(mand.top))
+        .put("gestureBottom", px(mand.bottom))
         .toString()
       val js = "(function(){var d=document.documentElement,s=d.style;" +
         "s.setProperty('--sn-inset-t','${px(bars.top)}px');" +
@@ -710,11 +816,84 @@ class MainActivity : TauriActivity() {
         "s.setProperty('--sn-inset-b','${px(bars.bottom)}px');" +
         "s.setProperty('--sn-kb','${kb}px');" +
         "s.setProperty('--sn-inset-l','${px(bars.left)}px');" +
+        "s.setProperty('--sn-gesture-l','${px(gest.left)}px');" +
+        "s.setProperty('--sn-gesture-r','${px(gest.right)}px');" +
+        "s.setProperty('--sn-gesture-t','${px(mand.top)}px');" +
+        "s.setProperty('--sn-gesture-b','${px(mand.bottom)}px');" +
         "d.dataset.snNativeInsets='true';})()"
       view.post { (view as WebView).evaluateJavascript(js, null) }
       insets
     }
     ViewCompat.requestApplyInsets(webView)
+  }
+
+  /**
+   * Tell the WebView when the display MODE changes.
+   *
+   * This phone has a 1440x3168 panel that can run at either 1440x3168 or
+   * 1080x2376, switchable from Settings and by the OS itself. The video resolver
+   * caps quality to the screen's short edge, so a stale value is the difference
+   * between a soft picture on a QHD screen and burning decode power on pixels an
+   * FHD screen throws away.
+   *
+   * A `resize` in the WebView is NOT a usable signal here: both modes are 360
+   * CSS px wide, so a resolution switch changes devicePixelRatio (3 -> 4) while
+   * innerWidth/innerHeight stay put, and no resize fires. Hence a real
+   * DisplayListener.
+   */
+  /**
+   * Tell the web layer when the SCREEN goes off, as opposed to the app merely
+   * being backgrounded. They are very different signals and only this one
+   * requires action.
+   *
+   * Screen-off destroys the activity's window surface. Chromium then has a
+   * WebContents with a video track and nowhere to render it, and tears the media
+   * pipeline down - the audio player disappears from `dumpsys audio` entirely
+   * rather than pausing. Dropping to an audio-only rendition is what survives
+   * that, because there is no video left to render.
+   *
+   * ACTION_SCREEN_ON/OFF can only be registered at RUNTIME; a manifest receiver
+   * is silently ignored for these, which is a well-known way to lose an hour.
+   */
+  private fun observeScreenState(webView: WebView) {
+    screenReceiver = object : BroadcastReceiver() {
+      override fun onReceive(context: Context?, intent: Intent?) {
+        val event = when (intent?.action) {
+          Intent.ACTION_SCREEN_OFF -> "sn:screen-off"
+          Intent.ACTION_SCREEN_ON -> "sn:screen-on"
+          else -> return
+        }
+        webView.post {
+          webView.evaluateJavascript("window.dispatchEvent(new Event('$event'))", null)
+        }
+      }
+    }
+    val filter = IntentFilter().apply {
+      addAction(Intent.ACTION_SCREEN_OFF)
+      addAction(Intent.ACTION_SCREEN_ON)
+    }
+    // System broadcasts, so NOT_EXPORTED is both correct and required at
+    // targetSdk 34+.
+    ContextCompat.registerReceiver(this, screenReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+  }
+
+  private fun observeDisplayMode(webView: WebView) {
+    val dm = getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: return
+    displayListener = object : DisplayManager.DisplayListener {
+      override fun onDisplayAdded(displayId: Int) {}
+      override fun onDisplayRemoved(displayId: Int) {}
+      override fun onDisplayChanged(displayId: Int) {
+        // Fires for rotation and refresh-rate changes too. Cheap and idempotent
+        // on the JS side, so it is not worth filtering to mode changes only.
+        webView.post {
+          webView.evaluateJavascript(
+            "window.dispatchEvent(new Event('sn:display-changed'))",
+            null,
+          )
+        }
+      }
+    }
+    dm.registerDisplayListener(displayListener, null)
   }
 
   override fun onDestroy() {
@@ -723,6 +902,21 @@ class MainActivity : TauriActivity() {
     } catch (_: IllegalArgumentException) {
       /* never registered */
     }
+    displayListener?.let {
+      (getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager)?.unregisterDisplayListener(it)
+    }
+    displayListener = null
+    screenReceiver?.let {
+      try {
+        unregisterReceiver(it)
+      } catch (_: IllegalArgumentException) {
+        /* never registered */
+      }
+    }
+    screenReceiver = null
+    // The sink captures this activity's WebView, so leaving it installed after
+    // the activity dies would hold a destroyed view alive and post into it.
+    MediaPlaybackService.commandSink = null
     super.onDestroy()
   }
 
