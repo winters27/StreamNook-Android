@@ -123,7 +123,7 @@ webp-animation = "0.10"
 # notification worker calls when there is no Tauri app to talk to. Pinned to the
 # 0.21 line tauri and wry already resolve to, so the tree carries one copy.
 [target.'cfg(target_os = "android")'.dependencies]
-jni = "0.22"
+jni = "0.21"
 
 # webview2-com powers services/twitch_auth_service.rs (CookieManager).
 # The windows crate features cover both that and the DXGI Output
