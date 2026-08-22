@@ -15,7 +15,7 @@
 //     every app but necessarily takes StreamNook's own UI off screen, since a
 //     single activity IS the PiP window.
 // Nothing in the UI calls system PiP directly. It is what leaving the app does.
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { X } from 'phosphor-react';
 import { invoke } from '@tauri-apps/api/core';
@@ -52,6 +52,7 @@ import {
   setPipEligible,
   setPipSourceRect,
 } from '../nativeBridge';
+import { readInsets, type ResolvedInsets } from '../nativeInsets';
 import { Logger } from '../../utils/logger';
 import { isBackgrounded } from '../backgroundGate';
 
@@ -68,6 +69,52 @@ const MINI_H = Math.round((MINI_W * 9) / 16);
 const EDGE_GAP = 12;
 // Clearance so the resting mini player never sits under the floating pill bar.
 const BOTTOM_GAP = 104;
+
+// Where the mini player is ALLOWED to be.
+//
+// This exists because of a bug with a very specific shape: minimize to the mini
+// player, then swipe up to leave the app, and the box flew to the top of the
+// screen, clipped off, and was never reachable again - and because the WebView
+// is never torn down (unconsumed back is moveTaskToBack, the home swipe
+// auto-enters PiP), it stayed stranded across what looks to the viewer like an
+// app restart.
+//
+// Three defects fed it:
+//   1. The release snap clamped y from ONE SIDE only (a bare Math.min), so any
+//      short viewport drove y negative. The drag path was two-sided; the release
+//      path was not.
+//   2. The bounds were hardcoded 12 / 104 and inset-blind, so at the top the
+//      56x56 close-X quadrant sat under the status bar and could not be tapped.
+//   3. Nothing re-clamped the stored position when the viewport CHANGED, and a
+//      gesture-nav home swipe auto-enters PiP, which resizes the activity to
+//      roughly 213x120 CSS px MID-GESTURE. The snap then ran against that
+//      viewport: y = min(pos.y, 120 - 113 - 104) = -97.
+//
+// So there is now ONE clamp, every writer goes through it, and it takes insets.
+function clampMini(
+  x: number,
+  y: number,
+  vw: number,
+  vh: number,
+  ins: ResolvedInsets,
+): { x: number; y: number } {
+  // Clear of the BACK strips at the sides, and of the status bar plus the home /
+  // quick-switch strips top and bottom. An app cannot opt out of the home
+  // gesture at all, so simply not overlapping it is the only thing that works.
+  const left = EDGE_GAP + Math.max(ins.left, ins.gestureLeft);
+  const right = EDGE_GAP + Math.max(ins.right, ins.gestureRight);
+  const top = EDGE_GAP + Math.max(ins.top, ins.gestureTop);
+  const bottom = Math.max(BOTTOM_GAP, ins.bottom + ins.gestureBottom + EDGE_GAP);
+
+  // Math.max applied LAST, so that on a viewport too small to satisfy both
+  // bounds the box lands at the top-left edge rather than off-screen. Getting
+  // this order wrong is exactly how defect 1 above shipped.
+  return {
+    x: Math.max(left, Math.min(vw - MINI_W - right, x)),
+    y: Math.max(top, Math.min(vh - MINI_H - bottom, y)),
+  };
+}
+
 const TAP_SLOP_PX = 8;
 // Travel before the shrink is fully previewed. A fraction of the screen, not a
 // fixed pixel count, so the gesture feels the same on a compact phone and an
@@ -105,14 +152,22 @@ export const WatchScreen: React.FC = () => {
   const chatChannelId = useActiveChatChannelId();
   // Only surface pins that belong to the room currently on screen.
   const pinned = pinnedFor.channel === chatChannelId ? pinnedFor.items : [];
+  const backgroundMode = useAppStore((s) => s.settings.video_player?.background_mode) ?? 'pip';
   const [viewport, setViewport] = useState(() => ({
     w: window.innerWidth,
     h: window.innerHeight,
   }));
-  const [miniPos, setMiniPos] = useState(() => ({
-    x: window.innerWidth - MINI_W - EDGE_GAP,
-    y: window.innerHeight - MINI_H - BOTTOM_GAP,
-  }));
+  // Through the clamp even on first mount, so the default resting spot respects
+  // the gesture strips on a device whose insets differ from the hardcoded gaps.
+  const [miniPos, setMiniPos] = useState(() =>
+    clampMini(
+      window.innerWidth - MINI_W - EDGE_GAP,
+      window.innerHeight - MINI_H - BOTTOM_GAP,
+      window.innerWidth,
+      window.innerHeight,
+      readInsets(),
+    ),
+  );
   // How far through the shrink preview the finger currently is: 0 is full, 1 is
   // the mini box. This is what makes a HALF drag a real, reversible state
   // instead of the no-op it used to be.
@@ -228,6 +283,33 @@ export const WatchScreen: React.FC = () => {
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
+  // The clamp is applied at RENDER, not stored back into state.
+  //
+  // That distinction is the whole fix for the stranded mini player. `miniPos`
+  // keeps the position the viewer last dragged to; `miniRect` is where the box
+  // is actually allowed to be given the CURRENT viewport. Deriving instead of
+  // syncing means a hostile viewport can never be persisted:
+  //
+  //   - A gesture-nav home swipe auto-enters PiP and resizes the activity to
+  //     ~213x120 mid-gesture. Deriving clamps for that frame and then, the
+  //     instant the real viewport returns, resolves back to the right place.
+  //     Nothing bad is ever written down, so nothing outlives the transition -
+  //     which matters because the WebView is never torn down (unconsumed back is
+  //     moveTaskToBack, and PiP preserves the whole tree), so a bad stored value
+  //     survives every "restart" a viewer can actually perform.
+  //   - Rotation and fold posture get the same treatment for free. Previously a
+  //     landscape x could leave the box entirely off the right edge in portrait
+  //     with nothing left on screen to grab.
+  //
+  // Insets are memoized on the viewport rather than read every render:
+  // getComputedStyle forces a style resolve, so the insets are read inside this
+  // memo rather than every render: they can only have changed when the viewport
+  // did, and the viewport is already a dependency of the clamp itself.
+  const miniClamped = useMemo(
+    () => clampMini(miniPos.x, miniPos.y, viewport.w, viewport.h, readInsets()),
+    [miniPos.x, miniPos.y, viewport.w, viewport.h],
+  );
+
   // System PiP strip-down flag from MainActivity. Also mirrored onto <html> so
   // the lifecycle handler can tell real backgrounding from PiP: Android fires
   // visibilitychange=hidden for both, but in PiP the video is still on screen
@@ -270,12 +352,17 @@ export const WatchScreen: React.FC = () => {
   // immersive bars only for full landscape playback.
   useEffect(() => {
     setKeepScreenOn(watching);
-    setPipEligible(watching);
+    // PiP eligibility is what makes leaving the app auto-enter a floating
+    // window. Gated on the setting, because with it always on there was no way
+    // to simply MINIMISE a stream: every exit became PiP. In 'audio' mode the
+    // app just goes to the background, the stream drops to its audio-only
+    // rendition, and the media notification is what brings it back.
+    setPipEligible(watching && backgroundMode !== 'audio');
     return () => {
       setKeepScreenOn(false);
       setPipEligible(false);
     };
-  }, [watching]);
+  }, [watching, backgroundMode]);
 
   useEffect(() => {
     // Hide the system bars only when video actually fills the screen. With chat
@@ -376,8 +463,12 @@ export const WatchScreen: React.FC = () => {
         kind: mini ? 'move' : 'shrink',
         x: e.clientX,
         y: e.clientY,
-        px: miniPos.x,
-        py: miniPos.y,
+        // miniRect, not miniPos: the drag has to start from where the box
+        // actually IS on screen. If a previous viewport left the stored position
+        // out of bounds, the rendered box is the clamped one, and measuring the
+        // drag from the stale origin would make it jump on the first move.
+        px: miniClamped.x,
+        py: miniClamped.y,
         lastY: e.clientY,
         lastT: e.timeStamp,
         vy: 0,
@@ -389,7 +480,7 @@ export const WatchScreen: React.FC = () => {
       // armed and eat the next real tap.
       suppressClick.current = false;
     },
-    [pip, sideBySide, mini, miniPos.x, miniPos.y],
+    [pip, sideBySide, mini, miniClamped.x, miniClamped.y],
   );
 
   const onBandPointerMove = useCallback(
@@ -417,10 +508,7 @@ export const WatchScreen: React.FC = () => {
       g.lastT = e.timeStamp;
 
       if (g.kind === 'move') {
-        setMiniPos({
-          x: Math.max(EDGE_GAP, Math.min(viewport.w - MINI_W - EDGE_GAP, g.px + dx)),
-          y: Math.max(EDGE_GAP, Math.min(viewport.h - MINI_H - EDGE_GAP, g.py + dy)),
-        });
+        setMiniPos(clampMini(g.px + dx, g.py + dy, viewport.w, viewport.h, readInsets()));
         return;
       }
       // Downward and mostly vertical. Tracks back to 0 if the finger returns, so
@@ -448,10 +536,21 @@ export const WatchScreen: React.FC = () => {
           return;
         }
         // Snap to whichever side the player ended up closest to.
-        setMiniPos((pos) => ({
-          x: pos.x + MINI_W / 2 < viewport.w / 2 ? EDGE_GAP : viewport.w - MINI_W - EDGE_GAP,
-          y: Math.min(pos.y, viewport.h - MINI_H - BOTTOM_GAP),
-        }));
+        //
+        // Skipped entirely while the activity is in PiP. A gesture-nav home
+        // swipe auto-enters PiP and resizes the viewport MID-GESTURE, so without
+        // this guard the snap below runs against a ~213x120 window and parks the
+        // box off the top of the real screen. isInPip() is the synchronous
+        // bridge read on purpose: the async dataset mirror loses this race.
+        if (isInPip() === true) return;
+        setMiniPos((pos) => {
+          const ins = readInsets();
+          const leftBound = EDGE_GAP + Math.max(ins.left, ins.gestureLeft);
+          const rightBound =
+            viewport.w - MINI_W - EDGE_GAP - Math.max(ins.right, ins.gestureRight);
+          const snappedX = pos.x + MINI_W / 2 < viewport.w / 2 ? leftBound : rightBound;
+          return clampMini(snappedX, pos.y, viewport.w, viewport.h, ins);
+        });
         return;
       }
       // Commit on distance OR a downward flick, always on RELEASE.
@@ -502,8 +601,10 @@ export const WatchScreen: React.FC = () => {
   // with no class juggling, and `overflow-hidden` clips chat as it goes.
   const fullRect = { top: 0, left: 0, width: viewport.w, height: viewport.h, borderRadius: 0 };
   const miniRect = {
-    top: miniPos.y,
-    left: miniPos.x,
+    // miniClamped, not miniPos: the clamp is applied on the way to the screen,
+    // so no viewport can leave a stored position stranding the box out of reach.
+    top: miniClamped.y,
+    left: miniClamped.x,
     width: MINI_W,
     height: MINI_H,
     borderRadius: 12,
