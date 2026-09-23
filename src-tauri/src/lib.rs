@@ -355,6 +355,8 @@ fn load_settings_from_file() -> Result<Settings, Box<dyn std::error::Error>> {
     let json = std::fs::read_to_string(&settings_path)?;
     let mut settings: Settings = serde_json::from_str(&json)?;
     repair_protocol_relative_avatars(&mut settings);
+    settings.retire_legacy_live_edge_gap();
+    settings.enable_low_latency_engine_once();
     Ok(settings)
 }
 

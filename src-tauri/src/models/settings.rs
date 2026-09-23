@@ -79,18 +79,29 @@ pub struct VideoPlayerSettings {
     pub cinema_mode: bool,
     #[serde(default)]
     pub audio_boost: AudioBoostSettings,
-    /// Opt-in: drive playback through the parts-based LL-HLS origin (true Twitch-like
-    /// low latency) instead of the stable whole-segment path. Off by default; the
-    /// frontend syncs it to the runtime kill switch at startup. Beta while it's proven
-    /// stable per channel/hardware.
-    #[serde(default)]
+    /// Drive playback through the parts-based LL-HLS origin (Twitch-parity
+    /// latency) instead of the whole-segment path. On by default since 2026-09-21,
+    /// when it was measured level with twitch.tv on H.264 and 1440p channels; the
+    /// frontend syncs it to the runtime kill switch at startup. Off remains the
+    /// fallback for a channel or machine that stutters on it.
+    #[serde(default = "default_true")]
     pub experimental_low_latency: bool,
+    /// Set once the engine has been switched on by default for this install.
+    /// Every file written before the default flipped carries the old `false`
+    /// that nobody chose; `enable_low_latency_engine_once` flips it exactly one
+    /// time, and a viewer who turns it off afterwards stays off.
+    #[serde(default)]
+    pub low_latency_engine_defaulted: bool,
     /// Displayed "behind live" the viewer wants to ride at on the low-latency path
     /// (seconds). Lower rides closer to live but needs a capable system/connection;
     /// higher is safer. The player adds the display calibration to get the real cushion
     /// and governor target. Default 2.5.
-    #[serde(default = "default_ll_target_latency")]
-    pub ll_target_latency: f32,
+    /// The viewer's live-edge gap in displayed seconds, or `None` for the
+    /// automatic per-path default the frontend resolves (parts origin,
+    /// promoted low-latency broadcast, normal-latency broadcast). Was a
+    /// plain `f32` defaulting to 6.0; see `retire_legacy_live_edge_gap`.
+    #[serde(default)]
+    pub ll_target_latency: Option<f32>,
     /// Scrolling over the player adjusts volume. On by default.
     #[serde(default = "default_true")]
     pub scroll_volume: bool,
@@ -140,10 +151,6 @@ fn default_background_mode() -> String {
     "pip".to_string()
 }
 
-fn default_ll_target_latency() -> f32 {
-    6.0
-}
-
 fn default_wheel_volume_step() -> f32 {
     0.05
 }
@@ -159,8 +166,9 @@ impl Default for VideoPlayerSettings {
             lock_aspect_ratio: true,
             cinema_mode: false,
             audio_boost: AudioBoostSettings::default(),
-            experimental_low_latency: false,
-            ll_target_latency: 6.0,
+            experimental_low_latency: true,
+            low_latency_engine_defaulted: true,
+            ll_target_latency: None,
             ad_bypass_enabled: true,
             ad_bypass_proxies: String::new(),
             background_mode: default_background_mode(),
@@ -960,9 +968,77 @@ pub struct AppState {
     pub watch_heartbeat: Arc<crate::services::watch_heartbeat_service::WatchHeartbeatService>,
 }
 
+/// The gap used to be a plain number defaulting to 6.0, so every settings
+/// file in the field carries a 6.0 that nobody chose. On a low-latency
+/// channel that is a 7 s cushion against delivery that never pauses more
+/// than a third of a second. Read the legacy default as "never set" so
+/// those installs get the automatic per-path gap; a value anyone moved the
+/// slider to survives untouched. Done on load like the avatar repair: a
+/// one-field check, idempotent, persisted by the next ordinary save.
+const LEGACY_LIVE_EDGE_GAP_DEFAULT: f32 = 6.0;
+
+impl Settings {
+    /// One-time flip of the low-latency engine to on for installs written before
+    /// it became the default (see `low_latency_engine_defaulted`).
+    pub fn enable_low_latency_engine_once(&mut self) {
+        if !self.video_player.low_latency_engine_defaulted {
+            self.video_player.experimental_low_latency = true;
+            self.video_player.low_latency_engine_defaulted = true;
+        }
+    }
+
+    pub fn retire_legacy_live_edge_gap(&mut self) {
+        if self.video_player.ll_target_latency == Some(LEGACY_LIVE_EDGE_GAP_DEFAULT) {
+            self.video_player.ll_target_latency = None;
+        }
+    }
+}
+
 #[cfg(test)]
 mod backup_persistence_tests {
     use super::*;
+
+    #[test]
+    fn the_engine_turns_on_once_and_a_later_off_stays_off() {
+        // An install from before the default flipped: off, never defaulted.
+        let mut old = Settings::default();
+        old.video_player.experimental_low_latency = false;
+        old.video_player.low_latency_engine_defaulted = false;
+        old.enable_low_latency_engine_once();
+        assert!(old.video_player.experimental_low_latency);
+        assert!(old.video_player.low_latency_engine_defaulted);
+        // The viewer turns it off afterwards: the next load leaves it alone.
+        old.video_player.experimental_low_latency = false;
+        old.enable_low_latency_engine_once();
+        assert!(!old.video_player.experimental_low_latency);
+        // A file without either field parses to on.
+        let mut json = serde_json::to_value(Settings::default()).expect("serialize");
+        let vp = json["video_player"].as_object_mut().expect("video_player object");
+        vp.remove("experimental_low_latency");
+        vp.remove("low_latency_engine_defaulted");
+        let mut parsed: Settings = serde_json::from_value(json).expect("parse");
+        parsed.enable_low_latency_engine_once();
+        assert!(parsed.video_player.experimental_low_latency);
+    }
+
+    #[test]
+    fn legacy_default_gap_becomes_automatic_but_a_chosen_gap_survives() {
+        let mut s = Settings::default();
+        s.video_player.ll_target_latency = Some(6.0);
+        s.retire_legacy_live_edge_gap();
+        assert_eq!(s.video_player.ll_target_latency, None);
+
+        let mut chosen = Settings::default();
+        chosen.video_player.ll_target_latency = Some(3.2);
+        chosen.retire_legacy_live_edge_gap();
+        assert_eq!(chosen.video_player.ll_target_latency, Some(3.2));
+
+        // A file written before the field existed at all parses to automatic.
+        let mut json = serde_json::to_value(Settings::default()).expect("serialize");
+        json["video_player"].as_object_mut().expect("video_player object").remove("ll_target_latency");
+        let parsed: Settings = serde_json::from_value(json).expect("settings without the field parse");
+        assert_eq!(parsed.video_player.ll_target_latency, None);
+    }
 
     /// A modeled top-level preference must survive the save/load round-trip, and
     /// must NOT be swallowed by the flattened `extra` map on the way back.

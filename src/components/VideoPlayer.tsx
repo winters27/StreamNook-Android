@@ -35,7 +35,7 @@ import { qualitiesEquivalent } from '../utils/quality';
 import { Logger } from '../utils/logger';
 import { syncTauriWindowFullscreen } from '../utils/windowFullscreen';
 import { startLatencyGovernor, DEFAULT_LATENCY_BAND } from '../utils/liveLatencyGovernor';
-import { LL_DISPLAY_CALIBRATION, LL_TARGET_DEFAULT } from '../utils/latency';
+import { behindLiveFromEdge, edgeTargetForGap, resolveLiveEdgeGap } from '../utils/latency';
 import { startLLDiagnostics, stopLLDiagnostics, llDiagNote, isLLDiagEnabled } from '../utils/llDiagnostics';
 import {
   applyAudioBoost,
@@ -1015,16 +1015,14 @@ const VideoPlayer = () => {
 
       // The viewer's preferred behind-live target (displayed seconds), converted to the
       // real cushion/governor value PER PATH so the displayed number tracks the setting
-      // either way: the parts path's overlay subtracts the display calibration (so target
-      // a calibration higher), while the plain whole-segment path shows hls.latency
-      // directly (so target the number as-is). This applies on EVERY channel — a
+      // either way: on the parts path the edge trails the broadcaster by a measured
+      // delay (so the edge target sits that much lower), while the plain whole-segment
+      // path shows hls.latency directly (so target the number as-is). This applies on EVERY channel — a
       // normal-latency broadcast just can't always sustain the tightest values (whole
       // segments arrive with delivery jitter), so the per-channel stall-adaptive cushion
       // settles it where that channel stays smooth.
-      const llTargetDisplayed = currentSettings.ll_target_latency ?? LL_TARGET_DEFAULT;
-      const llTargetRaw = isLowLatencyChannel
-        ? llTargetDisplayed + LL_DISPLAY_CALIBRATION
-        : llTargetDisplayed;
+      const llTargetDisplayed = resolveLiveEdgeGap(currentSettings.ll_target_latency, isLowLatencyChannel ? 'll' : 'plain');
+      const llTargetRaw = isLowLatencyChannel ? edgeTargetForGap(llTargetDisplayed) : llTargetDisplayed;
 
       // Create HLS.js instance with optimized settings
       // Read from the store, not the closure: createPlayer is memoized on
@@ -1208,11 +1206,10 @@ const VideoPlayer = () => {
             // stalls; if the chosen target is too tight for a system the stall-adaptive
             // bump raises it for that channel. Read live (not the construction-time
             // llTargetRaw) so moving the gap slider mid-stream takes effect at once.
-            latencyTarget: () =>
-              (playerSettingsRef.current.ll_target_latency ?? LL_TARGET_DEFAULT) +
-              LL_DISPLAY_CALIBRATION,
+            // Both in seconds behind the broadcaster as heard.
+            latencyTarget: () => resolveLiveEdgeGap(playerSettingsRef.current.ll_target_latency, 'll'),
             getLatency: () =>
-              typeof hls.latency === 'number' && hls.latency > 0 ? hls.latency : null,
+              typeof hls.latency === 'number' && hls.latency > 0 ? behindLiveFromEdge(hls.latency) : null,
             gain: 0.12,
             // 1.05 is the edge of pitch-corrector transparency; the old 1.08 was
             // audible as crackle whenever a large behind-live excess pinned the

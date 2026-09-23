@@ -1666,7 +1666,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     // kill switch. Off by default = the stable whole-segment path. Must run before a
     // stream resolves so the origin probe honors it at the next start.
     invoke('set_experimental_low_latency', {
-      enabled: settings.video_player?.experimental_low_latency ?? false,
+      enabled: settings.video_player?.experimental_low_latency ?? true,
     }).catch((e) => {
       Logger.warn('[Playback] Failed to sync experimental low latency:', e);
     });

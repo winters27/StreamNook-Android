@@ -50,7 +50,8 @@ export interface VideoPlayerSettings {
   audio_boost?: AudioBoostSettings;
   song_id?: SongIdSettings;
   experimental_low_latency?: boolean;
-  ll_target_latency?: number;
+  ll_target_latency?: number | null;
+  low_latency_engine_defaulted?: boolean;
   /** Ad-free live playback. Android only; the desktop app resolves through its
    *  plugin seam and ignores both of these. */
   ad_bypass_enabled?: boolean;
